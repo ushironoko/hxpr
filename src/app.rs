@@ -39,8 +39,11 @@ pub struct App {
 
 impl App {
     pub async fn new(repo: &str, pr_number: u32, config: Config) -> Result<Self> {
-        let pr = github::fetch_pr(repo, pr_number).await?;
-        let files = github::fetch_changed_files(repo, pr_number).await?;
+        // Fetch PR info and changed files in parallel
+        let (pr, files) = tokio::try_join!(
+            github::fetch_pr(repo, pr_number),
+            github::fetch_changed_files(repo, pr_number)
+        )?;
 
         // Calculate initial diff line count
         let diff_line_count = files
