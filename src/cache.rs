@@ -1,0 +1,91 @@
+use anyhow::Result;
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use std::time::SystemTime;
+
+use crate::github::{ChangedFile, PullRequest};
+
+#[allow(dead_code)]
+pub const DEFAULT_TTL_SECS: u64 = 300; // 5分
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheEntry {
+    pub pr: PullRequest,
+    pub files: Vec<ChangedFile>,
+    pub created_at: u64,
+    pub pr_updated_at: String,
+}
+
+pub enum CacheResult {
+    Hit(CacheEntry),
+    Stale(CacheEntry),
+    Miss,
+}
+
+/// キャッシュディレクトリ: ~/.cache/hxpr/
+pub fn cache_dir() -> PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("hxpr")
+}
+
+/// キャッシュファイルパス: ~/.cache/hxpr/{owner}_{repo}_{pr}.json
+pub fn cache_file_path(repo: &str, pr_number: u32) -> PathBuf {
+    let sanitized = repo.replace('/', "_");
+    cache_dir().join(format!("{}_{}.json", sanitized, pr_number))
+}
+
+/// キャッシュ読み込み
+pub fn read_cache(repo: &str, pr_number: u32, ttl_secs: u64) -> Result<CacheResult> {
+    let path = cache_file_path(repo, pr_number);
+    if !path.exists() {
+        return Ok(CacheResult::Miss);
+    }
+
+    let content = std::fs::read_to_string(&path)?;
+    let entry: CacheEntry = serde_json::from_str(&content)?;
+
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)?
+        .as_secs();
+    let age = now.saturating_sub(entry.created_at);
+
+    if age <= ttl_secs {
+        Ok(CacheResult::Hit(entry))
+    } else {
+        Ok(CacheResult::Stale(entry))
+    }
+}
+
+/// キャッシュ書き込み
+pub fn write_cache(
+    repo: &str,
+    pr_number: u32,
+    pr: &PullRequest,
+    files: &[ChangedFile],
+) -> Result<()> {
+    std::fs::create_dir_all(cache_dir())?;
+
+    let entry = CacheEntry {
+        pr: pr.clone(),
+        files: files.to_vec(),
+        created_at: SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)?
+            .as_secs(),
+        pr_updated_at: pr.updated_at.clone(),
+    };
+
+    let content = serde_json::to_string_pretty(&entry)?;
+    std::fs::write(cache_file_path(repo, pr_number), content)?;
+    Ok(())
+}
+
+/// キャッシュ削除
+#[allow(dead_code)]
+pub fn invalidate_cache(repo: &str, pr_number: u32) -> Result<()> {
+    let path = cache_file_path(repo, pr_number);
+    if path.exists() {
+        std::fs::remove_file(path)?;
+    }
+    Ok(())
+}

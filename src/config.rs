@@ -62,8 +62,7 @@ impl Config {
         let config_path = Self::config_path();
 
         if config_path.exists() {
-            let content =
-                fs::read_to_string(&config_path).context("Failed to read config file")?;
+            let content = fs::read_to_string(&config_path).context("Failed to read config file")?;
             toml::from_str(&content).context("Failed to parse config file")
         } else {
             Ok(Self::default())

@@ -30,14 +30,12 @@ pub fn render(frame: &mut Frame, _app: &App) {
     // Help content
     let help_lines = vec![
         Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                "File List View",
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]),
+        Line::from(vec![Span::styled(
+            "File List View",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
         Line::from("  j/k, Down/Up    Move selection"),
         Line::from("  Enter           View file diff"),
         Line::from("  a               Approve PR"),
@@ -46,37 +44,31 @@ pub fn render(frame: &mut Frame, _app: &App) {
         Line::from("  ?               Toggle help"),
         Line::from("  q               Quit"),
         Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                "Diff View",
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]),
+        Line::from(vec![Span::styled(
+            "Diff View",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
         Line::from("  j/k, Down/Up    Move line selection"),
         Line::from("  Ctrl-d          Page down"),
         Line::from("  Ctrl-u          Page up"),
         Line::from("  c               Add comment at line"),
         Line::from("  q, Esc          Back to file list"),
         Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                "Comment Preview",
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]),
+        Line::from(vec![Span::styled(
+            "Comment Preview",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
         Line::from("  Enter           Submit comment"),
         Line::from("  Esc             Cancel"),
         Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                "Press q or ? to close this help",
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]),
+        Line::from(vec![Span::styled(
+            "Press q or ? to close this help",
+            Style::default().fg(Color::DarkGray),
+        )]),
     ];
 
     let help = Paragraph::new(help_lines).block(Block::default().borders(Borders::ALL));

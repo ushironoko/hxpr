@@ -13,6 +13,7 @@ pub struct PullRequest {
     pub head: Branch,
     pub base: Branch,
     pub user: User,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
