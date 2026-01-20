@@ -1,12 +1,12 @@
 use ratatui::{
-    layout::{Constraint, Direction, Layout},
+    layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph},
     Frame,
 };
 
-use crate::app::App;
+use crate::app::{App, DataState};
 
 pub fn render(frame: &mut Frame, app: &App) {
     let chunks = Layout::default()
@@ -19,16 +19,20 @@ pub fn render(frame: &mut Frame, app: &App) {
         .split(frame.area());
 
     // Header
-    let header = Paragraph::new(format!(
-        "PR #{}: {} by @{}",
-        app.pr.number, app.pr.title, app.pr.user.login
-    ))
-    .block(Block::default().borders(Borders::ALL).title("hxpr"));
+    let pr_info = match &app.data_state {
+        DataState::Loaded { pr, .. } => {
+            format!("PR #{}: {} by @{}", pr.number, pr.title, pr.user.login)
+        }
+        _ => format!("PR #{}", app.pr_number),
+    };
+
+    let header =
+        Paragraph::new(pr_info).block(Block::default().borders(Borders::ALL).title("hxpr"));
     frame.render_widget(header, chunks[0]);
 
     // File list
-    let items: Vec<ListItem> = app
-        .files
+    let files = app.files();
+    let items: Vec<ListItem> = files
         .iter()
         .enumerate()
         .map(|(i, file)| {
@@ -72,7 +76,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!("Changed Files ({})", app.files.len())),
+                .title(format!("Changed Files ({})", files.len())),
         )
         .highlight_style(Style::default().bg(Color::DarkGray));
     frame.render_widget(list, chunks[1]);
@@ -82,5 +86,65 @@ pub fn render(frame: &mut Frame, app: &App) {
         "j/k: move | Enter: view diff | a: approve | r: request changes | m: comment | q: quit | ?: help",
     )
     .block(Block::default().borders(Borders::ALL));
+    frame.render_widget(footer, chunks[2]);
+}
+
+/// Loading状態の表示
+pub fn render_loading(frame: &mut Frame, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(3),
+        ])
+        .split(frame.area());
+
+    // Header
+    let header = Paragraph::new(format!("PR #{} - Loading...", app.pr_number))
+        .block(Block::default().borders(Borders::ALL).title("hxpr"));
+    frame.render_widget(header, chunks[0]);
+
+    // Loading message
+    let loading = Paragraph::new("Loading PR data...")
+        .style(Style::default().fg(Color::Yellow))
+        .alignment(Alignment::Center)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Changed Files"),
+        );
+    frame.render_widget(loading, chunks[1]);
+
+    // Footer
+    let footer =
+        Paragraph::new("Please wait... (q: quit)").block(Block::default().borders(Borders::ALL));
+    frame.render_widget(footer, chunks[2]);
+}
+
+/// Error状態の表示
+pub fn render_error(frame: &mut Frame, app: &App, error_msg: &str) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(3),
+        ])
+        .split(frame.area());
+
+    // Header
+    let header = Paragraph::new(format!("PR #{} - Error", app.pr_number))
+        .block(Block::default().borders(Borders::ALL).title("hxpr"));
+    frame.render_widget(header, chunks[0]);
+
+    // Error message
+    let error = Paragraph::new(format!("Error: {}", error_msg))
+        .style(Style::default().fg(Color::Red))
+        .block(Block::default().borders(Borders::ALL).title("Error"));
+    frame.render_widget(error, chunks[1]);
+
+    // Footer
+    let footer = Paragraph::new("r: retry | q: quit").block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, chunks[2]);
 }

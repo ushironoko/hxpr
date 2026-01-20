@@ -10,7 +10,7 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Frame, Terminal};
 use std::io::{self, Stdout};
 
-use crate::app::{App, AppState};
+use crate::app::{App, AppState, DataState};
 
 pub fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
     enable_raw_mode()?;
@@ -29,6 +29,16 @@ pub fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Re
 }
 
 pub fn render(frame: &mut Frame, app: &App) {
+    // Loading状態の場合は専用画面を表示
+    if matches!(app.data_state, DataState::Loading) {
+        file_list::render_loading(frame, app);
+        return;
+    }
+    if let DataState::Error(ref msg) = app.data_state {
+        file_list::render_error(frame, app, msg);
+        return;
+    }
+
     match app.state {
         AppState::FileList => file_list::render(frame, app),
         AppState::DiffView => diff_view::render(frame, app),

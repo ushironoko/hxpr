@@ -40,19 +40,24 @@ pub fn render_with_preview(frame: &mut Frame, app: &App) {
 
 fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let header_text = app
-        .files
+        .files()
         .get(app.selected_file)
-        .map(|file| format!("{} (+{} -{})", file.filename, file.additions, file.deletions))
+        .map(|file| {
+            format!(
+                "{} (+{} -{})",
+                file.filename, file.additions, file.deletions
+            )
+        })
         .unwrap_or_else(|| "No file selected".to_string());
 
-    let header = Paragraph::new(header_text)
-        .block(Block::default().borders(Borders::ALL).title("Diff"));
+    let header =
+        Paragraph::new(header_text).block(Block::default().borders(Borders::ALL).title("Diff"));
     frame.render_widget(header, area);
 }
 
 fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let lines: Vec<Line> = app
-        .files
+        .files()
         .get(app.selected_file)
         .and_then(|file| file.patch.as_ref())
         .map(|patch| parse_patch_to_lines(patch, app.selected_line))
