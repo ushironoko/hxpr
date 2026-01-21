@@ -43,6 +43,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         AppState::FileList => file_list::render(frame, app),
         AppState::DiffView => diff_view::render(frame, app),
         AppState::CommentPreview => diff_view::render_with_preview(frame, app),
+        AppState::SuggestionPreview => diff_view::render_with_suggestion_preview(frame, app),
         AppState::Help => help::render(frame, app),
     }
 }

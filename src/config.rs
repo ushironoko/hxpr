@@ -25,6 +25,7 @@ pub struct KeybindingsConfig {
     pub approve: char,
     pub request_changes: char,
     pub comment: char,
+    pub suggestion: char,
 }
 
 impl Default for Config {
@@ -53,6 +54,7 @@ impl Default for KeybindingsConfig {
             approve: 'a',
             request_changes: 'r',
             comment: 'c',
+            suggestion: 's',
         }
     }
 }

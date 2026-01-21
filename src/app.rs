@@ -14,6 +14,7 @@ pub enum AppState {
     FileList,
     DiffView,
     CommentPreview,
+    SuggestionPreview,
     Help,
 }
 
@@ -22,6 +23,13 @@ pub enum ReviewAction {
     Approve,
     RequestChanges,
     Comment,
+}
+
+#[derive(Debug, Clone)]
+pub struct SuggestionData {
+    pub original_code: String,
+    pub suggested_code: String,
+    pub line_number: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -44,6 +52,7 @@ pub struct App {
     pub diff_line_count: usize,
     pub scroll_offset: usize,
     pub pending_comment: Option<String>,
+    pub pending_suggestion: Option<SuggestionData>,
     pub config: Config,
     pub should_quit: bool,
     data_receiver: Option<mpsc::Receiver<DataLoadResult>>,
@@ -69,6 +78,7 @@ impl App {
             diff_line_count: 0,
             scroll_offset: 0,
             pending_comment: None,
+            pending_suggestion: None,
             config,
             should_quit: false,
             data_receiver: Some(rx),
@@ -100,6 +110,7 @@ impl App {
             diff_line_count,
             scroll_offset: 0,
             pending_comment: None,
+            pending_suggestion: None,
             config,
             should_quit: false,
             data_receiver: Some(rx),
@@ -211,6 +222,9 @@ impl App {
                     AppState::FileList => self.handle_file_list_input(key, terminal).await?,
                     AppState::DiffView => self.handle_diff_view_input(key, terminal).await?,
                     AppState::CommentPreview => self.handle_comment_preview_input(key).await?,
+                    AppState::SuggestionPreview => {
+                        self.handle_suggestion_preview_input(key).await?
+                    }
                     AppState::Help => self.handle_help_input(key)?,
                 }
             }
@@ -298,6 +312,9 @@ impl App {
             }
             KeyCode::Char(c) if c == self.config.keybindings.comment => {
                 self.open_comment_editor(terminal).await?
+            }
+            KeyCode::Char(c) if c == self.config.keybindings.suggestion => {
+                self.open_suggestion_editor(terminal).await?
             }
             _ => {}
         }
@@ -399,5 +416,93 @@ impl App {
 
     fn update_diff_line_count(&mut self) {
         self.diff_line_count = Self::calc_diff_line_count(self.files(), self.selected_file);
+    }
+
+    async fn open_suggestion_editor(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    ) -> Result<()> {
+        let Some(file) = self.files().get(self.selected_file) else {
+            return Ok(());
+        };
+        let Some(patch) = file.patch.as_ref() else {
+            return Ok(());
+        };
+
+        // Check if this line can have a suggestion
+        let Some(line_info) = crate::diff::get_line_info(patch, self.selected_line) else {
+            return Ok(());
+        };
+
+        // Only allow suggestions on Added or Context lines
+        if !matches!(
+            line_info.line_type,
+            crate::diff::LineType::Added | crate::diff::LineType::Context
+        ) {
+            return Ok(());
+        }
+
+        let Some(new_line_number) = line_info.new_line_number else {
+            return Ok(());
+        };
+
+        let filename = file.filename.clone();
+        let original_code = line_info.line_content.clone();
+
+        ui::restore_terminal(terminal)?;
+
+        let suggested = crate::editor::open_suggestion_editor(
+            &self.config.editor,
+            &filename,
+            new_line_number as usize,
+            &original_code,
+        )?;
+
+        *terminal = ui::setup_terminal()?;
+
+        if let Some(suggested_code) = suggested {
+            self.pending_suggestion = Some(SuggestionData {
+                original_code,
+                suggested_code,
+                line_number: new_line_number,
+            });
+            self.state = AppState::SuggestionPreview;
+        }
+        Ok(())
+    }
+
+    async fn handle_suggestion_preview_input(&mut self, key: event::KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Enter => {
+                if let Some(suggestion) = self.pending_suggestion.take() {
+                    if let Some(file) = self.files().get(self.selected_file) {
+                        if let Some(pr) = self.pr() {
+                            let commit_id = pr.head.sha.clone();
+                            let filename = file.filename.clone();
+                            let body = format!(
+                                "```suggestion\n{}\n```",
+                                suggestion.suggested_code.trim_end()
+                            );
+                            github::create_review_comment(
+                                &self.repo,
+                                self.pr_number,
+                                &commit_id,
+                                &filename,
+                                suggestion.line_number,
+                                &body,
+                            )
+                            .await?;
+                        }
+                    }
+                }
+                self.state = AppState::DiffView;
+            }
+            KeyCode::Esc => {
+                self.pending_suggestion = None;
+                self.state = AppState::DiffView;
+            }
+            _ => {}
+        }
+        Ok(())
     }
 }

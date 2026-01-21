@@ -5,6 +5,7 @@ use tokio::sync::mpsc;
 mod app;
 mod cache;
 mod config;
+mod diff;
 mod editor;
 mod github;
 mod loader;

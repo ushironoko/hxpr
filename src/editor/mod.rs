@@ -70,3 +70,38 @@ fn extract_comment_body(content: &str) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
+
+/// Open external editor for suggestion input
+/// Returns the suggested code (without the original template comments)
+pub fn open_suggestion_editor(
+    editor: &str,
+    filename: &str,
+    line: usize,
+    original_code: &str,
+) -> Result<Option<String>> {
+    let temp_file = NamedTempFile::new()?;
+    let template = format!(
+        "<!-- octorus: Edit the code below to create a suggestion -->\n\
+         <!-- File: {} Line: {} -->\n\
+         <!-- Save and close to submit, delete all content to cancel -->\n\n\
+         {}",
+        filename, line, original_code
+    );
+    fs::write(temp_file.path(), &template)?;
+
+    let editor_cmd = resolve_editor(editor);
+    let status = Command::new(&editor_cmd).arg(temp_file.path()).status()?;
+
+    if !status.success() {
+        return Ok(None);
+    }
+
+    let content = fs::read_to_string(temp_file.path())?;
+    let suggested = extract_comment_body(&content);
+
+    if suggested.trim().is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(suggested))
+    }
+}

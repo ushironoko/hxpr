@@ -103,9 +103,10 @@ fn get_line_style(line: &str) -> Style {
 }
 
 fn render_footer(frame: &mut Frame, area: ratatui::layout::Rect) {
-    let footer =
-        Paragraph::new("j/k: move | c: comment | Ctrl-d/u: page down/up | q/Esc: back to list")
-            .block(Block::default().borders(Borders::ALL));
+    let footer = Paragraph::new(
+        "j/k: move | c: comment | s: suggestion | Ctrl-d/u: page down/up | q/Esc: back to list",
+    )
+    .block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, area);
 }
 
@@ -120,6 +121,78 @@ fn render_comment_preview(frame: &mut Frame, app: &App, area: ratatui::layout::R
             Block::default()
                 .borders(Borders::ALL)
                 .title("Comment Preview (Enter: submit, Esc: cancel)"),
+        )
+        .wrap(Wrap { trim: true });
+
+    frame.render_widget(preview, area);
+}
+
+pub fn render_with_suggestion_preview(frame: &mut Frame, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),      // Header
+            Constraint::Percentage(50), // Diff content
+            Constraint::Percentage(50), // Suggestion preview
+        ])
+        .split(frame.area());
+
+    render_header(frame, app, chunks[0]);
+    render_diff_content(frame, app, chunks[1]);
+    render_suggestion_preview(frame, app, chunks[2]);
+}
+
+fn render_suggestion_preview(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let preview_lines: Vec<Line> = if let Some(ref suggestion) = app.pending_suggestion {
+        vec![
+            Line::from(vec![
+                Span::styled("Line ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    suggestion.line_number.to_string(),
+                    Style::default().fg(Color::Cyan),
+                ),
+            ]),
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                "Original:",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )]),
+            Line::from(vec![Span::styled(
+                format!("  {}", suggestion.original_code),
+                Style::default().fg(Color::Red),
+            )]),
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                "Suggested:",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )]),
+            Line::from(vec![Span::styled(
+                format!("  {}", suggestion.suggested_code.trim_end()),
+                Style::default().fg(Color::Green),
+            )]),
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                "Will be posted as:",
+                Style::default().fg(Color::DarkGray),
+            )]),
+            Line::from(vec![Span::styled(
+                format!("```suggestion\n{}\n```", suggestion.suggested_code.trim_end()),
+                Style::default().fg(Color::White),
+            )]),
+        ]
+    } else {
+        vec![Line::from("No suggestion pending")]
+    };
+
+    let preview = Paragraph::new(preview_lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Suggestion Preview (Enter: submit, Esc: cancel)"),
         )
         .wrap(Wrap { trim: true });
 

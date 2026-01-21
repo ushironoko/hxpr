@@ -54,15 +54,16 @@ pub fn render(frame: &mut Frame, _app: &App) {
         Line::from("  Ctrl-d          Page down"),
         Line::from("  Ctrl-u          Page up"),
         Line::from("  c               Add comment at line"),
+        Line::from("  s               Add suggestion at line"),
         Line::from("  q, Esc          Back to file list"),
         Line::from(""),
         Line::from(vec![Span::styled(
-            "Comment Preview",
+            "Comment/Suggestion Preview",
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )]),
-        Line::from("  Enter           Submit comment"),
+        Line::from("  Enter           Submit comment/suggestion"),
         Line::from("  Esc             Cancel"),
         Line::from(""),
         Line::from(vec![Span::styled(
