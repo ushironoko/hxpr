@@ -33,6 +33,12 @@ pub struct SuggestionData {
 }
 
 #[derive(Debug, Clone)]
+pub struct CommentData {
+    pub body: String,
+    pub line_number: u32,
+}
+
+#[derive(Debug, Clone)]
 pub enum DataState {
     Loading,
     Loaded {
@@ -51,7 +57,7 @@ pub struct App {
     pub selected_line: usize,
     pub diff_line_count: usize,
     pub scroll_offset: usize,
-    pub pending_comment: Option<String>,
+    pub pending_comment: Option<CommentData>,
     pub pending_suggestion: Option<SuggestionData>,
     pub config: Config,
     pub should_quit: bool,
@@ -336,7 +342,7 @@ impl App {
     async fn handle_comment_preview_input(&mut self, key: event::KeyEvent) -> Result<()> {
         match key.code {
             KeyCode::Enter => {
-                if let Some(body) = self.pending_comment.take() {
+                if let Some(comment) = self.pending_comment.take() {
                     if let Some(file) = self.files().get(self.selected_file) {
                         if let Some(pr) = self.pr() {
                             let commit_id = pr.head.sha.clone();
@@ -346,8 +352,8 @@ impl App {
                                 self.pr_number,
                                 &commit_id,
                                 &filename,
-                                self.selected_line as u32,
-                                &body,
+                                comment.line_number,
+                                &comment.body,
                             )
                             .await?;
                         }
@@ -381,17 +387,38 @@ impl App {
         let Some(file) = self.files().get(self.selected_file) else {
             return Ok(());
         };
+        let Some(patch) = file.patch.as_ref() else {
+            return Ok(());
+        };
+
+        // Get actual line number from diff
+        let Some(line_info) = crate::diff::get_line_info(patch, self.selected_line) else {
+            return Ok(());
+        };
+
+        // Only allow comments on Added or Context lines (not Removed/Header/Meta)
+        if !matches!(
+            line_info.line_type,
+            crate::diff::LineType::Added | crate::diff::LineType::Context
+        ) {
+            return Ok(());
+        }
+
+        let Some(line_number) = line_info.new_line_number else {
+            return Ok(());
+        };
+
         let filename = file.filename.clone();
 
         ui::restore_terminal(terminal)?;
 
         let comment =
-            crate::editor::open_comment_editor(&self.config.editor, &filename, self.selected_line)?;
+            crate::editor::open_comment_editor(&self.config.editor, &filename, line_number as usize)?;
 
         *terminal = ui::setup_terminal()?;
 
         if let Some(body) = comment {
-            self.pending_comment = Some(body);
+            self.pending_comment = Some(CommentData { body, line_number });
             self.state = AppState::CommentPreview;
         }
         Ok(())

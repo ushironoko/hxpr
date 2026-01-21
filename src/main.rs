@@ -1,5 +1,11 @@
 use anyhow::Result;
 use clap::Parser;
+use crossterm::{
+    execute,
+    terminal::{disable_raw_mode, LeaveAlternateScreen},
+};
+use std::io;
+use std::panic;
 use tokio::sync::mpsc;
 
 mod app;
@@ -33,8 +39,25 @@ struct Args {
     cache_ttl: u64,
 }
 
+/// Restore terminal to normal state
+fn restore_terminal() {
+    let _ = disable_raw_mode();
+    let _ = execute!(io::stdout(), LeaveAlternateScreen);
+}
+
+/// Set up panic hook to restore terminal on panic
+fn setup_panic_hook() {
+    let original_hook = panic::take_hook();
+    panic::set_hook(Box::new(move |panic_info| {
+        restore_terminal();
+        original_hook(panic_info);
+    }));
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Set up panic hook before anything else
+    setup_panic_hook();
     let args = Args::parse();
     let config = config::Config::load()?;
 
@@ -90,5 +113,10 @@ async fn main() -> Result<()> {
         }
     });
 
-    app.run().await
+    // Run the app and ensure terminal is restored on error
+    let result = app.run().await;
+    if result.is_err() {
+        restore_terminal();
+    }
+    result
 }

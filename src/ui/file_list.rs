@@ -83,7 +83,7 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     // Footer
     let footer = Paragraph::new(
-        "j/k: move | Enter: view diff | a: approve | r: request changes | m: comment | q: quit | ?: help",
+        "j/k: move | Enter: view diff | a: approve | r: request changes | c: comment | q: quit | ?: help",
     )
     .block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, chunks[2]);

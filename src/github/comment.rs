@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use super::client::{gh_api, gh_api_post};
+use super::client::{gh_api, gh_api_post, FieldValue};
 use super::pr::User;
 
 #[allow(dead_code)]
@@ -31,14 +31,15 @@ pub async fn create_review_comment(
     body: &str,
 ) -> Result<()> {
     let endpoint = format!("repos/{}/pulls/{}/comments", repo, pr_number);
+    let line_str = line.to_string();
     gh_api_post(
         &endpoint,
         &[
-            ("body", body),
-            ("commit_id", commit_id),
-            ("path", path),
-            ("line", &line.to_string()),
-            ("side", "RIGHT"),
+            ("body", FieldValue::String(body)),
+            ("commit_id", FieldValue::String(commit_id)),
+            ("path", FieldValue::String(path)),
+            ("line", FieldValue::Raw(&line_str)),
+            ("side", FieldValue::String("RIGHT")),
         ],
     )
     .await?;

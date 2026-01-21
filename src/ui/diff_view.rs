@@ -111,12 +111,23 @@ fn render_footer(frame: &mut Frame, area: ratatui::layout::Rect) {
 }
 
 fn render_comment_preview(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let preview_text = app
-        .pending_comment
-        .as_deref()
-        .unwrap_or("No comment pending");
+    let preview_lines: Vec<Line> = if let Some(ref comment) = app.pending_comment {
+        vec![
+            Line::from(vec![
+                Span::styled("Line ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    comment.line_number.to_string(),
+                    Style::default().fg(Color::Cyan),
+                ),
+            ]),
+            Line::from(""),
+            Line::from(comment.body.as_str()),
+        ]
+    } else {
+        vec![Line::from("No comment pending")]
+    };
 
-    let preview = Paragraph::new(preview_text)
+    let preview = Paragraph::new(preview_lines)
         .block(
             Block::default()
                 .borders(Borders::ALL)

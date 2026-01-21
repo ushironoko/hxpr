@@ -29,8 +29,16 @@ pub async fn gh_api(endpoint: &str) -> Result<serde_json::Value> {
     serde_json::from_str(&output).context("Failed to parse gh api response as JSON")
 }
 
+/// Field type for gh api command
+pub enum FieldValue<'a> {
+    /// String field (-f)
+    String(&'a str),
+    /// Raw/typed field (-F) - for integers, booleans, null
+    Raw(&'a str),
+}
+
 /// Execute gh api with method and fields
-pub async fn gh_api_post(endpoint: &str, fields: &[(&str, &str)]) -> Result<serde_json::Value> {
+pub async fn gh_api_post(endpoint: &str, fields: &[(&str, FieldValue<'_>)]) -> Result<serde_json::Value> {
     let mut args = vec![
         "api".to_string(),
         "--method".to_string(),
@@ -38,8 +46,16 @@ pub async fn gh_api_post(endpoint: &str, fields: &[(&str, &str)]) -> Result<serd
         endpoint.to_string(),
     ];
     for (key, value) in fields {
-        args.push("-f".to_string());
-        args.push(format!("{}={}", key, value));
+        match value {
+            FieldValue::String(v) => {
+                args.push("-f".to_string());
+                args.push(format!("{}={}", key, v));
+            }
+            FieldValue::Raw(v) => {
+                args.push("-F".to_string());
+                args.push(format!("{}={}", key, v));
+            }
+        }
     }
     let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     let output = gh_command(&args_refs).await?;
