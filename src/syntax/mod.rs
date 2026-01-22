@@ -93,6 +93,10 @@ pub fn highlight_code_line(code: &str, highlighter: &mut HighlightLines<'_>) -> 
 }
 
 /// Convert syntect Style to ratatui Style.
+///
+/// Note: Background color is intentionally NOT applied. Syntect themes define
+/// a background color for the entire editor, but in a TUI diff viewer, we want
+/// to preserve the terminal's background color for better visual consistency.
 fn convert_syntect_style(style: &syntect::highlighting::Style) -> Style {
     let mut ratatui_style = Style::default();
 
@@ -105,14 +109,8 @@ fn convert_syntect_style(style: &syntect::highlighting::Style) -> Style {
         ));
     }
 
-    // Convert background color (if not transparent)
-    if style.background.a > 0 {
-        ratatui_style = ratatui_style.bg(Color::Rgb(
-            style.background.r,
-            style.background.g,
-            style.background.b,
-        ));
-    }
+    // Background color is NOT applied - we want to keep the terminal's background
+    // The theme's background is meant for the whole editor, not per-token
 
     // Convert font style
     if style
@@ -150,6 +148,9 @@ mod tests {
         assert!(syntax_for_file("index.js").is_some());
         assert!(syntax_for_file("style.css").is_some());
         assert!(syntax_for_file("index.html").is_some());
+        // Test with path-like filenames (as returned by GitHub API)
+        assert!(syntax_for_file("src/app.rs").is_some(), "src/app.rs should have syntax");
+        assert!(syntax_for_file("src/ui/diff_view.rs").is_some());
     }
 
     #[test]
@@ -183,8 +184,17 @@ mod tests {
         let theme = get_theme("base16-ocean.dark");
         let mut highlighter = HighlightLines::new(syntax, theme);
 
-        let spans = highlight_code_line("fn main() {}", &mut highlighter);
+        let spans = highlight_code_line("let app = Self {", &mut highlighter);
         assert!(!spans.is_empty());
+
+        // Verify that "let" keyword has a foreground color (syntax highlighting applied)
+        let let_span = spans.iter().find(|s| s.content.as_ref() == "let");
+        assert!(let_span.is_some(), "Should have a span for 'let'");
+        let let_style = let_span.unwrap().style;
+        assert!(let_style.fg.is_some(), "'let' should have foreground color");
+
+        // Verify that background color is NOT applied (we preserve terminal background)
+        assert!(let_style.bg.is_none(), "'let' should NOT have background color");
     }
 
     #[test]
