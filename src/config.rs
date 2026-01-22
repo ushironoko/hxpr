@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use xdg::BaseDirectories;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -17,6 +18,7 @@ pub struct DiffConfig {
     pub renderer: String,
     pub side_by_side: bool,
     pub line_numbers: bool,
+    pub theme: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,6 +46,7 @@ impl Default for DiffConfig {
             renderer: "delta".to_owned(),
             side_by_side: true,
             line_numbers: true,
+            theme: "base16-ocean.dark".to_owned(),
         }
     }
 }
@@ -72,9 +75,8 @@ impl Config {
     }
 
     fn config_path() -> PathBuf {
-        dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("octorus")
-            .join("config.toml")
+        BaseDirectories::with_prefix("octorus")
+            .map(|dirs| dirs.get_config_home().join("config.toml"))
+            .unwrap_or_else(|_| PathBuf::from("config.toml"))
     }
 }

@@ -39,9 +39,7 @@ fn parse_hunk_header(line: &str) -> Option<u32> {
     let after_plus = &line[plus_pos + 1..];
 
     // Extract the number (stop at comma or space)
-    let end_pos = after_plus
-        .find([',', ' '])
-        .unwrap_or(after_plus.len());
+    let end_pos = after_plus.find([',', ' ']).unwrap_or(after_plus.len());
     let num_str = &after_plus[..end_pos];
 
     num_str.parse().ok()
@@ -103,7 +101,7 @@ pub fn get_line_info(patch: &str, line_index: usize) -> Option<DiffLineInfo> {
 }
 
 /// Classify a line and extract its content without the prefix
-fn classify_line(line: &str) -> (LineType, &str) {
+pub fn classify_line(line: &str) -> (LineType, &str) {
     if line.starts_with("@@") {
         (LineType::Header, line)
     } else if line.starts_with("+++")

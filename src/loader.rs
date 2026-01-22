@@ -47,7 +47,12 @@ async fn fetch_and_send(repo: &str, pr_number: u32, tx: mpsc::Sender<DataLoadRes
             if let Err(e) = cache::write_cache(repo, pr_number, &pr, &files) {
                 eprintln!("Warning: Failed to write cache: {}", e);
             }
-            let _ = tx.send(DataLoadResult::Success { pr: Box::new(pr), files }).await;
+            let _ = tx
+                .send(DataLoadResult::Success {
+                    pr: Box::new(pr),
+                    files,
+                })
+                .await;
         }
         Err(e) => {
             let _ = tx.send(DataLoadResult::Error(e.to_string())).await;

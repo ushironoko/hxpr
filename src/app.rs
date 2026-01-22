@@ -120,7 +120,10 @@ impl App {
         let app = Self {
             repo: repo.to_string(),
             pr_number,
-            data_state: DataState::Loaded { pr: Box::new(pr), files },
+            data_state: DataState::Loaded {
+                pr: Box::new(pr),
+                files,
+            },
             state: AppState::FileList,
             selected_file: 0,
             selected_line: 0,
@@ -466,8 +469,11 @@ impl App {
 
         ui::restore_terminal(terminal)?;
 
-        let comment =
-            crate::editor::open_comment_editor(&self.config.editor, &filename, line_number as usize)?;
+        let comment = crate::editor::open_comment_editor(
+            &self.config.editor,
+            &filename,
+            line_number as usize,
+        )?;
 
         *terminal = ui::setup_terminal()?;
 
@@ -682,7 +688,8 @@ impl App {
             self.comment_list_scroll_offset = self.selected_comment;
         }
         if self.selected_comment >= self.comment_list_scroll_offset + visible_lines {
-            self.comment_list_scroll_offset = self.selected_comment.saturating_sub(visible_lines) + 1;
+            self.comment_list_scroll_offset =
+                self.selected_comment.saturating_sub(visible_lines) + 1;
         }
     }
 
@@ -698,10 +705,7 @@ impl App {
         let target_line = comment.line;
 
         // Find file index by path
-        let file_index = self
-            .files()
-            .iter()
-            .position(|f| &f.filename == target_path);
+        let file_index = self.files().iter().position(|f| &f.filename == target_path);
 
         if let Some(idx) = file_index {
             self.selected_file = idx;
@@ -714,7 +718,9 @@ impl App {
             if let Some(line_num) = target_line {
                 if let Some(file) = self.files().get(idx) {
                     if let Some(patch) = file.patch.as_ref() {
-                        if let Some(diff_line_index) = self.find_diff_line_for_new_line(patch, line_num) {
+                        if let Some(diff_line_index) =
+                            self.find_diff_line_for_new_line(patch, line_num)
+                        {
                             self.selected_line = diff_line_index;
                             // Center the line in view
                             self.scroll_offset = diff_line_index.saturating_sub(10);
@@ -734,9 +740,7 @@ impl App {
                 // Parse hunk header to get starting line number
                 if let Some(plus_pos) = line.find('+') {
                     let after_plus = &line[plus_pos + 1..];
-                    let end_pos = after_plus
-                        .find([',', ' '])
-                        .unwrap_or(after_plus.len());
+                    let end_pos = after_plus.find([',', ' ']).unwrap_or(after_plus.len());
                     if let Ok(num) = after_plus[..end_pos].parse::<u32>() {
                         new_line_number = Some(num);
                     }

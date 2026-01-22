@@ -89,3 +89,19 @@ main.rs
 
 - GitHub CLI (`gh`) がインストール・認証済みであること
 - Rust 1.70+
+
+## Dependency Version Policy
+
+Cargo.toml での依存クレートは **必ず正確なバージョン（exactバージョン）を指定する**。
+
+```toml
+# Good - 正確なバージョン指定
+anyhow = "1.0.100"
+tokio = { version = "1.49.0", features = ["rt-multi-thread"] }
+
+# Bad - 曖昧なバージョン指定
+anyhow = "1"
+tokio = { version = "1", features = ["rt-multi-thread"] }
+```
+
+新しいクレートを追加する際は `cargo add <crate>` 後に `cargo tree --depth 1` で正確なバージョンを確認し、Cargo.toml を修正すること。

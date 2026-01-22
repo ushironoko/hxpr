@@ -12,19 +12,21 @@ name = "or"
 path = "src/main.rs"
 
 [dependencies]
-ratatui = "0.30"
-crossterm = "0.28"
-tokio = { version = "1", features = ["rt-multi-thread", "rt", "macros", "sync"] }
-tokio-util = "0.7"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-toml = "0.8"
-tempfile = "3"
-anyhow = "1"
-clap = { version = "4", features = ["derive"] }
-dirs = "6"
+ratatui = "0.30.0"
+crossterm = "0.28.1"
+tokio = { version = "1.49.0", features = ["rt-multi-thread", "rt", "macros", "sync"] }
+tokio-util = "0.7.18"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+toml = "0.8.23"
+tempfile = "3.24.0"
+anyhow = "1.0.100"
+clap = { version = "4.5.54", features = ["derive"] }
+xdg = "2.5.2"
 unicode-width = "0.2.2"
+syntect = { version = "5.3.0", default-features = false, features = ["default-fancy"] }
+syntect-tui = "3.0.4"
 
 [dev-dependencies]
-assert_cmd = "2"
-predicates = "3"
+assert_cmd = "2.1.2"
+predicates = "3.1.3"

@@ -5,8 +5,11 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
+use syntect::easy::HighlightLines;
 
 use crate::app::App;
+use crate::diff::{classify_line, LineType};
+use crate::syntax::{get_theme, highlight_code_line, syntax_for_file};
 
 pub fn render(frame: &mut Frame, app: &App) {
     let chunks = Layout::default()
@@ -56,12 +59,16 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 }
 
 fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let lines: Vec<Line> = app
-        .files()
-        .get(app.selected_file)
-        .and_then(|file| file.patch.as_ref())
-        .map(|patch| parse_patch_to_lines(patch, app.selected_line))
-        .unwrap_or_else(|| vec![Line::from("No diff available")]);
+    let file = app.files().get(app.selected_file);
+    let theme_name = &app.config.diff.theme;
+
+    let lines: Vec<Line> = match file {
+        Some(f) => match f.patch.as_ref() {
+            Some(patch) => parse_patch_to_lines(patch, app.selected_line, &f.filename, theme_name),
+            None => vec![Line::from("No diff available")],
+        },
+        None => vec![Line::from("No file selected")],
+    };
 
     let diff_block = Paragraph::new(lines)
         .block(Block::default().borders(Borders::ALL))
@@ -71,34 +78,92 @@ fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
     frame.render_widget(diff_block, area);
 }
 
-fn parse_patch_to_lines(patch: &str, selected_line: usize) -> Vec<Line<'static>> {
+fn parse_patch_to_lines(
+    patch: &str,
+    selected_line: usize,
+    filename: &str,
+    theme_name: &str,
+) -> Vec<Line<'static>> {
+    let syntax = syntax_for_file(filename);
+    let theme = get_theme(theme_name);
+    let mut highlighter = syntax.map(|s| HighlightLines::new(s, theme));
+
     patch
         .lines()
         .enumerate()
         .map(|(i, line)| {
             let is_selected = i == selected_line;
-            let mut style = get_line_style(line);
+            let (line_type, content) = classify_line(line);
+
+            let mut spans = build_line_spans(line_type, line, content, &mut highlighter);
 
             if is_selected {
-                style = style.add_modifier(Modifier::REVERSED);
+                for span in &mut spans {
+                    span.style = span.style.add_modifier(Modifier::REVERSED);
+                }
             }
 
-            Line::from(vec![Span::styled(line.to_string(), style)])
+            Line::from(spans)
         })
         .collect()
 }
 
-fn get_line_style(line: &str) -> Style {
-    if line.starts_with('+') && !line.starts_with("+++") {
-        Style::default().fg(Color::Green)
-    } else if line.starts_with('-') && !line.starts_with("---") {
-        Style::default().fg(Color::Red)
-    } else if line.starts_with("@@") {
-        Style::default().fg(Color::Cyan)
-    } else if line.starts_with("diff ") || line.starts_with("index ") {
-        Style::default().fg(Color::Yellow)
-    } else {
-        Style::default()
+fn build_line_spans(
+    line_type: LineType,
+    original_line: &str,
+    content: &str,
+    highlighter: &mut Option<HighlightLines<'_>>,
+) -> Vec<Span<'static>> {
+    match line_type {
+        LineType::Header => {
+            vec![Span::styled(
+                original_line.to_string(),
+                Style::default().fg(Color::Cyan),
+            )]
+        }
+        LineType::Meta => {
+            vec![Span::styled(
+                original_line.to_string(),
+                Style::default().fg(Color::Yellow),
+            )]
+        }
+        LineType::Added => {
+            let marker = Span::styled("+", Style::default().fg(Color::Green));
+            let code_spans = highlight_or_fallback(content, highlighter, Color::Green);
+            std::iter::once(marker).chain(code_spans).collect()
+        }
+        LineType::Removed => {
+            let marker = Span::styled("-", Style::default().fg(Color::Red));
+            let code_spans = highlight_or_fallback(content, highlighter, Color::Red);
+            std::iter::once(marker).chain(code_spans).collect()
+        }
+        LineType::Context => {
+            let marker = Span::styled(" ", Style::default());
+            let code_spans = highlight_or_fallback(content, highlighter, Color::Reset);
+            std::iter::once(marker).chain(code_spans).collect()
+        }
+    }
+}
+
+fn highlight_or_fallback(
+    content: &str,
+    highlighter: &mut Option<HighlightLines<'_>>,
+    fallback_color: Color,
+) -> Vec<Span<'static>> {
+    match highlighter {
+        Some(h) => {
+            let spans = highlight_code_line(content, h);
+            if spans.is_empty() {
+                // Empty content, return empty span
+                vec![Span::raw(content.to_string())]
+            } else {
+                spans
+            }
+        }
+        None => vec![Span::styled(
+            content.to_string(),
+            Style::default().fg(fallback_color),
+        )],
     }
 }
 
@@ -191,7 +256,10 @@ fn render_suggestion_preview(frame: &mut Frame, app: &App, area: ratatui::layout
                 Style::default().fg(Color::DarkGray),
             )]),
             Line::from(vec![Span::styled(
-                format!("```suggestion\n{}\n```", suggestion.suggested_code.trim_end()),
+                format!(
+                    "```suggestion\n{}\n```",
+                    suggestion.suggested_code.trim_end()
+                ),
                 Style::default().fg(Color::White),
             )]),
         ]

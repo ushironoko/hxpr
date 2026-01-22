@@ -60,11 +60,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         .split(frame.area());
 
     // Header
-    let comment_count = app
-        .review_comments
-        .as_ref()
-        .map(|c| c.len())
-        .unwrap_or(0);
+    let comment_count = app.review_comments.as_ref().map(|c| c.len()).unwrap_or(0);
     let header = Paragraph::new(format!("Review Comments ({})", comment_count))
         .block(Block::default().borders(Borders::ALL).title("octorus"));
     frame.render_widget(header, chunks[0]);
@@ -102,10 +98,7 @@ pub fn render(frame: &mut Frame, app: &App) {
                     };
 
                     // First line: author, file, line
-                    let line_info = comment
-                        .line
-                        .map(|l| format!(":{}", l))
-                        .unwrap_or_default();
+                    let line_info = comment.line.map(|l| format!(":{}", l)).unwrap_or_default();
                     let header_line = Line::from(vec![
                         Span::raw(prefix),
                         Span::styled(
@@ -120,11 +113,7 @@ pub fn render(frame: &mut Frame, app: &App) {
                     ]);
 
                     // Wrap comment body to multiple lines
-                    let body_text: String = comment
-                        .body
-                        .lines()
-                        .collect::<Vec<_>>()
-                        .join(" ");
+                    let body_text: String = comment.body.lines().collect::<Vec<_>>().join(" ");
                     let wrapped_lines = wrap_text(&body_text, body_width);
 
                     let mut lines = vec![header_line];
@@ -148,8 +137,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     }
 
     // Footer
-    let footer =
-        Paragraph::new("j/k: move | Enter: jump to file | q/Esc: back")
-            .block(Block::default().borders(Borders::ALL));
+    let footer = Paragraph::new("j/k: move | Enter: jump to file | q/Esc: back")
+        .block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, chunks[2]);
 }

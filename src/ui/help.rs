@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::app::App;
+use crate::syntax::available_themes;
 
 pub fn render(frame: &mut Frame, _app: &App) {
     let chunks = Layout::default()
@@ -76,6 +77,18 @@ pub fn render(frame: &mut Frame, _app: &App) {
         )]),
         Line::from("  Enter           Submit comment/suggestion"),
         Line::from("  Esc             Cancel"),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "Available Themes",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(format!("  {}", available_themes().join(", "))),
+        Line::from(vec![Span::styled(
+            "  Set in ~/.config/octorus/config.toml: [diff] theme = \"Dracula\"",
+            Style::default().fg(Color::DarkGray),
+        )]),
         Line::from(""),
         Line::from(vec![Span::styled(
             "Press q or ? to close this help",

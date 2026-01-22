@@ -16,6 +16,7 @@ mod diff;
 mod editor;
 mod github;
 mod loader;
+mod syntax;
 mod ui;
 
 #[derive(Parser, Debug)]
@@ -59,6 +60,13 @@ fn setup_panic_hook() {
 async fn main() -> Result<()> {
     // Set up panic hook before anything else
     setup_panic_hook();
+
+    // Pre-initialize syntax highlighting in background to avoid delay on first diff view
+    std::thread::spawn(|| {
+        let _ = syntax::syntax_set();
+        let _ = syntax::theme_set();
+    });
+
     let args = Args::parse();
     let config = config::Config::load()?;
 
@@ -73,23 +81,13 @@ async fn main() -> Result<()> {
         match cache::read_cache(&args.repo, args.pr, args.cache_ttl) {
             Ok(cache::CacheResult::Hit(entry)) => {
                 let pr_updated_at = entry.pr_updated_at;
-                let (app, tx) = app::App::new_with_cache(
-                    &args.repo,
-                    args.pr,
-                    config,
-                    entry.pr,
-                    entry.files,
-                );
+                let (app, tx) =
+                    app::App::new_with_cache(&args.repo, args.pr, config, entry.pr, entry.files);
                 (app, tx, loader::FetchMode::CheckUpdate(pr_updated_at))
             }
             Ok(cache::CacheResult::Stale(entry)) => {
-                let (app, tx) = app::App::new_with_cache(
-                    &args.repo,
-                    args.pr,
-                    config,
-                    entry.pr,
-                    entry.files,
-                );
+                let (app, tx) =
+                    app::App::new_with_cache(&args.repo, args.pr, config, entry.pr, entry.files);
                 (app, tx, loader::FetchMode::Fresh)
             }
             Ok(cache::CacheResult::Miss) | Err(_) => {

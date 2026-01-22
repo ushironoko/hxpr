@@ -38,7 +38,10 @@ pub enum FieldValue<'a> {
 }
 
 /// Execute gh api with method and fields
-pub async fn gh_api_post(endpoint: &str, fields: &[(&str, FieldValue<'_>)]) -> Result<serde_json::Value> {
+pub async fn gh_api_post(
+    endpoint: &str,
+    fields: &[(&str, FieldValue<'_>)],
+) -> Result<serde_json::Value> {
     let mut args = vec![
         "api".to_string(),
         "--method".to_string(),
