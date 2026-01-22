@@ -51,8 +51,8 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
 
 pub fn render(frame: &mut Frame, app: &App) {
     // Handle detail mode separately
-    if app.issue_comment_detail_mode {
-        render_issue_detail(frame, app);
+    if app.discussion_comment_detail_mode {
+        render_discussion_detail(frame, app);
         return;
     }
 
@@ -71,13 +71,13 @@ pub fn render(frame: &mut Frame, app: &App) {
     // Content based on active tab
     match app.comment_tab {
         CommentTab::Review => render_review_comments(frame, app, chunks[1]),
-        CommentTab::Issue => render_issue_comments(frame, app, chunks[1]),
+        CommentTab::Discussion => render_discussion_comments(frame, app, chunks[1]),
     }
 
     // Footer
     let footer_text = match app.comment_tab {
         CommentTab::Review => "j/k: move | Enter: jump to file | [/]: switch tab | q: back",
-        CommentTab::Issue => "j/k: move | Enter: view detail | [/]: switch tab | q: back",
+        CommentTab::Discussion => "j/k: move | Enter: view detail | [/]: switch tab | q: back",
     };
     let footer = Paragraph::new(footer_text).block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, chunks[2]);
@@ -85,7 +85,7 @@ pub fn render(frame: &mut Frame, app: &App) {
 
 fn render_tab_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let review_count = app.review_comments.as_ref().map(|c| c.len()).unwrap_or(0);
-    let issue_count = app.issue_comments.as_ref().map(|c| c.len()).unwrap_or(0);
+    let discussion_count = app.discussion_comments.as_ref().map(|c| c.len()).unwrap_or(0);
 
     let review_style = if app.comment_tab == CommentTab::Review {
         Style::default()
@@ -95,7 +95,7 @@ fn render_tab_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
         Style::default().fg(Color::DarkGray)
     };
 
-    let issue_style = if app.comment_tab == CommentTab::Issue {
+    let discussion_style = if app.comment_tab == CommentTab::Discussion {
         Style::default()
             .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD)
@@ -125,10 +125,10 @@ fn render_tab_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
         Span::styled(
             format!(
                 "[Discussion ({})]{}",
-                issue_count,
-                loading_indicator(app.issue_comments_loading)
+                discussion_count,
+                loading_indicator(app.discussion_comments_loading)
             ),
-            issue_style,
+            discussion_style,
         ),
     ]);
 
@@ -216,8 +216,8 @@ fn render_review_comments(frame: &mut Frame, app: &App, area: ratatui::layout::R
     frame.render_widget(list, area);
 }
 
-fn render_issue_comments(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    if app.issue_comments_loading && app.issue_comments.is_none() {
+fn render_discussion_comments(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    if app.discussion_comments_loading && app.discussion_comments.is_none() {
         let loading = Paragraph::new("Loading discussion comments...")
             .style(Style::default().fg(Color::Yellow))
             .block(Block::default().borders(Borders::ALL));
@@ -225,7 +225,7 @@ fn render_issue_comments(frame: &mut Frame, app: &App, area: ratatui::layout::Re
         return;
     }
 
-    let Some(ref comments) = app.issue_comments else {
+    let Some(ref comments) = app.discussion_comments else {
         let empty = Paragraph::new("No discussion comments")
             .style(Style::default().fg(Color::DarkGray))
             .block(Block::default().borders(Borders::ALL));
@@ -248,7 +248,7 @@ fn render_issue_comments(frame: &mut Frame, app: &App, area: ratatui::layout::Re
         .iter()
         .enumerate()
         .map(|(i, comment)| {
-            let is_selected = i == app.selected_issue_comment;
+            let is_selected = i == app.selected_discussion_comment;
             let prefix = if is_selected { "> " } else { "  " };
 
             let style = if is_selected {
@@ -304,11 +304,11 @@ fn render_issue_comments(frame: &mut Frame, app: &App, area: ratatui::layout::Re
     frame.render_widget(list, area);
 }
 
-fn render_issue_detail(frame: &mut Frame, app: &App) {
-    let Some(ref comments) = app.issue_comments else {
+fn render_discussion_detail(frame: &mut Frame, app: &App) {
+    let Some(ref comments) = app.discussion_comments else {
         return;
     };
-    let Some(comment) = comments.get(app.selected_issue_comment) else {
+    let Some(comment) = comments.get(app.selected_discussion_comment) else {
         return;
     };
 
@@ -347,7 +347,7 @@ fn render_issue_detail(frame: &mut Frame, app: &App) {
     let body_lines: Vec<Line> = comment
         .body
         .lines()
-        .skip(app.issue_comment_detail_scroll)
+        .skip(app.discussion_comment_detail_scroll)
         .take(content_height)
         .map(|line| Line::from(line.to_string()))
         .collect();
@@ -356,7 +356,7 @@ fn render_issue_detail(frame: &mut Frame, app: &App) {
     let scroll_info = if total_lines > content_height {
         format!(
             " ({}/{})",
-            app.issue_comment_detail_scroll + 1,
+            app.discussion_comment_detail_scroll + 1,
             total_lines.saturating_sub(content_height) + 1
         )
     } else {

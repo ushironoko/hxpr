@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 use xdg::BaseDirectories;
 
-use crate::github::comment::{IssueComment, ReviewComment};
+use crate::github::comment::{DiscussionComment, ReviewComment};
 use crate::github::{ChangedFile, PullRequest};
 
 #[allow(dead_code)]
@@ -92,7 +92,7 @@ pub fn invalidate_cache(repo: &str, pr_number: u32) -> Result<()> {
     Ok(())
 }
 
-/// 全キャッシュ削除（PR + コメント + Issue コメント）
+/// 全キャッシュ削除（PR + コメント + ディスカッションコメント）
 pub fn invalidate_all_cache(repo: &str, pr_number: u32) -> Result<()> {
     // PR cache
     let pr_path = cache_file_path(repo, pr_number);
@@ -104,10 +104,10 @@ pub fn invalidate_all_cache(repo: &str, pr_number: u32) -> Result<()> {
     if comment_path.exists() {
         std::fs::remove_file(comment_path)?;
     }
-    // Issue comment cache
-    let issue_comment_path = issue_comment_cache_file_path(repo, pr_number);
-    if issue_comment_path.exists() {
-        std::fs::remove_file(issue_comment_path)?;
+    // Discussion comment cache
+    let discussion_comment_path = discussion_comment_cache_file_path(repo, pr_number);
+    if discussion_comment_path.exists() {
+        std::fs::remove_file(discussion_comment_path)?;
     }
     Ok(())
 }
@@ -168,33 +168,33 @@ pub fn write_comment_cache(repo: &str, pr_number: u32, comments: &[ReviewComment
     Ok(())
 }
 
-// ==================== Issue Comment Cache ====================
+// ==================== Discussion Comment Cache ====================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IssueCommentCacheEntry {
-    pub comments: Vec<IssueComment>,
+pub struct DiscussionCommentCacheEntry {
+    pub comments: Vec<DiscussionComment>,
     pub created_at: u64,
 }
 
-/// Issue コメントキャッシュファイルパス: ~/.cache/octorus/{owner}_{repo}_{pr}_issue_comments.json
-pub fn issue_comment_cache_file_path(repo: &str, pr_number: u32) -> PathBuf {
+/// ディスカッションコメントキャッシュファイルパス: ~/.cache/octorus/{owner}_{repo}_{pr}_discussion_comments.json
+pub fn discussion_comment_cache_file_path(repo: &str, pr_number: u32) -> PathBuf {
     let sanitized = repo.replace('/', "_");
-    cache_dir().join(format!("{}_{}_issue_comments.json", sanitized, pr_number))
+    cache_dir().join(format!("{}_{}_discussion_comments.json", sanitized, pr_number))
 }
 
-/// Issue コメントキャッシュ読み込み
-pub fn read_issue_comment_cache(
+/// ディスカッションコメントキャッシュ読み込み
+pub fn read_discussion_comment_cache(
     repo: &str,
     pr_number: u32,
     ttl_secs: u64,
-) -> Result<CacheResult<IssueCommentCacheEntry>> {
-    let path = issue_comment_cache_file_path(repo, pr_number);
+) -> Result<CacheResult<DiscussionCommentCacheEntry>> {
+    let path = discussion_comment_cache_file_path(repo, pr_number);
     if !path.exists() {
         return Ok(CacheResult::Miss);
     }
 
     let content = std::fs::read_to_string(&path)?;
-    let entry: IssueCommentCacheEntry = serde_json::from_str(&content)?;
+    let entry: DiscussionCommentCacheEntry = serde_json::from_str(&content)?;
 
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)?
@@ -208,15 +208,15 @@ pub fn read_issue_comment_cache(
     }
 }
 
-/// Issue コメントキャッシュ書き込み
-pub fn write_issue_comment_cache(
+/// ディスカッションコメントキャッシュ書き込み
+pub fn write_discussion_comment_cache(
     repo: &str,
     pr_number: u32,
-    comments: &[IssueComment],
+    comments: &[DiscussionComment],
 ) -> Result<()> {
     std::fs::create_dir_all(cache_dir())?;
 
-    let entry = IssueCommentCacheEntry {
+    let entry = DiscussionCommentCacheEntry {
         comments: comments.to_vec(),
         created_at: SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)?
@@ -224,6 +224,6 @@ pub fn write_issue_comment_cache(
     };
 
     let content = serde_json::to_string_pretty(&entry)?;
-    std::fs::write(issue_comment_cache_file_path(repo, pr_number), content)?;
+    std::fs::write(discussion_comment_cache_file_path(repo, pr_number), content)?;
     Ok(())
 }

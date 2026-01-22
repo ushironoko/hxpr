@@ -20,19 +20,22 @@ pub async fn fetch_review_comments(repo: &str, pr_number: u32) -> Result<Vec<Rev
     serde_json::from_value(json).context("Failed to parse review comments response")
 }
 
-/// Issue コメント（PR 全体へのコメント）
+/// ディスカッションコメント（PRの会話タブのコメント）
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IssueComment {
+pub struct DiscussionComment {
     pub id: u64,
     pub body: String,
     pub user: User,
     pub created_at: String,
 }
 
-pub async fn fetch_issue_comments(repo: &str, pr_number: u32) -> Result<Vec<IssueComment>> {
+pub async fn fetch_discussion_comments(
+    repo: &str,
+    pr_number: u32,
+) -> Result<Vec<DiscussionComment>> {
     let endpoint = format!("repos/{}/issues/{}/comments", repo, pr_number);
     let json = gh_api(&endpoint).await?;
-    serde_json::from_value(json).context("Failed to parse issue comments response")
+    serde_json::from_value(json).context("Failed to parse discussion comments response")
 }
 
 /// PR レビュー（全体コメント）
