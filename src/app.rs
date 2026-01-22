@@ -115,7 +115,6 @@ impl App {
         files: Vec<ChangedFile>,
     ) -> (Self, mpsc::Sender<DataLoadResult>) {
         let (tx, rx) = mpsc::channel(2);
-
         let diff_line_count = Self::calc_diff_line_count(&files, 0);
 
         let app = Self {

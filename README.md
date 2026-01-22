@@ -12,7 +12,7 @@ A TUI tool for GitHub PR review with Vim-style keybindings.
 ## Features
 
 - Browse changed files in a PR
-- View diffs with syntax highlighting (via delta, diff-so-fancy, etc.)
+- View diffs with syntax highlighting
 - Add inline comments on specific lines
 - Add code suggestions
 - View and navigate review comments with jump-to-line
@@ -99,11 +99,6 @@ Create `~/.config/octorus/config.toml`:
 ```toml
 # Editor to use for writing comments
 editor = "hx"
-
-[diff]
-renderer = "delta"
-side_by_side = true
-line_numbers = true
 
 [keybindings]
 approve = 'a'
