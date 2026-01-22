@@ -769,19 +769,47 @@ impl App {
             let pr_number = self.pr_number;
 
             tokio::spawn(async move {
-                match github::comment::fetch_issue_comments(&repo, pr_number).await {
-                    Ok(comments) => {
-                        if let Err(e) =
-                            crate::cache::write_issue_comment_cache(&repo, pr_number, &comments)
-                        {
-                            eprintln!("Warning: Failed to write issue comment cache: {}", e);
+                // Fetch both issue comments and reviews
+                let issue_comments_result =
+                    github::comment::fetch_issue_comments(&repo, pr_number).await;
+                let reviews_result = github::comment::fetch_reviews(&repo, pr_number).await;
+
+                // Combine results
+                let mut all_comments: Vec<IssueComment> = Vec::new();
+
+                // Add issue comments
+                if let Ok(comments) = issue_comments_result {
+                    all_comments.extend(comments);
+                }
+
+                // Convert reviews to IssueComment format (only those with body)
+                if let Ok(reviews) = reviews_result {
+                    for review in reviews {
+                        if let Some(body) = review.body {
+                            if !body.trim().is_empty() {
+                                all_comments.push(IssueComment {
+                                    id: review.id,
+                                    body,
+                                    user: review.user,
+                                    created_at: review
+                                        .submitted_at
+                                        .unwrap_or_else(|| String::new()),
+                                });
+                            }
                         }
-                        let _ = tx.send(Ok(comments)).await;
-                    }
-                    Err(e) => {
-                        let _ = tx.send(Err(e.to_string())).await;
                     }
                 }
+
+                // Sort by created_at
+                all_comments.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+
+                // Cache and send
+                if let Err(e) =
+                    crate::cache::write_issue_comment_cache(&repo, pr_number, &all_comments)
+                {
+                    eprintln!("Warning: Failed to write issue comment cache: {}", e);
+                }
+                let _ = tx.send(Ok(all_comments)).await;
             });
         }
     }
