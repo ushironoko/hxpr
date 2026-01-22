@@ -14,12 +14,12 @@
 use std::io::Cursor;
 use std::sync::OnceLock;
 
-use xdg::BaseDirectories;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
+use xdg::BaseDirectories;
 
 static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
 static THEME_SET: OnceLock<ThemeSet> = OnceLock::new();
@@ -78,11 +78,7 @@ fn load_all_themes() -> ThemeSet {
 
 /// List all available theme names.
 pub fn available_themes() -> Vec<&'static str> {
-    theme_set()
-        .themes
-        .keys()
-        .map(|s| s.as_str())
-        .collect()
+    theme_set().themes.keys().map(|s| s.as_str()).collect()
 }
 
 /// Get the SyntaxReference for a file based on its extension.
@@ -218,7 +214,10 @@ mod tests {
         assert!(syntax_for_file("style.css").is_some());
         assert!(syntax_for_file("index.html").is_some());
         // Test with path-like filenames (as returned by GitHub API)
-        assert!(syntax_for_file("src/app.rs").is_some(), "src/app.rs should have syntax");
+        assert!(
+            syntax_for_file("src/app.rs").is_some(),
+            "src/app.rs should have syntax"
+        );
         assert!(syntax_for_file("src/ui/diff_view.rs").is_some());
     }
 
@@ -263,7 +262,10 @@ mod tests {
         assert!(let_style.fg.is_some(), "'let' should have foreground color");
 
         // Verify that background color is NOT applied (we preserve terminal background)
-        assert!(let_style.bg.is_none(), "'let' should NOT have background color");
+        assert!(
+            let_style.bg.is_none(),
+            "'let' should NOT have background color"
+        );
     }
 
     #[test]

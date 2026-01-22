@@ -65,8 +65,9 @@ pub fn render(frame: &mut Frame, _app: &App) {
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )]),
+        Line::from("  [, ]            Switch tab (Review/Discussion)"),
         Line::from("  j/k, Down/Up    Move selection"),
-        Line::from("  Enter           Jump to file/line"),
+        Line::from("  Enter           Review: Jump to file | Discussion: View detail"),
         Line::from("  q, Esc          Back to file list"),
         Line::from(""),
         Line::from(vec![Span::styled(

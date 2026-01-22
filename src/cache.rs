@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 use xdg::BaseDirectories;
 
-use crate::github::comment::ReviewComment;
+use crate::github::comment::{IssueComment, ReviewComment};
 use crate::github::{ChangedFile, PullRequest};
 
 #[allow(dead_code)]
@@ -145,5 +145,65 @@ pub fn write_comment_cache(repo: &str, pr_number: u32, comments: &[ReviewComment
 
     let content = serde_json::to_string_pretty(&entry)?;
     std::fs::write(comment_cache_file_path(repo, pr_number), content)?;
+    Ok(())
+}
+
+// ==================== Issue Comment Cache ====================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueCommentCacheEntry {
+    pub comments: Vec<IssueComment>,
+    pub created_at: u64,
+}
+
+/// Issue コメントキャッシュファイルパス: ~/.cache/octorus/{owner}_{repo}_{pr}_issue_comments.json
+pub fn issue_comment_cache_file_path(repo: &str, pr_number: u32) -> PathBuf {
+    let sanitized = repo.replace('/', "_");
+    cache_dir().join(format!("{}_{}_issue_comments.json", sanitized, pr_number))
+}
+
+/// Issue コメントキャッシュ読み込み
+pub fn read_issue_comment_cache(
+    repo: &str,
+    pr_number: u32,
+    ttl_secs: u64,
+) -> Result<CacheResult<IssueCommentCacheEntry>> {
+    let path = issue_comment_cache_file_path(repo, pr_number);
+    if !path.exists() {
+        return Ok(CacheResult::Miss);
+    }
+
+    let content = std::fs::read_to_string(&path)?;
+    let entry: IssueCommentCacheEntry = serde_json::from_str(&content)?;
+
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)?
+        .as_secs();
+    let age = now.saturating_sub(entry.created_at);
+
+    if age <= ttl_secs {
+        Ok(CacheResult::Hit(entry))
+    } else {
+        Ok(CacheResult::Stale(entry))
+    }
+}
+
+/// Issue コメントキャッシュ書き込み
+pub fn write_issue_comment_cache(
+    repo: &str,
+    pr_number: u32,
+    comments: &[IssueComment],
+) -> Result<()> {
+    std::fs::create_dir_all(cache_dir())?;
+
+    let entry = IssueCommentCacheEntry {
+        comments: comments.to_vec(),
+        created_at: SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)?
+            .as_secs(),
+    };
+
+    let content = serde_json::to_string_pretty(&entry)?;
+    std::fs::write(issue_comment_cache_file_path(repo, pr_number), content)?;
     Ok(())
 }

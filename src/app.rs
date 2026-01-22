@@ -5,7 +5,7 @@ use std::io::Stdout;
 use tokio::sync::mpsc;
 
 use crate::config::Config;
-use crate::github::comment::ReviewComment;
+use crate::github::comment::{IssueComment, ReviewComment};
 use crate::github::{self, ChangedFile, PullRequest};
 use crate::loader::DataLoadResult;
 use crate::ui;
@@ -25,6 +25,13 @@ pub enum ReviewAction {
     Approve,
     RequestChanges,
     Comment,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum CommentTab {
+    #[default]
+    Review,
+    Issue,
 }
 
 #[derive(Debug, Clone)]
@@ -63,13 +70,24 @@ pub struct App {
     pub pending_suggestion: Option<SuggestionData>,
     pub config: Config,
     pub should_quit: bool,
+    // Review comments (inline comments)
     pub review_comments: Option<Vec<ReviewComment>>,
     pub selected_comment: usize,
     pub comment_list_scroll_offset: usize,
     pub comments_loading: bool,
+    // Issue comments (PR discussion)
+    pub issue_comments: Option<Vec<IssueComment>>,
+    pub selected_issue_comment: usize,
+    pub issue_comments_loading: bool,
+    pub issue_comment_detail_mode: bool,
+    pub issue_comment_detail_scroll: usize,
+    // Comment tab state
+    pub comment_tab: CommentTab,
+    // Receivers
     data_receiver: Option<mpsc::Receiver<DataLoadResult>>,
     retry_sender: Option<mpsc::Sender<()>>,
     comment_receiver: Option<mpsc::Receiver<Result<Vec<ReviewComment>, String>>>,
+    issue_comment_receiver: Option<mpsc::Receiver<Result<Vec<IssueComment>, String>>>,
 }
 
 impl App {
@@ -98,9 +116,16 @@ impl App {
             selected_comment: 0,
             comment_list_scroll_offset: 0,
             comments_loading: false,
+            issue_comments: None,
+            selected_issue_comment: 0,
+            issue_comments_loading: false,
+            issue_comment_detail_mode: false,
+            issue_comment_detail_scroll: 0,
+            comment_tab: CommentTab::default(),
             data_receiver: Some(rx),
             retry_sender: None,
             comment_receiver: None,
+            issue_comment_receiver: None,
         };
 
         (app, tx)
@@ -137,9 +162,16 @@ impl App {
             selected_comment: 0,
             comment_list_scroll_offset: 0,
             comments_loading: false,
+            issue_comments: None,
+            selected_issue_comment: 0,
+            issue_comments_loading: false,
+            issue_comment_detail_mode: false,
+            issue_comment_detail_scroll: 0,
+            comment_tab: CommentTab::default(),
             data_receiver: Some(rx),
             retry_sender: None,
             comment_receiver: None,
+            issue_comment_receiver: None,
         };
 
         (app, tx)
@@ -155,6 +187,7 @@ impl App {
         while !self.should_quit {
             self.poll_data_updates();
             self.poll_comment_updates();
+            self.poll_issue_comment_updates();
             terminal.draw(|frame| ui::render(frame, self))?;
             self.handle_input(&mut terminal).await?;
         }
@@ -209,6 +242,38 @@ impl App {
                 }
                 self.comments_loading = false;
                 self.comment_receiver = None;
+            }
+        }
+    }
+
+    /// Issue コメント取得のポーリング
+    fn poll_issue_comment_updates(&mut self) {
+        let Some(ref mut rx) = self.issue_comment_receiver else {
+            return;
+        };
+
+        match rx.try_recv() {
+            Ok(Ok(comments)) => {
+                self.issue_comments = Some(comments);
+                self.selected_issue_comment = 0;
+                self.issue_comments_loading = false;
+                self.issue_comment_receiver = None;
+            }
+            Ok(Err(e)) => {
+                eprintln!("Warning: Failed to fetch issue comments: {}", e);
+                if self.issue_comments.is_none() {
+                    self.issue_comments = Some(vec![]);
+                }
+                self.issue_comments_loading = false;
+                self.issue_comment_receiver = None;
+            }
+            Err(mpsc::error::TryRecvError::Empty) => {}
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                if self.issue_comments.is_none() {
+                    self.issue_comments = Some(vec![]);
+                }
+                self.issue_comments_loading = false;
+                self.issue_comment_receiver = None;
             }
         }
     }
@@ -595,57 +660,117 @@ impl App {
 
     fn open_comment_list(&mut self) {
         self.state = AppState::CommentList;
+        self.issue_comment_detail_mode = false;
+        self.issue_comment_detail_scroll = 0;
 
-        // Try cache first
+        // Load review comments
+        self.load_review_comments();
+        // Load issue comments
+        self.load_issue_comments();
+    }
+
+    fn load_review_comments(&mut self) {
         let cache_result = crate::cache::read_comment_cache(
             &self.repo,
             self.pr_number,
             crate::cache::DEFAULT_TTL_SECS,
         );
 
-        match cache_result {
+        let need_fetch = match cache_result {
             Ok(crate::cache::CacheResult::Hit(entry)) => {
-                // Cache hit (fresh) - show immediately, no background fetch needed
                 self.review_comments = Some(entry.comments);
                 self.selected_comment = 0;
                 self.comment_list_scroll_offset = 0;
                 self.comments_loading = false;
-                return;
+                false
             }
             Ok(crate::cache::CacheResult::Stale(entry)) => {
-                // Stale cache - show immediately, fetch in background to update
                 self.review_comments = Some(entry.comments);
                 self.selected_comment = 0;
                 self.comment_list_scroll_offset = 0;
-                // Mark as loading to indicate background update in progress
                 self.comments_loading = true;
+                true
             }
             _ => {
-                // No cache - show loading
                 self.comments_loading = true;
+                true
             }
         };
 
-        // Start background fetch (for stale cache update or fresh fetch)
-        let (tx, rx) = mpsc::channel(1);
-        self.comment_receiver = Some(rx);
+        if need_fetch {
+            let (tx, rx) = mpsc::channel(1);
+            self.comment_receiver = Some(rx);
 
-        let repo = self.repo.clone();
-        let pr_number = self.pr_number;
+            let repo = self.repo.clone();
+            let pr_number = self.pr_number;
 
-        tokio::spawn(async move {
-            match github::comment::fetch_review_comments(&repo, pr_number).await {
-                Ok(comments) => {
-                    if let Err(e) = crate::cache::write_comment_cache(&repo, pr_number, &comments) {
-                        eprintln!("Warning: Failed to write comment cache: {}", e);
+            tokio::spawn(async move {
+                match github::comment::fetch_review_comments(&repo, pr_number).await {
+                    Ok(comments) => {
+                        if let Err(e) =
+                            crate::cache::write_comment_cache(&repo, pr_number, &comments)
+                        {
+                            eprintln!("Warning: Failed to write comment cache: {}", e);
+                        }
+                        let _ = tx.send(Ok(comments)).await;
                     }
-                    let _ = tx.send(Ok(comments)).await;
+                    Err(e) => {
+                        let _ = tx.send(Err(e.to_string())).await;
+                    }
                 }
-                Err(e) => {
-                    let _ = tx.send(Err(e.to_string())).await;
-                }
+            });
+        }
+    }
+
+    fn load_issue_comments(&mut self) {
+        let cache_result = crate::cache::read_issue_comment_cache(
+            &self.repo,
+            self.pr_number,
+            crate::cache::DEFAULT_TTL_SECS,
+        );
+
+        let need_fetch = match cache_result {
+            Ok(crate::cache::CacheResult::Hit(entry)) => {
+                self.issue_comments = Some(entry.comments);
+                self.selected_issue_comment = 0;
+                self.issue_comments_loading = false;
+                false
             }
-        });
+            Ok(crate::cache::CacheResult::Stale(entry)) => {
+                self.issue_comments = Some(entry.comments);
+                self.selected_issue_comment = 0;
+                self.issue_comments_loading = true;
+                true
+            }
+            _ => {
+                self.issue_comments_loading = true;
+                true
+            }
+        };
+
+        if need_fetch {
+            let (tx, rx) = mpsc::channel(1);
+            self.issue_comment_receiver = Some(rx);
+
+            let repo = self.repo.clone();
+            let pr_number = self.pr_number;
+
+            tokio::spawn(async move {
+                match github::comment::fetch_issue_comments(&repo, pr_number).await {
+                    Ok(comments) => {
+                        if let Err(e) =
+                            crate::cache::write_issue_comment_cache(&repo, pr_number, &comments)
+                        {
+                            eprintln!("Warning: Failed to write issue comment cache: {}", e);
+                        }
+                        let _ = tx.send(Ok(comments)).await;
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Err(e.to_string())).await;
+                    }
+                }
+            });
+        }
     }
 
     async fn handle_comment_list_input(
@@ -655,25 +780,107 @@ impl App {
     ) -> Result<()> {
         let visible_lines = terminal.size()?.height.saturating_sub(8) as usize;
 
+        // Handle detail mode input separately
+        if self.issue_comment_detail_mode {
+            return self.handle_issue_detail_input(key, visible_lines);
+        }
+
         match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => {
+            KeyCode::Char('q') => {
                 self.state = AppState::FileList;
             }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if let Some(ref comments) = self.review_comments {
-                    if !comments.is_empty() {
-                        self.selected_comment =
-                            (self.selected_comment + 1).min(comments.len().saturating_sub(1));
-                        self.adjust_comment_scroll(visible_lines);
+            KeyCode::Esc => {
+                self.state = AppState::FileList;
+            }
+            KeyCode::Char('[') => {
+                self.comment_tab = match self.comment_tab {
+                    CommentTab::Review => CommentTab::Issue,
+                    CommentTab::Issue => CommentTab::Review,
+                };
+            }
+            KeyCode::Char(']') => {
+                self.comment_tab = match self.comment_tab {
+                    CommentTab::Review => CommentTab::Issue,
+                    CommentTab::Issue => CommentTab::Review,
+                };
+            }
+            KeyCode::Char('j') | KeyCode::Down => match self.comment_tab {
+                CommentTab::Review => {
+                    if let Some(ref comments) = self.review_comments {
+                        if !comments.is_empty() {
+                            self.selected_comment =
+                                (self.selected_comment + 1).min(comments.len().saturating_sub(1));
+                            self.adjust_comment_scroll(visible_lines);
+                        }
                     }
                 }
+                CommentTab::Issue => {
+                    if let Some(ref comments) = self.issue_comments {
+                        if !comments.is_empty() {
+                            self.selected_issue_comment = (self.selected_issue_comment + 1)
+                                .min(comments.len().saturating_sub(1));
+                        }
+                    }
+                }
+            },
+            KeyCode::Char('k') | KeyCode::Up => match self.comment_tab {
+                CommentTab::Review => {
+                    self.selected_comment = self.selected_comment.saturating_sub(1);
+                    self.adjust_comment_scroll(visible_lines);
+                }
+                CommentTab::Issue => {
+                    self.selected_issue_comment = self.selected_issue_comment.saturating_sub(1);
+                }
+            },
+            KeyCode::Enter => match self.comment_tab {
+                CommentTab::Review => {
+                    self.jump_to_comment();
+                }
+                CommentTab::Issue => {
+                    // Enter detail mode for issue comment
+                    if self
+                        .issue_comments
+                        .as_ref()
+                        .map(|c| !c.is_empty())
+                        .unwrap_or(false)
+                    {
+                        self.issue_comment_detail_mode = true;
+                        self.issue_comment_detail_scroll = 0;
+                    }
+                }
+            },
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn handle_issue_detail_input(
+        &mut self,
+        key: event::KeyEvent,
+        visible_lines: usize,
+    ) -> Result<()> {
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter => {
+                self.issue_comment_detail_mode = false;
+                self.issue_comment_detail_scroll = 0;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.issue_comment_detail_scroll =
+                    self.issue_comment_detail_scroll.saturating_add(1);
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.selected_comment = self.selected_comment.saturating_sub(1);
-                self.adjust_comment_scroll(visible_lines);
+                self.issue_comment_detail_scroll =
+                    self.issue_comment_detail_scroll.saturating_sub(1);
             }
-            KeyCode::Enter => {
-                self.jump_to_comment();
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.issue_comment_detail_scroll = self
+                    .issue_comment_detail_scroll
+                    .saturating_add(visible_lines / 2);
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.issue_comment_detail_scroll = self
+                    .issue_comment_detail_scroll
+                    .saturating_sub(visible_lines / 2);
             }
             _ => {}
         }
