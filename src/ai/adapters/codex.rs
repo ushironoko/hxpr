@@ -340,6 +340,13 @@ impl CodexAdapter {
         completed: bool,
     ) -> Option<CodexResponse> {
         match item.item_type.as_str() {
+            "reasoning" => {
+                // Stream reasoning/thinking content to logs
+                if let Some(ref text) = item.text {
+                    self.send_event(RallyEvent::AgentThinking(text.clone()))
+                        .await;
+                }
+            }
             "agent_message" => {
                 if completed {
                     // The text field contains the JSON result as a string
