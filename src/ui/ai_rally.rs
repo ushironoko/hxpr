@@ -269,6 +269,9 @@ fn format_log_entry(entry: &LogEntry, is_selected: bool) -> ListItem<'static> {
     // Selection indicator
     let selector = if is_selected { ">" } else { " " };
 
+    // Truncate message for list display (full content available in detail modal)
+    let display_message = truncate_string(&entry.message, 80);
+
     let mut item = ListItem::new(Line::from(vec![
         Span::styled(
             selector.to_string(),
@@ -285,7 +288,7 @@ fn format_log_entry(entry: &LogEntry, is_selected: bool) -> ListItem<'static> {
             format!("{}: ", type_label),
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(entry.message.clone(), Style::default().fg(Color::White)),
+        Span::styled(display_message, Style::default().fg(Color::White)),
     ]));
 
     // Highlight selected row
@@ -351,11 +354,14 @@ fn render_status_bar(frame: &mut Frame, area: Rect, state: &AiRallyState) {
         "Esc/Enter/q: Close detail"
     } else {
         match state.state {
+            // Note: y key handlers for permission/clarification are not yet fully implemented.
+            // They currently display a message indicating the limitation. Users should press 'q'
+            // to abort and manually handle these cases for now.
             RallyState::WaitingForClarification => {
-                "y: Answer | n: Skip | ↑↓: Select | Enter: Detail | q: Abort"
+                "n: Skip | ↑↓: Select | Enter: Detail | q: Abort (clarification: WIP)"
             }
             RallyState::WaitingForPermission => {
-                "y: Grant | n: Deny | ↑↓: Select | Enter: Detail | q: Abort"
+                "n: Deny | ↑↓: Select | Enter: Detail | q: Abort (permission: WIP)"
             }
             RallyState::Completed => "↑↓: Select | Enter: Detail | q: Close",
             RallyState::Error => "r: Retry | ↑↓: Select | Enter: Detail | q: Close",

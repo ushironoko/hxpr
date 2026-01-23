@@ -93,8 +93,14 @@ pub fn write_session(session: &RallySession) -> Result<()> {
 
     // Use tempfile for atomic write
     let temp_path = path.with_extension("tmp");
-    fs::write(&temp_path, content).context("Failed to write temporary session file")?;
-    fs::rename(&temp_path, &path).context("Failed to rename session file")?;
+    fs::write(&temp_path, &content).context("Failed to write temporary session file")?;
+
+    // Attempt rename, clean up temp file on failure
+    if let Err(e) = fs::rename(&temp_path, &path) {
+        // Best effort cleanup of temp file
+        let _ = fs::remove_file(&temp_path);
+        return Err(e).context("Failed to rename session file");
+    }
 
     Ok(())
 }

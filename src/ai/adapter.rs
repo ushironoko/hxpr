@@ -108,6 +108,9 @@ pub struct RevieweeOutput {
 #[async_trait]
 pub trait AgentAdapter: Send + Sync {
     /// Agent name (claude, codex, gemini, etc.)
+    ///
+    /// Currently unused but kept for future extensibility (e.g., logging which agent
+    /// is running, multi-agent coordination, or user-facing agent identification).
     #[allow(dead_code)]
     fn name(&self) -> &str;
 

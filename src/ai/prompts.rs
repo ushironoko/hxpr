@@ -417,7 +417,8 @@ mod tests {
         // Long string - truncated
         let long_str = "This is a very long string that should be truncated";
         let truncated = truncate(long_str, 20);
-        assert!(truncated.len() <= 20);
+        // Use char count for consistency with the truncate function which operates on characters
+        assert!(truncated.chars().count() <= 20);
         assert!(truncated.ends_with("..."));
 
         // Unicode handling

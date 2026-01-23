@@ -137,7 +137,10 @@ impl Orchestrator {
             self.send_event(RallyEvent::IterationStarted(iteration))
                 .await;
 
-            // Update head_sha at start of each iteration (may have changed after push)
+            // Update head_sha at start of each iteration.
+            // Note: The reviewee does NOT push changes; commits are local only.
+            // This update is primarily for when the user manually pushes changes between iterations,
+            // or when external tools/CI update the PR branch.
             if iteration > 1 {
                 if let Err(e) = self.update_head_sha().await {
                     warn!("Failed to update head_sha: {}", e);
@@ -312,9 +315,16 @@ impl Orchestrator {
     /// Continue after clarification answer
     #[allow(dead_code)]
     pub async fn continue_with_clarification(&mut self, answer: &str) -> Result<()> {
-        // Ask reviewer for clarification
+        // Ask reviewer for clarification and log the response
         let prompt = build_clarification_prompt(answer);
-        let _ = self.reviewer_adapter.continue_reviewer(&prompt).await?;
+        let reviewer_response = self.reviewer_adapter.continue_reviewer(&prompt).await?;
+
+        // Log the reviewer's response for debugging/audit purposes
+        self.send_event(RallyEvent::Log(format!(
+            "Reviewer clarification response: {}",
+            reviewer_response.summary
+        )))
+        .await;
 
         // Continue reviewee with the answer
         self.reviewee_adapter.continue_reviewee(answer).await?;
@@ -425,9 +435,13 @@ impl Orchestrator {
 
         // Post summary comment using gh pr review
         // If approve fails (e.g., can't approve own PR), fall back to comment
-        let result =
-            github::submit_review(&self.repo, self.pr_number, app_action.clone(), &review.summary)
-                .await;
+        let result = github::submit_review(
+            &self.repo,
+            self.pr_number,
+            app_action,
+            &review.summary,
+        )
+        .await;
 
         if result.is_err() && matches!(app_action, crate::app::ReviewAction::Approve) {
             warn!("Approve failed, falling back to comment");

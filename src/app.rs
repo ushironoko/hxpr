@@ -391,11 +391,10 @@ impl App {
                                     .push(LogEntry::new(LogEventType::Info, msg.clone()));
                             }
                             RallyEvent::AgentThinking(content) => {
-                                // Truncate thinking content for display (char-safe)
-                                let display = truncate_chars(content, 100);
+                                // Store full content; truncation happens at display time
                                 rally_state
                                     .logs
-                                    .push(LogEntry::new(LogEventType::Thinking, display));
+                                    .push(LogEntry::new(LogEventType::Thinking, content.clone()));
                             }
                             RallyEvent::AgentToolUse(tool_name, input) => {
                                 rally_state.logs.push(LogEntry::new(
@@ -404,19 +403,17 @@ impl App {
                                 ));
                             }
                             RallyEvent::AgentToolResult(tool_name, result) => {
-                                // Truncate result for display (char-safe)
-                                let display = truncate_chars(result, 80);
+                                // Store full content; truncation happens at display time
                                 rally_state.logs.push(LogEntry::new(
                                     LogEventType::ToolResult,
-                                    format!("{}: {}", tool_name, display),
+                                    format!("{}: {}", tool_name, result),
                                 ));
                             }
                             RallyEvent::AgentText(text) => {
-                                // Truncate text for display (char-safe)
-                                let display = truncate_chars(text, 100);
+                                // Store full content; truncation happens at display time
                                 rally_state
                                     .logs
-                                    .push(LogEntry::new(LogEventType::Text, display));
+                                    .push(LogEntry::new(LogEventType::Text, text.clone()));
                             }
                             RallyEvent::ReviewCompleted(_) => {
                                 rally_state.logs.push(LogEntry::new(
@@ -1428,19 +1425,5 @@ impl App {
         }
 
         None
-    }
-}
-
-/// Truncate string by character count (UTF-8 safe)
-fn truncate_chars(s: &str, max_chars: usize) -> String {
-    let char_count = s.chars().count();
-    if char_count <= max_chars {
-        s.to_string()
-    } else if max_chars <= 3 {
-        // When max_chars is too small for ellipsis, just take max_chars chars without ellipsis
-        s.chars().take(max_chars).collect()
-    } else {
-        let truncated: String = s.chars().take(max_chars.saturating_sub(3)).collect();
-        format!("{}...", truncated)
     }
 }

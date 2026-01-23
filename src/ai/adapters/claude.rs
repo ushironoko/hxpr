@@ -275,7 +275,9 @@ impl AgentAdapter for ClaudeAdapter {
         // - Read/Glob/Grep: File reading and searching
         // - gh pr view/diff/checks: View PR information
         // - gh api (GET only): Read-only API calls
-        let allowed_tools = "Read,Glob,Grep,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh api repos:*)";
+        //   Note: We require explicit --method GET or -X GET to prevent POST/PUT/DELETE operations.
+        //   The pattern `gh api repos:*` was too permissive as it allowed write operations.
+        let allowed_tools = "Read,Glob,Grep,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh api --method GET:*),Bash(gh api -X GET:*)";
 
         let response = self
             .run_claude_streaming(
@@ -301,9 +303,14 @@ impl AgentAdapter for ClaudeAdapter {
         // - git restore . (discards all changes)
         // - npm publish, pnpm publish, bun publish
         // - cargo publish
+        // - gh pr close/merge/edit (could modify PR state unexpectedly)
         //
         // Note: git push is NOT allowed. The reviewee only makes local commits.
         // Pushing is done manually by the user after reviewing the changes.
+        //
+        // GitHub CLI: Only safe, read-only PR operations (view, diff, checks) are allowed.
+        // Excluded dangerous commands: gh pr close, gh pr merge, gh pr edit, gh pr ready, gh pr reopen
+        // API calls require explicit --method GET or -X GET to prevent write operations.
         let allowed_tools = concat!(
             "Read,Edit,Write,Glob,Grep,",
             // Git: local operations only (no push, no destructive operations)
@@ -312,8 +319,10 @@ impl AgentAdapter for ClaudeAdapter {
             "Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git commit:*),",
             "Bash(git log:*),Bash(git show:*),Bash(git branch:*),Bash(git switch:*),",
             "Bash(git stash:*),",
-            // GitHub CLI: PR operations only (no repo admin)
-            "Bash(gh pr:*),Bash(gh api repos:*),",
+            // GitHub CLI: Only safe, read-only PR operations (view, diff, checks)
+            "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),",
+            // GitHub API: Only GET requests (read-only)
+            "Bash(gh api --method GET:*),Bash(gh api -X GET:*),",
             // Cargo: build, test, check, clippy, fmt (no publish)
             "Bash(cargo build:*),Bash(cargo test:*),Bash(cargo check:*),",
             "Bash(cargo clippy:*),Bash(cargo fmt:*),Bash(cargo run:*),",

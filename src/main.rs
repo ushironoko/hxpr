@@ -114,9 +114,23 @@ async fn main() -> Result<()> {
     if let Some(dir) = args.working_dir.clone() {
         app.set_working_dir(Some(dir));
     } else {
-        // Use current directory as default
-        if let Ok(cwd) = std::env::current_dir() {
-            app.set_working_dir(Some(cwd.to_string_lossy().to_string()));
+        // Use current directory as default.
+        // Note: current_dir() can fail in edge cases (e.g., if the current directory
+        // has been deleted, or on some restricted environments). When --ai-rally is
+        // used without --working-dir, we need a valid directory for the AI agents.
+        match std::env::current_dir() {
+            Ok(cwd) => {
+                app.set_working_dir(Some(cwd.to_string_lossy().to_string()));
+            }
+            Err(e) => {
+                if args.ai_rally {
+                    eprintln!(
+                        "Warning: Failed to get current directory: {}. AI Rally may not work correctly without --working-dir.",
+                        e
+                    );
+                }
+                // Continue without setting working_dir; it's optional for non-AI-Rally usage
+            }
         }
     }
 
