@@ -97,9 +97,9 @@ async fn main() -> Result<()> {
     let repo = args.repo.ok_or_else(|| {
         anyhow::anyhow!("--repo is required. Use 'or --repo owner/repo --pr 123'")
     })?;
-    let pr = args.pr.ok_or_else(|| {
-        anyhow::anyhow!("--pr is required. Use 'or --repo owner/repo --pr 123'")
-    })?;
+    let pr = args
+        .pr
+        .ok_or_else(|| anyhow::anyhow!("--pr is required. Use 'or --repo owner/repo --pr 123'"))?;
 
     // Pre-initialize syntax highlighting in background to avoid delay on first diff view
     std::thread::spawn(|| {
@@ -122,13 +122,11 @@ async fn main() -> Result<()> {
         match cache::read_cache(&repo, pr, args.cache_ttl) {
             Ok(cache::CacheResult::Hit(entry)) => {
                 let pr_updated_at = entry.pr_updated_at;
-                let (app, tx) =
-                    app::App::new_with_cache(&repo, pr, config, entry.pr, entry.files);
+                let (app, tx) = app::App::new_with_cache(&repo, pr, config, entry.pr, entry.files);
                 (app, tx, loader::FetchMode::CheckUpdate(pr_updated_at))
             }
             Ok(cache::CacheResult::Stale(entry)) => {
-                let (app, tx) =
-                    app::App::new_with_cache(&repo, pr, config, entry.pr, entry.files);
+                let (app, tx) = app::App::new_with_cache(&repo, pr, config, entry.pr, entry.files);
                 (app, tx, loader::FetchMode::Fresh)
             }
             Ok(cache::CacheResult::Miss) | Err(_) => {

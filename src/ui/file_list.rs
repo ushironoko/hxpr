@@ -6,8 +6,8 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, DataState};
 use super::common::render_rally_status_bar;
+use crate::app::{App, DataState};
 
 pub fn render(frame: &mut Frame, app: &App) {
     let has_rally = app.has_background_rally();

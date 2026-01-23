@@ -7,10 +7,10 @@ use ratatui::{
 };
 use syntect::easy::HighlightLines;
 
+use super::common::render_rally_status_bar;
 use crate::app::App;
 use crate::diff::{classify_line, LineType};
 use crate::syntax::{get_theme, highlight_code_line, syntax_for_file};
-use super::common::render_rally_status_bar;
 
 pub fn render(frame: &mut Frame, app: &App) {
     let has_rally = app.has_background_rally();

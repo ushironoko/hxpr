@@ -30,16 +30,18 @@ const DEFAULT_REREVIEW_PROMPT: &str = include_str!("ai/defaults/rereview.md");
 
 /// Run the init command
 pub fn run_init(force: bool) -> Result<()> {
-    let base_dirs = BaseDirectories::with_prefix("octorus")
-        .context("Failed to get config directory")?;
+    let base_dirs =
+        BaseDirectories::with_prefix("octorus").context("Failed to get config directory")?;
 
     let config_home = base_dirs.get_config_home();
 
     // Create config directory if needed
     if !config_home.exists() {
-        println!("Creating configuration directory: {}", config_home.display());
-        fs::create_dir_all(&config_home)
-            .context("Failed to create config directory")?;
+        println!(
+            "Creating configuration directory: {}",
+            config_home.display()
+        );
+        fs::create_dir_all(&config_home).context("Failed to create config directory")?;
     }
 
     // Write config.toml
@@ -50,8 +52,7 @@ pub fn run_init(force: bool) -> Result<()> {
     let prompts_dir = config_home.join("prompts");
     if !prompts_dir.exists() {
         println!("Creating prompts directory: {}", prompts_dir.display());
-        fs::create_dir_all(&prompts_dir)
-            .context("Failed to create prompts directory")?;
+        fs::create_dir_all(&prompts_dir).context("Failed to create prompts directory")?;
     }
 
     // Write prompt templates
@@ -77,7 +78,10 @@ pub fn run_init(force: bool) -> Result<()> {
     println!();
     println!("Initialization complete!");
     println!();
-    println!("You can customize prompts by editing files in {}", prompts_dir.display());
+    println!(
+        "You can customize prompts by editing files in {}",
+        prompts_dir.display()
+    );
     println!("Available template variables: {{{{repo}}}}, {{{{pr_number}}}}, {{{{pr_title}}}}, {{{{diff}}}}, etc.");
 
     Ok(())
@@ -86,13 +90,15 @@ pub fn run_init(force: bool) -> Result<()> {
 /// Write a file if it doesn't exist or force is true
 fn write_file_if_needed(path: &PathBuf, content: &str, force: bool, name: &str) -> Result<()> {
     if path.exists() && !force {
-        println!("Skipping {} (already exists, use --force to overwrite)", name);
+        println!(
+            "Skipping {} (already exists, use --force to overwrite)",
+            name
+        );
         return Ok(());
     }
 
     println!("Writing {}...", name);
-    fs::write(path, content)
-        .with_context(|| format!("Failed to write {}", name))?;
+    fs::write(path, content).with_context(|| format!("Failed to write {}", name))?;
     Ok(())
 }
 
@@ -107,7 +113,10 @@ mod tests {
         let config_home = temp_dir.path().join("octorus");
 
         if !config_home.exists() {
-            println!("Creating configuration directory: {}", config_home.display());
+            println!(
+                "Creating configuration directory: {}",
+                config_home.display()
+            );
             fs::create_dir_all(&config_home)?;
         }
 
@@ -152,9 +161,18 @@ mod tests {
         let prompts_dir = temp_dir.path().join("octorus/prompts");
 
         assert!(config_path.exists(), "config.toml should exist");
-        assert!(prompts_dir.join("reviewer.md").exists(), "reviewer.md should exist");
-        assert!(prompts_dir.join("reviewee.md").exists(), "reviewee.md should exist");
-        assert!(prompts_dir.join("rereview.md").exists(), "rereview.md should exist");
+        assert!(
+            prompts_dir.join("reviewer.md").exists(),
+            "reviewer.md should exist"
+        );
+        assert!(
+            prompts_dir.join("reviewee.md").exists(),
+            "reviewee.md should exist"
+        );
+        assert!(
+            prompts_dir.join("rereview.md").exists(),
+            "rereview.md should exist"
+        );
 
         let config_content = fs::read_to_string(&config_path).unwrap();
         assert!(config_content.contains("editor = \"vi\""));

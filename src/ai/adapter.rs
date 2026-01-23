@@ -142,7 +142,7 @@ pub trait AgentAdapter: Send + Sync {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SupportedAgent {
     Claude,
-    // Codex,  // Future
+    Codex,
     // Gemini, // Future
 }
 
@@ -150,7 +150,7 @@ impl SupportedAgent {
     pub fn from_name(name: &str) -> Option<Self> {
         match name.to_lowercase().as_str() {
             "claude" => Some(Self::Claude),
-            // "codex" => Some(Self::Codex),
+            "codex" => Some(Self::Codex),
             // "gemini" => Some(Self::Gemini),
             _ => None,
         }
@@ -161,7 +161,7 @@ impl SupportedAgent {
     pub fn name(&self) -> &'static str {
         match self {
             Self::Claude => "claude",
-            // Self::Codex => "codex",
+            Self::Codex => "codex",
             // Self::Gemini => "gemini",
         }
     }

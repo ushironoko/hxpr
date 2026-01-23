@@ -29,6 +29,7 @@ syntect-tui = "3.0.4"
 async-trait = "0.1.88"
 tracing = "0.1.41"
 chrono = "0.4.43"
+thiserror = "2.0.18"
 
 [dev-dependencies]
 assert_cmd = "2.1.2"

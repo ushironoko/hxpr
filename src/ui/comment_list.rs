@@ -7,8 +7,8 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthChar;
 
-use crate::app::{App, CommentTab};
 use super::common::render_rally_status_bar;
+use crate::app::{App, CommentTab};
 
 /// Wrap text to fit within the specified width, handling multibyte characters
 fn wrap_text(text: &str, max_width: usize) -> Vec<String> {

@@ -262,6 +262,17 @@ impl Orchestrator {
                 RevieweeStatus::Completed => {
                     // Store the fix result for the next re-review
                     self.last_fix = Some(fix_result.clone());
+
+                    // Post fix summary to PR
+                    if let Err(e) = self.post_fix_comment(&fix_result).await {
+                        warn!("Failed to post fix comment to PR: {}", e);
+                        self.send_event(RallyEvent::Log(format!(
+                            "Warning: Failed to post fix comment to PR: {}",
+                            e
+                        )))
+                        .await;
+                    }
+
                     // Continue to next iteration
                 }
                 RevieweeStatus::NeedsClarification => {
@@ -398,8 +409,12 @@ impl Orchestrator {
                     format!("{}\n\nFiles modified: {}", f.summary, files)
                 })
                 .unwrap_or_else(|| "No changes recorded".to_string());
-            self.prompt_loader
-                .load_rereview_prompt(context, iteration, &changes_summary, &updated_diff)
+            self.prompt_loader.load_rereview_prompt(
+                context,
+                iteration,
+                &changes_summary,
+                &updated_diff,
+            )
         };
 
         let duration = Duration::from_secs(self.config.timeout_secs);
@@ -462,10 +477,14 @@ impl Orchestrator {
         // Copy for potential fallback use (app_action is moved into submit_review)
         let app_action_for_fallback = app_action;
 
+        // Add prefix to summary
+        let summary_with_prefix = format!("[AI Rally - Reviewer]\n\n{}", review.summary);
+
         // Post summary comment using gh pr review
         // If approve fails (e.g., can't approve own PR), fall back to comment
         let result =
-            github::submit_review(&self.repo, self.pr_number, app_action, &review.summary).await;
+            github::submit_review(&self.repo, self.pr_number, app_action, &summary_with_prefix)
+                .await;
 
         if result.is_err() && matches!(app_action_for_fallback, crate::app::ReviewAction::Approve) {
             warn!("Approve failed, falling back to comment");
@@ -473,7 +492,7 @@ impl Orchestrator {
                 &self.repo,
                 self.pr_number,
                 crate::app::ReviewAction::Comment,
-                &review.summary,
+                &summary_with_prefix,
             )
             .await?;
         } else {
@@ -482,13 +501,15 @@ impl Orchestrator {
 
         // Post inline comments with rate limit handling
         for comment in &review.comments {
+            // Add prefix to inline comment
+            let body_with_prefix = format!("[AI Rally - Reviewer]\n\n{}", comment.body);
             if let Err(e) = github::create_review_comment(
                 &self.repo,
                 self.pr_number,
                 &context.head_sha,
                 &comment.path,
                 comment.line,
-                &comment.body,
+                &body_with_prefix,
             )
             .await
             {
@@ -500,6 +521,36 @@ impl Orchestrator {
             // Rate limit mitigation: small delay between API calls
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+
+        Ok(())
+    }
+
+    /// Post fix summary comment to PR
+    async fn post_fix_comment(&self, fix: &RevieweeOutput) -> Result<()> {
+        // Build comment body with files modified
+        let files_list = if fix.files_modified.is_empty() {
+            "No files modified".to_string()
+        } else {
+            fix.files_modified
+                .iter()
+                .map(|f| format!("- `{}`", f))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let comment_body = format!(
+            "[AI Rally - Reviewee]\n\n{}\n\n**Files modified:**\n{}",
+            fix.summary, files_list
+        );
+
+        // Post as a comment (not a review)
+        github::submit_review(
+            &self.repo,
+            self.pr_number,
+            crate::app::ReviewAction::Comment,
+            &comment_body,
+        )
+        .await?;
 
         Ok(())
     }
