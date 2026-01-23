@@ -21,6 +21,7 @@ pub fn render_rally_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         RallyState::WaitingForClarification => ("Waiting for clarification", Color::Magenta),
         RallyState::WaitingForPermission => ("Waiting for permission", Color::Magenta),
         RallyState::Completed => ("Completed!", Color::Green),
+        RallyState::Aborted => ("Aborted - Press A to view", Color::Yellow),
         RallyState::Error => ("Error - Press A to view", Color::Red),
     };
 

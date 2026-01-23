@@ -44,6 +44,7 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AiRallyState) {
         RallyState::WaitingForClarification => "Waiting for clarification",
         RallyState::WaitingForPermission => "Waiting for permission",
         RallyState::Completed => "Completed!",
+        RallyState::Aborted => "Aborted",
         RallyState::Error => "Error",
     };
 
@@ -53,6 +54,7 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AiRallyState) {
         RallyState::RevieweeFix => Color::Cyan,
         RallyState::WaitingForClarification | RallyState::WaitingForPermission => Color::Magenta,
         RallyState::Completed => Color::Green,
+        RallyState::Aborted => Color::Yellow,
         RallyState::Error => Color::Red,
     };
 
@@ -431,6 +433,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, state: &AiRallyState) {
                 "y: Approve | n: Deny | ↑↓: Select | Enter: Detail | q: Abort"
             }
             RallyState::Completed => "↑↓: Select | Enter: Detail | b: Background | q: Close",
+            RallyState::Aborted => "↑↓: Select | Enter: Detail | b: Background | q: Close",
             RallyState::Error => "r: Retry | ↑↓: Select | Enter: Detail | b: Background | q: Close",
             _ => "↑↓: Select | Enter: Detail | b: Background | q: Abort",
         }

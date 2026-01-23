@@ -34,20 +34,27 @@ pub enum RallyState {
     WaitingForClarification,
     WaitingForPermission,
     Completed,
+    Aborted,
     Error,
 }
 
 impl RallyState {
-    /// Rally が実行中（完了・エラー以外）かどうか
+    /// Rally が実行中（完了・エラー・中断以外）かどうか
     #[allow(dead_code)]
     pub fn is_active(&self) -> bool {
-        !matches!(self, RallyState::Completed | RallyState::Error)
+        !matches!(
+            self,
+            RallyState::Completed | RallyState::Aborted | RallyState::Error
+        )
     }
 
-    /// Rally が完了またはエラーで終了したかどうか
+    /// Rally が完了、中断、またはエラーで終了したかどうか
     #[allow(dead_code)]
     pub fn is_finished(&self) -> bool {
-        matches!(self, RallyState::Completed | RallyState::Error)
+        matches!(
+            self,
+            RallyState::Completed | RallyState::Aborted | RallyState::Error
+        )
     }
 }
 
@@ -321,17 +328,23 @@ impl Orchestrator {
                                 // Continue to next iteration
                             }
                             Some(OrchestratorCommand::Abort) | None => {
-                                return Ok(RallyResult::Aborted {
-                                    iteration,
-                                    reason: format!("Clarification aborted: {}", question),
-                                });
+                                let reason = format!("Clarification aborted: {}", question);
+                                self.session.update_state(RallyState::Aborted);
+                                write_session(&self.session)?;
+                                self.send_event(RallyEvent::Log(reason.clone())).await;
+                                self.send_event(RallyEvent::StateChanged(RallyState::Aborted))
+                                    .await;
+                                return Ok(RallyResult::Aborted { iteration, reason });
                             }
                             Some(OrchestratorCommand::PermissionResponse(_)) => {
                                 // Ignore invalid command
-                                return Ok(RallyResult::Aborted {
-                                    iteration,
-                                    reason: format!("Clarification needed: {}", question),
-                                });
+                                let reason = format!("Clarification needed: {}", question);
+                                self.session.update_state(RallyState::Aborted);
+                                write_session(&self.session)?;
+                                self.send_event(RallyEvent::Log(reason.clone())).await;
+                                self.send_event(RallyEvent::StateChanged(RallyState::Aborted))
+                                    .await;
+                                return Ok(RallyResult::Aborted { iteration, reason });
                             }
                         }
                     }
@@ -372,24 +385,33 @@ impl Orchestrator {
                                     // Continue to next iteration
                                 } else {
                                     // Permission denied
-                                    return Ok(RallyResult::Aborted {
-                                        iteration,
-                                        reason: format!("Permission denied: {}", perm.action),
-                                    });
+                                    let reason = format!("Permission denied: {}", perm.action);
+                                    self.session.update_state(RallyState::Aborted);
+                                    write_session(&self.session)?;
+                                    self.send_event(RallyEvent::Log(reason.clone())).await;
+                                    self.send_event(RallyEvent::StateChanged(RallyState::Aborted))
+                                        .await;
+                                    return Ok(RallyResult::Aborted { iteration, reason });
                                 }
                             }
                             Some(OrchestratorCommand::Abort) | None => {
-                                return Ok(RallyResult::Aborted {
-                                    iteration,
-                                    reason: format!("Permission aborted: {}", perm.action),
-                                });
+                                let reason = format!("Permission aborted: {}", perm.action);
+                                self.session.update_state(RallyState::Aborted);
+                                write_session(&self.session)?;
+                                self.send_event(RallyEvent::Log(reason.clone())).await;
+                                self.send_event(RallyEvent::StateChanged(RallyState::Aborted))
+                                    .await;
+                                return Ok(RallyResult::Aborted { iteration, reason });
                             }
                             Some(OrchestratorCommand::ClarificationResponse(_)) => {
                                 // Ignore invalid command
-                                return Ok(RallyResult::Aborted {
-                                    iteration,
-                                    reason: format!("Permission needed: {}", perm.action),
-                                });
+                                let reason = format!("Permission needed: {}", perm.action);
+                                self.session.update_state(RallyState::Aborted);
+                                write_session(&self.session)?;
+                                self.send_event(RallyEvent::Log(reason.clone())).await;
+                                self.send_event(RallyEvent::StateChanged(RallyState::Aborted))
+                                    .await;
+                                return Ok(RallyResult::Aborted { iteration, reason });
                             }
                         }
                     }
@@ -756,6 +778,7 @@ mod tests {
         assert!(RallyState::WaitingForClarification.is_active());
         assert!(RallyState::WaitingForPermission.is_active());
         assert!(!RallyState::Completed.is_active());
+        assert!(!RallyState::Aborted.is_active());
         assert!(!RallyState::Error.is_active());
     }
 
@@ -767,6 +790,7 @@ mod tests {
         assert!(!RallyState::WaitingForClarification.is_finished());
         assert!(!RallyState::WaitingForPermission.is_finished());
         assert!(RallyState::Completed.is_finished());
+        assert!(RallyState::Aborted.is_finished());
         assert!(RallyState::Error.is_finished());
     }
 }

@@ -565,7 +565,7 @@ impl App {
                     }
                     AppState::CommentList => self.handle_comment_list_input(key, terminal).await?,
                     AppState::Help => self.handle_help_input(key)?,
-                    AppState::AiRally => self.handle_ai_rally_input(key)?,
+                    AppState::AiRally => self.handle_ai_rally_input(key, terminal).await?,
                 }
             }
         }
@@ -622,7 +622,11 @@ impl App {
         Ok(())
     }
 
-    fn handle_ai_rally_input(&mut self, key: event::KeyEvent) -> Result<()> {
+    async fn handle_ai_rally_input(
+        &mut self,
+        key: event::KeyEvent,
+        terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    ) -> Result<()> {
         // Handle modal state first
         if let Some(ref mut rally_state) = self.ai_rally_state {
             if rally_state.showing_log_detail {
@@ -689,8 +693,8 @@ impl App {
                             .and_then(|s| s.pending_question.clone())
                             .unwrap_or_default();
 
-                        // Open editor and send clarification
-                        self.handle_clarification_editor(&question);
+                        // Open editor synchronously (restore terminal first)
+                        self.open_clarification_editor_sync(&question, terminal)?;
                     }
                     _ => {}
                 }
@@ -863,42 +867,50 @@ impl App {
         }
     }
 
-    /// Open editor for clarification input and send response
-    fn handle_clarification_editor(&mut self, question: &str) {
-        let editor = self.config.editor.clone();
-        let sender = self.rally_command_sender.clone();
+    /// Open editor for clarification input synchronously
+    fn open_clarification_editor_sync(
+        &mut self,
+        question: &str,
+        terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    ) -> Result<()> {
+        // Restore terminal before opening editor
+        ui::restore_terminal(terminal)?;
 
-        // Use spawn_blocking for the blocking editor operation
-        let question_owned = question.to_string();
-        tokio::spawn(async move {
-            let result = tokio::task::spawn_blocking(move || {
-                crate::editor::open_clarification_editor(&editor, &question_owned)
-            })
-            .await;
+        // Open editor (blocking)
+        let answer = crate::editor::open_clarification_editor(&self.config.editor, question)?;
 
-            if let Some(sender) = sender {
-                match result {
-                    Ok(Ok(Some(answer))) if !answer.trim().is_empty() => {
-                        let _ = sender
-                            .send(OrchestratorCommand::ClarificationResponse(answer))
-                            .await;
-                    }
-                    _ => {
-                        // User cancelled (empty answer) or error
-                        let _ = sender.send(OrchestratorCommand::Abort).await;
-                    }
-                }
-            }
-        });
+        // Re-setup terminal after editor closes
+        *terminal = ui::setup_terminal()?;
 
-        // Add log entry
+        // Process result
         if let Some(ref mut rally_state) = self.ai_rally_state {
             rally_state.pending_question = None;
-            rally_state.logs.push(LogEntry::new(
-                LogEventType::Info,
-                "Opening editor for clarification...".to_string(),
-            ));
         }
+
+        match answer {
+            Some(text) if !text.trim().is_empty() => {
+                // Send clarification response
+                self.send_rally_command(OrchestratorCommand::ClarificationResponse(text.clone()));
+                if let Some(ref mut rally_state) = self.ai_rally_state {
+                    rally_state.logs.push(LogEntry::new(
+                        LogEventType::Info,
+                        format!("Clarification provided: {}", text),
+                    ));
+                }
+            }
+            _ => {
+                // User cancelled (empty answer)
+                self.send_rally_command(OrchestratorCommand::Abort);
+                if let Some(ref mut rally_state) = self.ai_rally_state {
+                    rally_state.logs.push(LogEntry::new(
+                        LogEventType::Info,
+                        "Clarification cancelled by user".to_string(),
+                    ));
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// 既存のRallyがあれば画面遷移のみ、なければ新規Rally開始
