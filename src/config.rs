@@ -20,11 +20,8 @@ pub struct AiConfig {
     pub reviewee: String,
     pub max_iterations: u32,
     pub timeout_secs: u64,
+    /// Custom prompt directory (default: ~/.config/octorus/prompts/)
     pub prompt_dir: Option<String>,
-    /// Custom system prompt for reviewer agent (prepended to default prompt)
-    pub reviewer_prompt: Option<String>,
-    /// Custom system prompt for reviewee agent (prepended to default prompt)
-    pub reviewee_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,8 +61,6 @@ impl Default for AiConfig {
             max_iterations: 10,
             timeout_secs: 600,
             prompt_dir: None,
-            reviewer_prompt: None,
-            reviewee_prompt: None,
         }
     }
 }

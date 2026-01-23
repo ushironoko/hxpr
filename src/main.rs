@@ -1,5 +1,5 @@
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use crossterm::{
     execute,
     terminal::{disable_raw_mode, LeaveAlternateScreen},
@@ -16,6 +16,7 @@ mod config;
 mod diff;
 mod editor;
 mod github;
+mod init;
 mod loader;
 mod syntax;
 mod ui;
@@ -25,13 +26,16 @@ mod ui;
 #[command(about = "TUI for GitHub PR review, designed for Helix editor users")]
 #[command(version)]
 struct Args {
+    #[command(subcommand)]
+    command: Option<Commands>,
+
     /// Repository name (e.g., "owner/repo")
     #[arg(short, long)]
-    repo: String,
+    repo: Option<String>,
 
     /// Pull request number
     #[arg(short, long)]
-    pr: u32,
+    pr: Option<u32>,
 
     /// Force refresh, ignore cache
     #[arg(long, default_value = "false")]
@@ -48,6 +52,16 @@ struct Args {
     /// Working directory for AI agents (default: current directory)
     #[arg(long)]
     working_dir: Option<String>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Initialize configuration files and prompt templates
+    Init {
+        /// Force overwrite existing files
+        #[arg(long, default_value = "false")]
+        force: bool,
+    },
 }
 
 /// Restore terminal to normal state
@@ -70,13 +84,29 @@ async fn main() -> Result<()> {
     // Set up panic hook before anything else
     setup_panic_hook();
 
+    let args = Args::parse();
+
+    // Handle subcommands
+    if let Some(command) = args.command {
+        return match command {
+            Commands::Init { force } => init::run_init(force),
+        };
+    }
+
+    // For main PR review mode, repo and pr are required
+    let repo = args.repo.ok_or_else(|| {
+        anyhow::anyhow!("--repo is required. Use 'or --repo owner/repo --pr 123'")
+    })?;
+    let pr = args.pr.ok_or_else(|| {
+        anyhow::anyhow!("--pr is required. Use 'or --repo owner/repo --pr 123'")
+    })?;
+
     // Pre-initialize syntax highlighting in background to avoid delay on first diff view
     std::thread::spawn(|| {
         let _ = syntax::syntax_set();
         let _ = syntax::theme_set();
     });
 
-    let args = Args::parse();
     let config = config::Config::load()?;
 
     // リトライ用のチャンネル
@@ -85,24 +115,24 @@ async fn main() -> Result<()> {
     // キャッシュを同期的に読み込み（メインスレッドで即座に）
     let (mut app, tx, needs_fetch) = if args.refresh {
         // --refresh 時は全キャッシュを削除
-        let _ = cache::invalidate_all_cache(&args.repo, args.pr);
-        let (app, tx) = app::App::new_loading(&args.repo, args.pr, config);
+        let _ = cache::invalidate_all_cache(&repo, pr);
+        let (app, tx) = app::App::new_loading(&repo, pr, config);
         (app, tx, loader::FetchMode::Fresh)
     } else {
-        match cache::read_cache(&args.repo, args.pr, args.cache_ttl) {
+        match cache::read_cache(&repo, pr, args.cache_ttl) {
             Ok(cache::CacheResult::Hit(entry)) => {
                 let pr_updated_at = entry.pr_updated_at;
                 let (app, tx) =
-                    app::App::new_with_cache(&args.repo, args.pr, config, entry.pr, entry.files);
+                    app::App::new_with_cache(&repo, pr, config, entry.pr, entry.files);
                 (app, tx, loader::FetchMode::CheckUpdate(pr_updated_at))
             }
             Ok(cache::CacheResult::Stale(entry)) => {
                 let (app, tx) =
-                    app::App::new_with_cache(&args.repo, args.pr, config, entry.pr, entry.files);
+                    app::App::new_with_cache(&repo, pr, config, entry.pr, entry.files);
                 (app, tx, loader::FetchMode::Fresh)
             }
             Ok(cache::CacheResult::Miss) | Err(_) => {
-                let (app, tx) = app::App::new_loading(&args.repo, args.pr, config);
+                let (app, tx) = app::App::new_loading(&repo, pr, config);
                 (app, tx, loader::FetchMode::Fresh)
             }
         }
@@ -144,18 +174,18 @@ async fn main() -> Result<()> {
     let token_clone = cancel_token.clone();
 
     // バックグラウンドでAPI取得
-    let repo = args.repo.clone();
-    let pr_number = args.pr;
+    let repo_clone = repo.clone();
+    let pr_number = pr;
 
     tokio::spawn(async move {
         tokio::select! {
             _ = token_clone.cancelled() => {}
             _ = async {
-                loader::fetch_pr_data(repo.clone(), pr_number, needs_fetch, tx.clone()).await;
+                loader::fetch_pr_data(repo_clone.clone(), pr_number, needs_fetch, tx.clone()).await;
 
                 while retry_rx.recv().await.is_some() {
                     let tx_retry = tx.clone();
-                    loader::fetch_pr_data(repo.clone(), pr_number, loader::FetchMode::Fresh, tx_retry)
+                    loader::fetch_pr_data(repo_clone.clone(), pr_number, loader::FetchMode::Fresh, tx_retry)
                         .await;
                 }
             } => {}
@@ -169,7 +199,7 @@ async fn main() -> Result<()> {
     cancel_token.cancel();
 
     // 終了時にキャッシュを削除
-    let _ = cache::invalidate_all_cache(&args.repo, args.pr);
+    let _ = cache::invalidate_all_cache(&repo, pr);
 
     if result.is_err() {
         restore_terminal();

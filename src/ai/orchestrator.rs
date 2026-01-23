@@ -14,10 +14,8 @@ use super::adapter::{
     ReviewerOutput,
 };
 use super::adapters::create_adapter;
-use super::prompts::{
-    build_clarification_prompt, build_permission_granted_prompt, build_rereview_prompt,
-    build_reviewee_prompt, build_reviewer_prompt,
-};
+use super::prompt_loader::PromptLoader;
+use super::prompts::{build_clarification_prompt, build_permission_granted_prompt};
 use super::session::{write_history_entry, write_session, HistoryEntryType, RallySession};
 
 /// Bot suffixes to identify bot users
@@ -81,6 +79,7 @@ pub struct Orchestrator {
     last_review: Option<ReviewerOutput>,
     last_fix: Option<RevieweeOutput>,
     event_sender: mpsc::Sender<RallyEvent>,
+    prompt_loader: PromptLoader,
 }
 
 impl Orchestrator {
@@ -98,6 +97,7 @@ impl Orchestrator {
         reviewee_adapter.set_event_sender(event_sender.clone());
 
         let session = RallySession::new(repo, pr_number);
+        let prompt_loader = PromptLoader::new(&config);
 
         Ok(Self {
             repo: repo.to_string(),
@@ -110,6 +110,7 @@ impl Orchestrator {
             last_review: None,
             last_fix: None,
             event_sender,
+            prompt_loader,
         })
     }
 
@@ -352,9 +353,8 @@ impl Orchestrator {
         context: &Context,
         iteration: u32,
     ) -> Result<ReviewerOutput> {
-        let custom_prompt = self.config.reviewer_prompt.as_deref();
         let prompt = if iteration == 1 {
-            build_reviewer_prompt(context, iteration, custom_prompt)
+            self.prompt_loader.load_reviewer_prompt(context, iteration)
         } else {
             // Re-review after fixes - fetch updated diff and include fix summary
             let updated_diff = self.fetch_current_diff().await.unwrap_or_else(|e| {
@@ -374,7 +374,8 @@ impl Orchestrator {
                     format!("{}\n\nFiles modified: {}", f.summary, files)
                 })
                 .unwrap_or_else(|| "No changes recorded".to_string());
-            build_rereview_prompt(context, iteration, &changes_summary, &updated_diff)
+            self.prompt_loader
+                .load_rereview_prompt(context, iteration, &changes_summary, &updated_diff)
         };
 
         let duration = Duration::from_secs(self.config.timeout_secs);
@@ -398,8 +399,9 @@ impl Orchestrator {
         review: &ReviewerOutput,
         iteration: u32,
     ) -> Result<RevieweeOutput> {
-        let custom_prompt = self.config.reviewee_prompt.as_deref();
-        let prompt = build_reviewee_prompt(context, review, iteration, custom_prompt);
+        let prompt = self
+            .prompt_loader
+            .load_reviewee_prompt(context, review, iteration);
         let duration = Duration::from_secs(self.config.timeout_secs);
 
         timeout(

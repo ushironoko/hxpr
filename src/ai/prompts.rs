@@ -1,24 +1,52 @@
 use crate::ai::adapter::{Context, ReviewerOutput};
 
-/// Build the initial reviewer prompt
-///
-/// If `custom_prompt` is provided, it will be prepended to the default prompt.
+/// Build a prompt for asking the reviewer a clarification question
+#[allow(dead_code)]
+pub fn build_clarification_prompt(question: &str) -> String {
+    format!(
+        r#"The developer has a question about your review feedback:
+
+## Question
+{question}
+
+Please provide a clear answer to help them proceed with the fixes.
+After answering, provide an updated review if needed."#,
+        question = question,
+    )
+}
+
+/// Build a prompt for continuing after permission is granted
+#[allow(dead_code)]
+pub fn build_permission_granted_prompt(action: &str) -> String {
+    format!(
+        r#"Permission has been granted for the following action:
+
+{action}
+
+Please proceed with the implementation."#,
+        action = action,
+    )
+}
+
+// ============================================================================
+// Legacy functions - kept for backwards compatibility but no longer used
+// These are superseded by PromptLoader in prompt_loader.rs
+// ============================================================================
+
+/// Build the initial reviewer prompt (DEPRECATED - use PromptLoader instead)
+#[allow(dead_code)]
 pub fn build_reviewer_prompt(
     context: &Context,
     iteration: u32,
-    custom_prompt: Option<&str>,
+    _custom_prompt: Option<&str>,
 ) -> String {
     let pr_body = context
         .pr_body
         .as_deref()
         .unwrap_or("(No description provided)");
 
-    let custom_section = custom_prompt
-        .map(|p| format!("## Custom Instructions\n\n{}\n\n", p))
-        .unwrap_or_default();
-
     format!(
-        r#"{custom_section}You are a code reviewer for a GitHub Pull Request.
+        r#"You are a code reviewer for a GitHub Pull Request.
 
 ## Context
 
@@ -57,7 +85,6 @@ This is iteration {iteration} of the review process.
 
 You MUST respond with a JSON object matching the schema provided.
 Be specific in your comments with file paths and line numbers."#,
-        custom_section = custom_section,
         repo = context.repo,
         pr_number = context.pr_number,
         pr_title = context.pr_title,
@@ -67,14 +94,13 @@ Be specific in your comments with file paths and line numbers."#,
     )
 }
 
-/// Build the reviewee prompt based on review feedback
-///
-/// If `custom_prompt` is provided, it will be prepended to the default prompt.
+/// Build the reviewee prompt (DEPRECATED - use PromptLoader instead)
+#[allow(dead_code)]
 pub fn build_reviewee_prompt(
     context: &Context,
     review: &ReviewerOutput,
     iteration: u32,
-    custom_prompt: Option<&str>,
+    _custom_prompt: Option<&str>,
 ) -> String {
     let comments_text = review
         .comments
@@ -101,10 +127,6 @@ pub fn build_reviewee_prompt(
             .collect::<Vec<_>>()
             .join("\n")
     };
-
-    let custom_section = custom_prompt
-        .map(|p| format!("## Custom Instructions\n\n{}\n\n", p))
-        .unwrap_or_default();
 
     // External comments section (from Copilot, CodeRabbit, etc.)
     let external_section = if context.external_comments.is_empty() {
@@ -143,7 +165,7 @@ Note: Address these comments if they are relevant and valid. Don't wait for more
     };
 
     format!(
-        r#"{custom_section}You are a developer fixing code based on review feedback.
+        r#"You are a developer fixing code based on review feedback.
 
 ## Context
 
@@ -191,7 +213,6 @@ CRITICAL RULES:
 
 You MUST respond with a JSON object matching the schema provided.
 List all files you modified in the "files_modified" array."#,
-        custom_section = custom_section,
         repo = context.repo,
         pr_number = context.pr_number,
         pr_title = context.pr_title,
@@ -204,55 +225,8 @@ List all files you modified in the "files_modified" array."#,
     )
 }
 
-/// Truncate a string to a maximum length (UTF-8 safe)
-///
-/// Note: Similar truncation functions exist in `src/ai/adapters/claude.rs` (`summarize_text`)
-/// for tool result display. These are kept separate intentionally as they have slightly
-/// different purposes (prompt truncation vs. display summarization) and may evolve
-/// independently. Consider consolidating into a shared utility if more uses emerge.
-fn truncate(s: &str, max_len: usize) -> String {
-    let s = s.trim();
-    let char_count = s.chars().count();
-    if char_count <= max_len {
-        s.to_string()
-    } else if max_len <= 3 {
-        // When max_len is too small for ellipsis, just take max_len chars without ellipsis
-        s.chars().take(max_len).collect()
-    } else {
-        let truncated: String = s.chars().take(max_len - 3).collect();
-        format!("{}...", truncated)
-    }
-}
-
-/// Build a prompt for asking the reviewer a clarification question
+/// Build a re-review prompt (DEPRECATED - use PromptLoader instead)
 #[allow(dead_code)]
-pub fn build_clarification_prompt(question: &str) -> String {
-    format!(
-        r#"The developer has a question about your review feedback:
-
-## Question
-{question}
-
-Please provide a clear answer to help them proceed with the fixes.
-After answering, provide an updated review if needed."#,
-        question = question,
-    )
-}
-
-/// Build a prompt for continuing after permission is granted
-#[allow(dead_code)]
-pub fn build_permission_granted_prompt(action: &str) -> String {
-    format!(
-        r#"Permission has been granted for the following action:
-
-{action}
-
-Please proceed with the implementation."#,
-        action = action,
-    )
-}
-
-/// Build a re-review prompt after fixes
 pub fn build_rereview_prompt(
     context: &Context,
     iteration: u32,
@@ -294,6 +268,20 @@ You MUST respond with a JSON object matching the schema provided."#,
     )
 }
 
+/// Truncate a string to a maximum length (UTF-8 safe)
+fn truncate(s: &str, max_len: usize) -> String {
+    let s = s.trim();
+    let char_count = s.chars().count();
+    if char_count <= max_len {
+        s.to_string()
+    } else if max_len <= 3 {
+        s.chars().take(max_len).collect()
+    } else {
+        let truncated: String = s.chars().take(max_len - 3).collect();
+        format!("{}...", truncated)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,12 +305,6 @@ mod tests {
         assert!(prompt.contains("PR #123"));
         assert!(prompt.contains("Add feature"));
         assert!(prompt.contains("iteration 1"));
-
-        // Test with custom prompt
-        let prompt_with_custom =
-            build_reviewer_prompt(&context, 1, Some("Focus on security issues"));
-        assert!(prompt_with_custom.contains("Focus on security issues"));
-        assert!(prompt_with_custom.contains("Custom Instructions"));
     }
 
     #[test]
@@ -354,16 +336,6 @@ mod tests {
         assert!(prompt.contains("src/main.rs:10"));
         assert!(prompt.contains("Missing error handling"));
         assert!(prompt.contains("Fix error handling"));
-
-        // Test with custom prompt
-        let prompt_with_custom = build_reviewee_prompt(
-            &context,
-            &review,
-            1,
-            Some("Run cargo fmt before committing"),
-        );
-        assert!(prompt_with_custom.contains("Run cargo fmt before committing"));
-        assert!(prompt_with_custom.contains("Custom Instructions"));
     }
 
     #[test]
@@ -425,7 +397,6 @@ mod tests {
         // Long string - truncated
         let long_str = "This is a very long string that should be truncated";
         let truncated = truncate(long_str, 20);
-        // Use char count for consistency with the truncate function which operates on characters
         assert!(truncated.chars().count() <= 20);
         assert!(truncated.ends_with("..."));
 
@@ -434,14 +405,13 @@ mod tests {
         let truncated_unicode = truncate(unicode, 5);
         assert!(truncated_unicode.chars().count() <= 5);
 
-        // Edge case: max_len <= 3 (where ellipsis would not fit)
-        // Should return first max_len chars without ellipsis
+        // Edge case: max_len <= 3
         assert_eq!(truncate("hello", 2), "he");
         assert_eq!(truncate("hello", 3), "hel");
         assert_eq!(truncate("hello", 1), "h");
         assert_eq!(truncate("hello", 0), "");
 
-        // Edge case: max_len = 4 (just enough for 1 char + ellipsis)
+        // Edge case: max_len = 4
         assert_eq!(truncate("hello", 4), "h...");
     }
 }
