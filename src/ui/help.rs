@@ -43,6 +43,7 @@ pub fn render(frame: &mut Frame, _app: &App) {
         Line::from("  r               Request changes"),
         Line::from("  c               Comment only"),
         Line::from("  C               View review comments"),
+        Line::from("  A               Start AI Rally"),
         Line::from("  R               Refresh (clear cache and reload)"),
         Line::from("  ?               Toggle help"),
         Line::from("  q               Quit"),
@@ -79,6 +80,20 @@ pub fn render(frame: &mut Frame, _app: &App) {
         )]),
         Line::from("  Enter           Submit comment/suggestion"),
         Line::from("  Esc             Cancel"),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "AI Rally View",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(vec![Span::styled(
+            "  (When AI requests permission or clarification)",
+            Style::default().fg(Color::DarkGray),
+        )]),
+        Line::from("  y               Grant permission / Answer yes"),
+        Line::from("  n               Deny permission / Skip"),
+        Line::from("  q               Abort rally"),
         Line::from(""),
         Line::from(vec![Span::styled(
             "Available Themes",

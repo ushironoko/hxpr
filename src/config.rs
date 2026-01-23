@@ -10,6 +10,18 @@ pub struct Config {
     pub editor: String,
     pub diff: DiffConfig,
     pub keybindings: KeybindingsConfig,
+    pub ai: AiConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AiConfig {
+    pub reviewer: String,
+    pub reviewee: String,
+    pub max_iterations: u32,
+    pub timeout_secs: u64,
+    /// Custom prompt directory (default: ~/.config/octorus/prompts/)
+    pub prompt_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,6 +48,19 @@ impl Default for Config {
             editor: "vi".to_owned(),
             diff: DiffConfig::default(),
             keybindings: KeybindingsConfig::default(),
+            ai: AiConfig::default(),
+        }
+    }
+}
+
+impl Default for AiConfig {
+    fn default() -> Self {
+        Self {
+            reviewer: "claude".to_owned(),
+            reviewee: "claude".to_owned(),
+            max_iterations: 10,
+            timeout_secs: 600,
+            prompt_dir: None,
         }
     }
 }

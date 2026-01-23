@@ -1,0 +1,52 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ReviewerOutput",
+  "description": "Structured output from the reviewer agent",
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": ["approve", "request_changes", "comment"],
+      "description": "The review action to take"
+    },
+    "summary": {
+      "type": "string",
+      "description": "A summary of the review findings"
+    },
+    "comments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "The file path for the comment"
+          },
+          "line": {
+            "type": "integer",
+            "description": "The line number for the comment"
+          },
+          "body": {
+            "type": "string",
+            "description": "The comment body"
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["critical", "major", "minor", "suggestion"],
+            "description": "The severity of the issue"
+          }
+        },
+        "required": ["path", "line", "body", "severity"]
+      },
+      "description": "List of review comments"
+    },
+    "blocking_issues": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "List of issues that must be fixed before approval"
+    }
+  },
+  "required": ["action", "summary", "comments", "blocking_issues"]
+}

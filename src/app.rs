@@ -3,7 +3,10 @@ use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io::Stdout;
 use tokio::sync::mpsc;
+use tokio::task::AbortHandle;
 
+use crate::ai::orchestrator::RallyEvent;
+use crate::ai::{Context, Orchestrator, RallyState};
 use crate::config::Config;
 use crate::github::comment::{DiscussionComment, ReviewComment};
 use crate::github::{self, ChangedFile, PullRequest};
@@ -18,6 +21,54 @@ pub enum AppState {
     SuggestionPreview,
     CommentList,
     Help,
+    AiRally,
+}
+
+/// Log event type for AI Rally
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogEventType {
+    Info,
+    Thinking,
+    ToolUse,
+    ToolResult,
+    Text,
+    Review,
+    Fix,
+    Error,
+}
+
+/// Structured log entry for AI Rally
+#[derive(Debug, Clone)]
+pub struct LogEntry {
+    pub timestamp: String,
+    pub event_type: LogEventType,
+    pub message: String,
+}
+
+impl LogEntry {
+    pub fn new(event_type: LogEventType, message: String) -> Self {
+        let now = chrono::Local::now();
+        Self {
+            timestamp: now.format("%H:%M:%S").to_string(),
+            event_type,
+            message,
+        }
+    }
+}
+
+/// State for AI Rally view
+#[derive(Debug, Clone)]
+pub struct AiRallyState {
+    pub iteration: u32,
+    pub max_iterations: u32,
+    pub state: RallyState,
+    pub history: Vec<RallyEvent>,
+    pub logs: Vec<LogEntry>,
+    pub log_scroll_offset: usize,
+    /// Selected log index for detail view
+    pub selected_log_index: Option<usize>,
+    /// Whether the log detail modal is visible
+    pub showing_log_detail: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -83,11 +134,19 @@ pub struct App {
     pub discussion_comment_detail_scroll: usize,
     // Comment tab state
     pub comment_tab: CommentTab,
+    // AI Rally state
+    pub ai_rally_state: Option<AiRallyState>,
+    pub working_dir: Option<String>,
     // Receivers
     data_receiver: Option<mpsc::Receiver<DataLoadResult>>,
     retry_sender: Option<mpsc::Sender<()>>,
     comment_receiver: Option<mpsc::Receiver<Result<Vec<ReviewComment>, String>>>,
     discussion_comment_receiver: Option<mpsc::Receiver<Result<Vec<DiscussionComment>, String>>>,
+    rally_event_receiver: Option<mpsc::Receiver<RallyEvent>>,
+    // Handle for aborting the rally orchestrator task
+    rally_abort_handle: Option<AbortHandle>,
+    // Flag to start AI Rally when data is loaded (set by --ai-rally CLI flag)
+    start_ai_rally_on_load: bool,
 }
 
 impl App {
@@ -122,10 +181,15 @@ impl App {
             discussion_comment_detail_mode: false,
             discussion_comment_detail_scroll: 0,
             comment_tab: CommentTab::default(),
+            ai_rally_state: None,
+            working_dir: None,
             data_receiver: Some(rx),
             retry_sender: None,
             comment_receiver: None,
             discussion_comment_receiver: None,
+            rally_event_receiver: None,
+            rally_abort_handle: None,
+            start_ai_rally_on_load: false,
         };
 
         (app, tx)
@@ -168,10 +232,15 @@ impl App {
             discussion_comment_detail_mode: false,
             discussion_comment_detail_scroll: 0,
             comment_tab: CommentTab::default(),
+            ai_rally_state: None,
+            working_dir: None,
             data_receiver: Some(rx),
             retry_sender: None,
             comment_receiver: None,
             discussion_comment_receiver: None,
+            rally_event_receiver: None,
+            rally_abort_handle: None,
+            start_ai_rally_on_load: false,
         };
 
         (app, tx)
@@ -184,16 +253,32 @@ impl App {
     pub async fn run(&mut self) -> Result<()> {
         let mut terminal = ui::setup_terminal()?;
 
+        // Start AI Rally immediately if flag is set and data is already loaded (from cache)
+        if self.start_ai_rally_on_load && matches!(self.data_state, DataState::Loaded { .. }) {
+            self.start_ai_rally_on_load = false;
+            self.start_ai_rally();
+        }
+
         while !self.should_quit {
             self.poll_data_updates();
             self.poll_comment_updates();
             self.poll_discussion_comment_updates();
+            self.poll_rally_events();
             terminal.draw(|frame| ui::render(frame, self))?;
             self.handle_input(&mut terminal).await?;
         }
 
         ui::restore_terminal(&mut terminal)?;
         Ok(())
+    }
+
+    pub fn set_working_dir(&mut self, dir: Option<String>) {
+        self.working_dir = dir;
+    }
+
+    /// Set flag to start AI Rally when data is loaded (used by --ai-rally CLI flag)
+    pub fn set_start_ai_rally_on_load(&mut self, start: bool) {
+        self.start_ai_rally_on_load = start;
     }
 
     /// バックグラウンドタスクからのデータ更新をポーリング
@@ -278,11 +363,101 @@ impl App {
         }
     }
 
+    /// AI Rally イベントのポーリング
+    fn poll_rally_events(&mut self) {
+        let Some(ref mut rx) = self.rally_event_receiver else {
+            return;
+        };
+
+        // Process all available events
+        loop {
+            match rx.try_recv() {
+                Ok(event) => {
+                    if let Some(ref mut rally_state) = self.ai_rally_state {
+                        match &event {
+                            RallyEvent::StateChanged(state) => {
+                                rally_state.state = *state;
+                            }
+                            RallyEvent::IterationStarted(i) => {
+                                rally_state.iteration = *i;
+                                rally_state.logs.push(LogEntry::new(
+                                    LogEventType::Info,
+                                    format!("Starting iteration {}", i),
+                                ));
+                            }
+                            RallyEvent::Log(msg) => {
+                                rally_state
+                                    .logs
+                                    .push(LogEntry::new(LogEventType::Info, msg.clone()));
+                            }
+                            RallyEvent::AgentThinking(content) => {
+                                // Store full content; truncation happens at display time
+                                rally_state
+                                    .logs
+                                    .push(LogEntry::new(LogEventType::Thinking, content.clone()));
+                            }
+                            RallyEvent::AgentToolUse(tool_name, input) => {
+                                rally_state.logs.push(LogEntry::new(
+                                    LogEventType::ToolUse,
+                                    format!("{}: {}", tool_name, input),
+                                ));
+                            }
+                            RallyEvent::AgentToolResult(tool_name, result) => {
+                                // Store full content; truncation happens at display time
+                                rally_state.logs.push(LogEntry::new(
+                                    LogEventType::ToolResult,
+                                    format!("{}: {}", tool_name, result),
+                                ));
+                            }
+                            RallyEvent::AgentText(text) => {
+                                // Store full content; truncation happens at display time
+                                rally_state
+                                    .logs
+                                    .push(LogEntry::new(LogEventType::Text, text.clone()));
+                            }
+                            RallyEvent::ReviewCompleted(_) => {
+                                rally_state.logs.push(LogEntry::new(
+                                    LogEventType::Review,
+                                    "Review completed".to_string(),
+                                ));
+                            }
+                            RallyEvent::FixCompleted(fix) => {
+                                rally_state.logs.push(LogEntry::new(
+                                    LogEventType::Fix,
+                                    format!("Fix completed: {}", fix.summary),
+                                ));
+                            }
+                            RallyEvent::Error(e) => {
+                                rally_state
+                                    .logs
+                                    .push(LogEntry::new(LogEventType::Error, e.clone()));
+                            }
+                            _ => {}
+                        }
+                        rally_state.history.push(event);
+                    }
+                }
+                Err(mpsc::error::TryRecvError::Empty) => break,
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    self.rally_event_receiver = None;
+                    break;
+                }
+            }
+        }
+    }
+
     fn handle_data_result(&mut self, result: DataLoadResult) {
         match result {
             DataLoadResult::Success { pr, files } => {
                 self.diff_line_count = Self::calc_diff_line_count(&files, self.selected_file);
+                // Check if we need to start AI Rally (--ai-rally flag was passed)
+                let should_start_rally =
+                    self.start_ai_rally_on_load && matches!(self.data_state, DataState::Loading);
                 self.data_state = DataState::Loaded { pr, files };
+                if should_start_rally {
+                    self.start_ai_rally_on_load = false; // Clear the flag
+                    self.start_ai_rally();
+                }
             }
             DataLoadResult::Error(msg) => {
                 // Loading状態の場合のみエラー表示（既にデータがある場合は無視）
@@ -353,6 +528,7 @@ impl App {
                     }
                     AppState::CommentList => self.handle_comment_list_input(key, terminal).await?,
                     AppState::Help => self.handle_help_input(key)?,
+                    AppState::AiRally => self.handle_ai_rally_input(key)?,
                 }
             }
         }
@@ -402,10 +578,254 @@ impl App {
             }
             KeyCode::Char('C') => self.open_comment_list(),
             KeyCode::Char('R') => self.refresh_all(),
+            KeyCode::Char('A') => self.start_ai_rally(),
             KeyCode::Char('?') => self.state = AppState::Help,
             _ => {}
         }
         Ok(())
+    }
+
+    fn handle_ai_rally_input(&mut self, key: event::KeyEvent) -> Result<()> {
+        // Handle modal state first
+        if let Some(ref mut rally_state) = self.ai_rally_state {
+            if rally_state.showing_log_detail {
+                match key.code {
+                    KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                        rally_state.showing_log_detail = false;
+                    }
+                    _ => {}
+                }
+                return Ok(());
+            }
+        }
+
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => {
+                // Abort the orchestrator task if running
+                if let Some(handle) = self.rally_abort_handle.take() {
+                    handle.abort();
+                }
+                // Abort rally and return to file list
+                self.ai_rally_state = None;
+                self.rally_event_receiver = None;
+                self.state = AppState::FileList;
+            }
+            KeyCode::Char('y') => {
+                // Grant permission or answer yes
+                // Note: Currently, the rally process returns RallyResult::Aborted when
+                // WaitingForPermission or WaitingForClarification state is reached.
+                // A full implementation would need to:
+                // 1. Store the Orchestrator instance for resumption
+                // 2. Implement user input collection (e.g., via editor for clarification)
+                // 3. Call orchestrator.continue_with_permission() or continue_with_clarification()
+                //
+                // For now, pressing 'y' just logs a message indicating the limitation.
+                if let Some(ref mut rally_state) = self.ai_rally_state {
+                    if rally_state.state == RallyState::WaitingForPermission {
+                        rally_state.logs.push(LogEntry::new(
+                            LogEventType::Info,
+                            "Permission continuation is not yet fully implemented. Press 'q' to abort and manually apply changes.".to_string(),
+                        ));
+                    } else if rally_state.state == RallyState::WaitingForClarification {
+                        rally_state.logs.push(LogEntry::new(
+                            LogEventType::Info,
+                            "Clarification continuation is not yet fully implemented. Press 'q' to abort and manually provide clarification.".to_string(),
+                        ));
+                    }
+                }
+            }
+            KeyCode::Char('n') => {
+                // Deny permission or answer no
+                if let Some(ref state) = self.ai_rally_state {
+                    if state.state == RallyState::WaitingForPermission {
+                        // Abort the rally
+                        self.ai_rally_state = None;
+                        self.rally_event_receiver = None;
+                        self.state = AppState::FileList;
+                    }
+                }
+            }
+            KeyCode::Char('r') => {
+                // Retry on error state
+                if let Some(ref state) = self.ai_rally_state {
+                    if state.state == RallyState::Error {
+                        // Abort current handle if any
+                        if let Some(handle) = self.rally_abort_handle.take() {
+                            handle.abort();
+                        }
+                        // Clear state and restart
+                        self.ai_rally_state = None;
+                        self.rally_event_receiver = None;
+                        self.state = AppState::FileList;
+                        // Restart the rally
+                        self.start_ai_rally();
+                    }
+                }
+            }
+            // Log selection and scrolling
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let Some(ref mut rally_state) = self.ai_rally_state {
+                    let total_logs = rally_state.logs.len();
+                    if total_logs == 0 {
+                        return Ok(());
+                    }
+
+                    // Initialize selection if not set
+                    let current = rally_state.selected_log_index.unwrap_or(0);
+                    let new_index = (current + 1).min(total_logs.saturating_sub(1));
+                    rally_state.selected_log_index = Some(new_index);
+
+                    // Auto-scroll to keep selection visible
+                    self.adjust_log_scroll_to_selection();
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let Some(ref mut rally_state) = self.ai_rally_state {
+                    let total_logs = rally_state.logs.len();
+                    if total_logs == 0 {
+                        return Ok(());
+                    }
+
+                    // Initialize selection if not set (start from last)
+                    let current = rally_state
+                        .selected_log_index
+                        .unwrap_or(total_logs.saturating_sub(1));
+                    let new_index = current.saturating_sub(1);
+                    rally_state.selected_log_index = Some(new_index);
+
+                    // Auto-scroll to keep selection visible
+                    self.adjust_log_scroll_to_selection();
+                }
+            }
+            KeyCode::Enter => {
+                // Show log detail modal
+                if let Some(ref mut rally_state) = self.ai_rally_state {
+                    if rally_state.selected_log_index.is_some() && !rally_state.logs.is_empty() {
+                        rally_state.showing_log_detail = true;
+                    }
+                }
+            }
+            KeyCode::Char('G') => {
+                // Jump to bottom
+                if let Some(ref mut rally_state) = self.ai_rally_state {
+                    let total_logs = rally_state.logs.len();
+                    if total_logs > 0 {
+                        rally_state.selected_log_index = Some(total_logs.saturating_sub(1));
+                        rally_state.log_scroll_offset = 0; // 0 means auto-scroll to bottom
+                    }
+                }
+            }
+            KeyCode::Char('g') => {
+                // Jump to top
+                if let Some(ref mut rally_state) = self.ai_rally_state {
+                    if !rally_state.logs.is_empty() {
+                        rally_state.selected_log_index = Some(0);
+                        rally_state.log_scroll_offset = 1; // 1 is minimum (not 0 which means auto-scroll)
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Adjust log scroll offset to keep the selected log visible
+    fn adjust_log_scroll_to_selection(&mut self) {
+        if let Some(ref mut rally_state) = self.ai_rally_state {
+            let Some(selected) = rally_state.selected_log_index else {
+                return;
+            };
+
+            // Estimate visible height (rough estimate, actual is calculated in UI)
+            let visible_height = 10_usize; // approximate
+
+            // Calculate current scroll position
+            let total_logs = rally_state.logs.len();
+            let scroll_offset = if rally_state.log_scroll_offset == 0 {
+                total_logs.saturating_sub(visible_height)
+            } else {
+                rally_state.log_scroll_offset
+            };
+
+            // Adjust scroll to keep selection visible
+            if selected < scroll_offset {
+                // Selection is above visible area
+                rally_state.log_scroll_offset = selected.max(1);
+            } else if selected >= scroll_offset + visible_height {
+                // Selection is below visible area
+                rally_state.log_scroll_offset = selected.saturating_sub(visible_height - 1).max(1);
+            }
+        }
+    }
+
+    fn start_ai_rally(&mut self) {
+        // Get PR data for context
+        let Some(pr) = self.pr() else {
+            return;
+        };
+
+        let diff = self
+            .files()
+            .iter()
+            .filter_map(|f| f.patch.as_ref())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let context = Context {
+            repo: self.repo.clone(),
+            pr_number: self.pr_number,
+            pr_title: pr.title.clone(),
+            pr_body: pr.body.clone(),
+            diff,
+            working_dir: self.working_dir.clone(),
+            head_sha: pr.head.sha.clone(),
+            external_comments: Vec::new(),
+        };
+
+        let (event_tx, event_rx) = mpsc::channel(100);
+        self.rally_event_receiver = Some(event_rx);
+
+        // Initialize rally state
+        self.ai_rally_state = Some(AiRallyState {
+            iteration: 0,
+            max_iterations: self.config.ai.max_iterations,
+            state: RallyState::Initializing,
+            history: Vec::new(),
+            logs: Vec::new(),
+            log_scroll_offset: 0,
+            selected_log_index: None,
+            showing_log_detail: false,
+        });
+
+        self.state = AppState::AiRally;
+
+        // Spawn the orchestrator and store the abort handle
+        let config = self.config.ai.clone();
+        let repo = self.repo.clone();
+        let pr_number = self.pr_number;
+
+        let handle = tokio::spawn(async move {
+            let orchestrator_result = Orchestrator::new(&repo, pr_number, config, event_tx.clone());
+            match orchestrator_result {
+                Ok(mut orchestrator) => {
+                    orchestrator.set_context(context);
+                    let _ = orchestrator.run().await;
+                }
+                Err(e) => {
+                    // Send error via event channel so it displays in TUI
+                    let _ = event_tx
+                        .send(RallyEvent::Error(format!(
+                            "Failed to create orchestrator: {}",
+                            e
+                        )))
+                        .await;
+                }
+            }
+        });
+
+        // Store the abort handle so we can cancel the task when user presses 'q'
+        self.rally_abort_handle = Some(handle.abort_handle());
     }
 
     fn refresh_all(&mut self) {
@@ -797,9 +1217,9 @@ impl App {
             tokio::spawn(async move {
                 match github::comment::fetch_discussion_comments(&repo, pr_number).await {
                     Ok(comments) => {
-                        if let Err(e) =
-                            crate::cache::write_discussion_comment_cache(&repo, pr_number, &comments)
-                        {
+                        if let Err(e) = crate::cache::write_discussion_comment_cache(
+                            &repo, pr_number, &comments,
+                        ) {
                             eprintln!("Warning: Failed to write discussion comment cache: {}", e);
                         }
                         let _ = tx.send(Ok(comments)).await;
@@ -856,8 +1276,9 @@ impl App {
                 CommentTab::Discussion => {
                     if let Some(ref comments) = self.discussion_comments {
                         if !comments.is_empty() {
-                            self.selected_discussion_comment = (self.selected_discussion_comment + 1)
-                                .min(comments.len().saturating_sub(1));
+                            self.selected_discussion_comment = (self.selected_discussion_comment
+                                + 1)
+                            .min(comments.len().saturating_sub(1));
                         }
                     }
                 }
@@ -868,7 +1289,8 @@ impl App {
                     self.adjust_comment_scroll(visible_lines);
                 }
                 CommentTab::Discussion => {
-                    self.selected_discussion_comment = self.selected_discussion_comment.saturating_sub(1);
+                    self.selected_discussion_comment =
+                        self.selected_discussion_comment.saturating_sub(1);
                 }
             },
             KeyCode::Enter => match self.comment_tab {

@@ -1,0 +1,47 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "RevieweeOutput",
+  "description": "Structured output from the reviewee agent",
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["completed", "needs_clarification", "needs_permission", "error"],
+      "description": "The status of the fix attempt"
+    },
+    "summary": {
+      "type": "string",
+      "description": "A summary of the changes made or the issue encountered"
+    },
+    "files_modified": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "List of files that were modified"
+    },
+    "question": {
+      "type": "string",
+      "description": "Question for the reviewer (when status is needs_clarification)"
+    },
+    "permission_request": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "description": "The action that requires permission"
+        },
+        "reason": {
+          "type": "string",
+          "description": "Why this action is needed"
+        }
+      },
+      "description": "Permission request details (when status is needs_permission)"
+    },
+    "error_details": {
+      "type": "string",
+      "description": "Error details (when status is error)"
+    }
+  },
+  "required": ["status", "summary", "files_modified"]
+}

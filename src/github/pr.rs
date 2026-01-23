@@ -75,3 +75,8 @@ pub async fn submit_review(
 
     Ok(())
 }
+
+/// Fetch the raw diff for a PR using `gh pr diff`
+pub async fn fetch_pr_diff(repo: &str, pr_number: u32) -> Result<String> {
+    gh_command(&["pr", "diff", &pr_number.to_string(), "-R", repo]).await
+}

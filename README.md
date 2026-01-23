@@ -19,11 +19,13 @@ A TUI tool for GitHub PR review with Vim-style keybindings.
 - Submit reviews (Approve / Request Changes / Comment)
 - Fast startup with intelligent caching
 - Configurable keybindings and editor
+- **AI Rally**: Automated PR review and fix cycle using AI agents
 
 ## Requirements
 
 - [GitHub CLI (gh)](https://cli.github.com/) - Must be installed and authenticated
 - Rust 1.70+ (for building from source)
+- [Claude Code](https://claude.ai/code) - Required for AI Rally feature (optional)
 
 ## Installation
 
@@ -68,6 +70,7 @@ or --repo owner/repo --pr 123
 | `r` | Request changes |
 | `c` | Comment only |
 | `C` | View review comments |
+| `A` | Start AI Rally |
 | `?` | Toggle help |
 | `q` | Quit |
 
@@ -104,7 +107,73 @@ editor = "hx"
 approve = 'a'
 request_changes = 'r'
 comment = 'c'
+
+[ai]
+# AI agent to use for reviewer/reviewee (currently only "claude" is supported)
+reviewer = "claude"
+reviewee = "claude"
+
+# Maximum iterations before stopping
+max_iterations = 10
+
+# Timeout per agent execution (seconds)
+timeout_secs = 600
+
+# Custom prompt to prepend to the reviewer's default prompt
+# reviewer_prompt = "Focus on security issues and performance."
+
+# Custom prompt to prepend to the reviewee's default prompt
+# reviewee_prompt = "Always run tests before committing."
 ```
+
+## AI Rally
+
+AI Rally is an automated PR review and fix cycle that uses two AI agents:
+
+- **Reviewer**: Analyzes the PR diff and provides review feedback
+- **Reviewee**: Fixes issues based on the review feedback and commits changes
+
+### How it works
+
+```
+┌─────────────────┐
+│  Start Rally    │  Press 'A' in File List View
+└────────┬────────┘
+         ▼
+┌─────────────────┐
+│    Reviewer     │  AI reviews the diff
+│   (Claude)      │  → Posts comments to PR
+└────────┬────────┘
+         │
+    ┌────┴────┐
+    │ Approve?│
+    └────┬────┘
+     No  │  Yes
+         │   └──→ Done ✓
+         ▼
+┌─────────────────┐
+│    Reviewee     │  AI fixes issues
+│   (Claude)      │  → Commits changes locally
+└────────┬────────┘
+         │
+         ▼
+    Next Iteration
+```
+
+### Features
+
+- **PR Integration**: Review comments are automatically posted to the PR
+- **External Bot Support**: Collects feedback from Copilot, CodeRabbit, and other bots
+- **Safe Operations**: Dangerous git operations (`--force`, `reset --hard`) are prohibited
+- **Session Persistence**: Rally state is saved and can be resumed
+
+### Keybindings (AI Rally View)
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Scroll log down |
+| `k` / `↑` | Scroll log up |
+| `q` / `Esc` | Exit rally |
 
 ## License
 

@@ -85,7 +85,11 @@ pub fn render(frame: &mut Frame, app: &App) {
 
 fn render_tab_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let review_count = app.review_comments.as_ref().map(|c| c.len()).unwrap_or(0);
-    let discussion_count = app.discussion_comments.as_ref().map(|c| c.len()).unwrap_or(0);
+    let discussion_count = app
+        .discussion_comments
+        .as_ref()
+        .map(|c| c.len())
+        .unwrap_or(0);
 
     let review_style = if app.comment_tab == CommentTab::Review {
         Style::default()
