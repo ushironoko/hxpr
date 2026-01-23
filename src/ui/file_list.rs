@@ -7,15 +7,28 @@ use ratatui::{
 };
 
 use crate::app::{App, DataState};
+use super::common::render_rally_status_bar;
 
 pub fn render(frame: &mut Frame, app: &App) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
+    let has_rally = app.has_background_rally();
+    let constraints = if has_rally {
+        vec![
+            Constraint::Length(3), // Header
+            Constraint::Min(0),    // File list
+            Constraint::Length(1), // Rally status bar
+            Constraint::Length(3), // Footer
+        ]
+    } else {
+        vec![
             Constraint::Length(3), // Header
             Constraint::Min(0),    // File list
             Constraint::Length(3), // Footer
-        ])
+        ]
+    };
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
         .split(frame.area());
 
     // Header
@@ -81,12 +94,24 @@ pub fn render(frame: &mut Frame, app: &App) {
         .highlight_style(Style::default().bg(Color::DarkGray));
     frame.render_widget(list, chunks[1]);
 
-    // Footer
-    let footer = Paragraph::new(
-        "j/k: move | Enter: view diff | a: approve | r: request changes | c: comment | C: comments | A: AI Rally | q: quit | ?: help",
-    )
-    .block(Block::default().borders(Borders::ALL));
-    frame.render_widget(footer, chunks[2]);
+    // Rally status bar (if background rally exists)
+    if has_rally {
+        render_rally_status_bar(frame, chunks[2], app);
+    }
+
+    // Footer (dynamic based on rally state)
+    let footer_chunk_idx = if has_rally { 3 } else { 2 };
+    let ai_rally_text = if app.has_background_rally() {
+        "A: Resume Rally"
+    } else {
+        "A: AI Rally"
+    };
+    let footer_text = format!(
+        "j/k: move | Enter: view diff | a: approve | r: request changes | c: comment | C: comments | {} | q: quit | ?: help",
+        ai_rally_text
+    );
+    let footer = Paragraph::new(footer_text).block(Block::default().borders(Borders::ALL));
+    frame.render_widget(footer, chunks[footer_chunk_idx]);
 }
 
 /// Loading状態の表示

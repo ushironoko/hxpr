@@ -8,6 +8,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthChar;
 
 use crate::app::{App, CommentTab};
+use super::common::render_rally_status_bar;
 
 /// Wrap text to fit within the specified width, handling multibyte characters
 fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
@@ -56,13 +57,25 @@ pub fn render(frame: &mut Frame, app: &App) {
         return;
     }
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
+    let has_rally = app.has_background_rally();
+    let constraints = if has_rally {
+        vec![
+            Constraint::Length(3), // Header with tabs
+            Constraint::Min(0),    // Comment list
+            Constraint::Length(1), // Rally status bar
+            Constraint::Length(3), // Footer
+        ]
+    } else {
+        vec![
             Constraint::Length(3), // Header with tabs
             Constraint::Min(0),    // Comment list
             Constraint::Length(3), // Footer
-        ])
+        ]
+    };
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
         .split(frame.area());
 
     // Header with tabs
@@ -74,13 +87,19 @@ pub fn render(frame: &mut Frame, app: &App) {
         CommentTab::Discussion => render_discussion_comments(frame, app, chunks[1]),
     }
 
+    // Rally status bar (if background rally exists)
+    if has_rally {
+        render_rally_status_bar(frame, chunks[2], app);
+    }
+
     // Footer
+    let footer_chunk_idx = if has_rally { 3 } else { 2 };
     let footer_text = match app.comment_tab {
         CommentTab::Review => "j/k: move | Enter: jump to file | [/]: switch tab | q: back",
         CommentTab::Discussion => "j/k: move | Enter: view detail | [/]: switch tab | q: back",
     };
     let footer = Paragraph::new(footer_text).block(Block::default().borders(Borders::ALL));
-    frame.render_widget(footer, chunks[2]);
+    frame.render_widget(footer, chunks[footer_chunk_idx]);
 }
 
 fn render_tab_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
@@ -316,13 +335,25 @@ fn render_discussion_detail(frame: &mut Frame, app: &App) {
         return;
     };
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
+    let has_rally = app.has_background_rally();
+    let constraints = if has_rally {
+        vec![
+            Constraint::Length(3), // Header
+            Constraint::Min(0),    // Content
+            Constraint::Length(1), // Rally status bar
+            Constraint::Length(3), // Footer
+        ]
+    } else {
+        vec![
             Constraint::Length(3), // Header
             Constraint::Min(0),    // Content
             Constraint::Length(3), // Footer
-        ])
+        ]
+    };
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
         .split(frame.area());
 
     // Header
@@ -376,8 +407,14 @@ fn render_discussion_detail(frame: &mut Frame, app: &App) {
         .wrap(Wrap { trim: false });
     frame.render_widget(content, chunks[1]);
 
+    // Rally status bar (if background rally exists)
+    if has_rally {
+        render_rally_status_bar(frame, chunks[2], app);
+    }
+
     // Footer
+    let footer_chunk_idx = if has_rally { 3 } else { 2 };
     let footer = Paragraph::new("j/k: scroll | Ctrl+d/u: page | Enter/Esc: back to list")
         .block(Block::default().borders(Borders::ALL));
-    frame.render_widget(footer, chunks[2]);
+    frame.render_widget(footer, chunks[footer_chunk_idx]);
 }

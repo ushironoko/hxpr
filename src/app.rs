@@ -268,6 +268,11 @@ impl App {
             self.handle_input(&mut terminal).await?;
         }
 
+        // Graceful shutdown: abort any running rally
+        if let Some(handle) = self.rally_abort_handle.take() {
+            handle.abort();
+        }
+
         ui::restore_terminal(&mut terminal)?;
         Ok(())
     }
@@ -578,7 +583,7 @@ impl App {
             }
             KeyCode::Char('C') => self.open_comment_list(),
             KeyCode::Char('R') => self.refresh_all(),
-            KeyCode::Char('A') => self.start_ai_rally(),
+            KeyCode::Char('A') => self.resume_or_start_ai_rally(),
             KeyCode::Char('?') => self.state = AppState::Help,
             _ => {}
         }
@@ -600,6 +605,11 @@ impl App {
         }
 
         match key.code {
+            KeyCode::Char('b') => {
+                // バックグラウンドで実行を継続したままFileListに戻る
+                // abort()を呼ばない、状態も保持したまま
+                self.state = AppState::FileList;
+            }
             KeyCode::Char('q') | KeyCode::Esc => {
                 // Abort the orchestrator task if running
                 if let Some(handle) = self.rally_abort_handle.take() {
@@ -756,6 +766,44 @@ impl App {
                 rally_state.log_scroll_offset = selected.saturating_sub(visible_height - 1).max(1);
             }
         }
+    }
+
+    /// 既存のRallyがあれば画面遷移のみ、なければ新規Rally開始
+    fn resume_or_start_ai_rally(&mut self) {
+        // 既存のRallyがあれば画面遷移のみ（完了/エラー状態でも結果確認のため）
+        if self.ai_rally_state.is_some() {
+            self.state = AppState::AiRally;
+            return;
+        }
+        // そうでなければ新規Rally開始
+        self.start_ai_rally();
+    }
+
+    /// バックグラウンドでRallyが実行中かどうか（完了・エラー以外）
+    #[allow(dead_code)]
+    pub fn is_rally_running_in_background(&self) -> bool {
+        self.state != AppState::AiRally
+            && self
+                .ai_rally_state
+                .as_ref()
+                .map(|s| s.state.is_active())
+                .unwrap_or(false)
+    }
+
+    /// バックグラウンドでRallyが存在するかどうか（完了・エラー含む）
+    pub fn has_background_rally(&self) -> bool {
+        self.state != AppState::AiRally && self.ai_rally_state.is_some()
+    }
+
+    /// バックグラウンドRallyが完了またはエラーで終了したかどうか
+    #[allow(dead_code)]
+    pub fn is_background_rally_finished(&self) -> bool {
+        self.state != AppState::AiRally
+            && self
+                .ai_rally_state
+                .as_ref()
+                .map(|s| s.state.is_finished())
+                .unwrap_or(false)
     }
 
     fn start_ai_rally(&mut self) {

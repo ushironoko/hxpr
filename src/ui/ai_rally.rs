@@ -363,9 +363,9 @@ fn render_status_bar(frame: &mut Frame, area: Rect, state: &AiRallyState) {
             RallyState::WaitingForPermission => {
                 "n: Deny | ↑↓: Select | Enter: Detail | q: Abort (permission: WIP)"
             }
-            RallyState::Completed => "↑↓: Select | Enter: Detail | q: Close",
-            RallyState::Error => "r: Retry | ↑↓: Select | Enter: Detail | q: Close",
-            _ => "↑↓: Select | Enter: Detail | q: Abort",
+            RallyState::Completed => "↑↓: Select | Enter: Detail | b: Background | q: Close",
+            RallyState::Error => "r: Retry | ↑↓: Select | Enter: Detail | b: Background | q: Close",
+            _ => "↑↓: Select | Enter: Detail | b: Background | q: Abort",
         }
     };
 

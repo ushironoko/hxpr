@@ -1,5 +1,6 @@
 mod ai_rally;
 mod comment_list;
+mod common;
 mod diff_view;
 mod file_list;
 mod help;

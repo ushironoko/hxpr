@@ -37,6 +37,20 @@ pub enum RallyState {
     Error,
 }
 
+impl RallyState {
+    /// Rally が実行中（完了・エラー以外）かどうか
+    #[allow(dead_code)]
+    pub fn is_active(&self) -> bool {
+        !matches!(self, RallyState::Completed | RallyState::Error)
+    }
+
+    /// Rally が完了またはエラーで終了したかどうか
+    #[allow(dead_code)]
+    pub fn is_finished(&self) -> bool {
+        matches!(self, RallyState::Completed | RallyState::Error)
+    }
+}
+
 /// Event emitted during rally for TUI updates
 ///
 /// Variants are used by TUI handlers (ui/ai_rally.rs) via mpsc channel
@@ -576,5 +590,27 @@ mod tests {
         assert!(!is_bot_user("ushironoko"));
         assert!(!is_bot_user("octocat"));
         assert!(!is_bot_user("bot")); // "bot" alone is not a bot suffix
+    }
+
+    #[test]
+    fn test_rally_state_is_active() {
+        assert!(RallyState::Initializing.is_active());
+        assert!(RallyState::ReviewerReviewing.is_active());
+        assert!(RallyState::RevieweeFix.is_active());
+        assert!(RallyState::WaitingForClarification.is_active());
+        assert!(RallyState::WaitingForPermission.is_active());
+        assert!(!RallyState::Completed.is_active());
+        assert!(!RallyState::Error.is_active());
+    }
+
+    #[test]
+    fn test_rally_state_is_finished() {
+        assert!(!RallyState::Initializing.is_finished());
+        assert!(!RallyState::ReviewerReviewing.is_finished());
+        assert!(!RallyState::RevieweeFix.is_finished());
+        assert!(!RallyState::WaitingForClarification.is_finished());
+        assert!(!RallyState::WaitingForPermission.is_finished());
+        assert!(RallyState::Completed.is_finished());
+        assert!(RallyState::Error.is_finished());
     }
 }

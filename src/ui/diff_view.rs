@@ -10,35 +10,73 @@ use syntect::easy::HighlightLines;
 use crate::app::App;
 use crate::diff::{classify_line, LineType};
 use crate::syntax::{get_theme, highlight_code_line, syntax_for_file};
+use super::common::render_rally_status_bar;
 
 pub fn render(frame: &mut Frame, app: &App) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
+    let has_rally = app.has_background_rally();
+    let constraints = if has_rally {
+        vec![
+            Constraint::Length(3), // Header
+            Constraint::Min(0),    // Diff content
+            Constraint::Length(1), // Rally status bar
+            Constraint::Length(3), // Footer
+        ]
+    } else {
+        vec![
             Constraint::Length(3), // Header
             Constraint::Min(0),    // Diff content
             Constraint::Length(3), // Footer
-        ])
+        ]
+    };
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
         .split(frame.area());
 
     render_header(frame, app, chunks[0]);
     render_diff_content(frame, app, chunks[1]);
-    render_footer(frame, chunks[2]);
+
+    // Rally status bar (if background rally exists)
+    if has_rally {
+        render_rally_status_bar(frame, chunks[2], app);
+        render_footer(frame, chunks[3]);
+    } else {
+        render_footer(frame, chunks[2]);
+    }
 }
 
 pub fn render_with_preview(frame: &mut Frame, app: &App) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
+    let has_rally = app.has_background_rally();
+    let constraints = if has_rally {
+        vec![
+            Constraint::Length(3),      // Header
+            Constraint::Percentage(55), // Diff content (slightly reduced)
+            Constraint::Length(1),      // Rally status bar
+            Constraint::Percentage(40), // Comment preview
+        ]
+    } else {
+        vec![
             Constraint::Length(3),      // Header
             Constraint::Percentage(60), // Diff content
             Constraint::Percentage(40), // Comment preview
-        ])
+        ]
+    };
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
         .split(frame.area());
 
     render_header(frame, app, chunks[0]);
     render_diff_content(frame, app, chunks[1]);
-    render_comment_preview(frame, app, chunks[2]);
+
+    if has_rally {
+        render_rally_status_bar(frame, chunks[2], app);
+        render_comment_preview(frame, app, chunks[3]);
+    } else {
+        render_comment_preview(frame, app, chunks[2]);
+    }
 }
 
 fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
@@ -204,18 +242,36 @@ fn render_comment_preview(frame: &mut Frame, app: &App, area: ratatui::layout::R
 }
 
 pub fn render_with_suggestion_preview(frame: &mut Frame, app: &App) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
+    let has_rally = app.has_background_rally();
+    let constraints = if has_rally {
+        vec![
+            Constraint::Length(3),      // Header
+            Constraint::Percentage(45), // Diff content (slightly reduced)
+            Constraint::Length(1),      // Rally status bar
+            Constraint::Percentage(50), // Suggestion preview
+        ]
+    } else {
+        vec![
             Constraint::Length(3),      // Header
             Constraint::Percentage(50), // Diff content
             Constraint::Percentage(50), // Suggestion preview
-        ])
+        ]
+    };
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
         .split(frame.area());
 
     render_header(frame, app, chunks[0]);
     render_diff_content(frame, app, chunks[1]);
-    render_suggestion_preview(frame, app, chunks[2]);
+
+    if has_rally {
+        render_rally_status_bar(frame, chunks[2], app);
+        render_suggestion_preview(frame, app, chunks[3]);
+    } else {
+        render_suggestion_preview(frame, app, chunks[2]);
+    }
 }
 
 fn render_suggestion_preview(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
