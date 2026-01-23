@@ -141,6 +141,9 @@ impl CodexAdapter {
     }
 
     /// Run Codex CLI with streaming JSON output
+    ///
+    /// If `session_id` is provided (resume case), and Codex does not emit a new
+    /// `thread.started` event, the existing session_id is preserved in the response.
     async fn run_codex_streaming(
         &self,
         prompt: &str,
@@ -194,7 +197,9 @@ impl CodexAdapter {
 
         let mut final_response: Option<CodexResponse> = None;
         let mut error_lines = Vec::new();
-        let mut thread_id: Option<String> = None;
+        // Initialize thread_id with existing session_id for resume case
+        // This ensures we don't lose the session if Codex doesn't emit thread.started
+        let mut thread_id: Option<String> = session_id.map(|s| s.to_string());
         let mut stream_error: Option<anyhow::Error> = None;
 
         // Process NDJSON stream
@@ -317,11 +322,12 @@ impl CodexAdapter {
                 .into());
             }
             CodexEvent::ItemStarted { item } | CodexEvent::ItemUpdated { item } => {
-                self.handle_item_event(item, thread_id, false).await;
+                // Non-completed items don't produce results, but we still propagate errors
+                self.handle_item_event(item, thread_id, false).await?;
             }
             CodexEvent::ItemCompleted { item } => {
                 // Check if this is the final agent_message with structured output
-                if let Some(result) = self.handle_item_event(item, thread_id, true).await {
+                if let Some(result) = self.handle_item_event(item, thread_id, true).await? {
                     return Ok(Some(result));
                 }
             }
@@ -333,12 +339,14 @@ impl CodexAdapter {
     }
 
     /// Handle item events and return result if it's the final agent_message
+    ///
+    /// Returns `Err` if the final result cannot be constructed (e.g., missing session_id).
     async fn handle_item_event(
         &self,
         item: &CodexItem,
         thread_id: &Option<String>,
         completed: bool,
-    ) -> Option<CodexResponse> {
+    ) -> Result<Option<CodexResponse>> {
         match item.item_type.as_str() {
             "reasoning" => {
                 // Stream reasoning/thinking content to logs
@@ -355,10 +363,17 @@ impl CodexAdapter {
                         if let Ok(result) = serde_json::from_str::<serde_json::Value>(text) {
                             self.send_event(RallyEvent::AgentText("Review completed.".to_string()))
                                 .await;
-                            return Some(CodexResponse {
-                                session_id: thread_id.clone().unwrap_or_default(),
+                            // Ensure we have a valid session_id; error if missing
+                            let session_id = thread_id.clone().ok_or_else(|| {
+                                anyhow!(
+                                    "No session_id available: Codex did not emit thread.started \
+                                     and no existing session was provided"
+                                )
+                            })?;
+                            return Ok(Some(CodexResponse {
+                                session_id,
                                 result: Some(result),
-                            });
+                            }));
                         }
                         // If not JSON, just show as text
                         self.send_event(RallyEvent::AgentText(text.clone())).await;
@@ -408,7 +423,7 @@ impl CodexAdapter {
             }
             _ => {}
         }
-        None
+        Ok(None)
     }
 }
 
