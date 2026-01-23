@@ -124,10 +124,16 @@ pub trait AgentAdapter: Send + Sync {
     async fn run_reviewee(&mut self, prompt: &str, context: &Context) -> Result<RevieweeOutput>;
 
     /// Continue reviewer session (for clarification answers)
+    ///
+    /// For Clarification/Permission flow (not yet implemented)
+    /// See CLAUDE.md "Known Limitations"
     #[allow(dead_code)]
     async fn continue_reviewer(&mut self, message: &str) -> Result<ReviewerOutput>;
 
     /// Continue reviewee session (for permission grants or clarification answers)
+    ///
+    /// For Clarification/Permission flow (not yet implemented)
+    /// See CLAUDE.md "Known Limitations"
     #[allow(dead_code)]
     async fn continue_reviewee(&mut self, message: &str) -> Result<RevieweeOutput>;
 }
@@ -150,6 +156,7 @@ impl SupportedAgent {
         }
     }
 
+    // For multi-agent coordination (future extensibility)
     #[allow(dead_code)]
     pub fn name(&self) -> &'static str {
         match self {

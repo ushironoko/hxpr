@@ -17,16 +17,6 @@ pub struct RallySession {
     pub updated_at: String,
 }
 
-#[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RallyContext {
-    pub pr_title: String,
-    pub pr_body: Option<String>,
-    pub diff: String,
-    pub readme: Option<String>,
-    pub claude_md: Option<String>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RallyHistoryEntry {
     pub iteration: u32,
@@ -58,20 +48,11 @@ pub fn session_path(repo: &str, pr_number: u32) -> Result<PathBuf> {
     Ok(rally_dir(repo, pr_number)?.join("session.json"))
 }
 
-#[allow(dead_code)]
-pub fn context_path(repo: &str, pr_number: u32) -> Result<PathBuf> {
-    Ok(rally_dir(repo, pr_number)?.join("context.json"))
-}
-
 pub fn history_dir(repo: &str, pr_number: u32) -> Result<PathBuf> {
     Ok(rally_dir(repo, pr_number)?.join("history"))
 }
 
-#[allow(dead_code)]
-pub fn logs_dir(repo: &str, pr_number: u32) -> Result<PathBuf> {
-    Ok(rally_dir(repo, pr_number)?.join("logs"))
-}
-
+// For --resume-rally feature (not yet implemented)
 #[allow(dead_code)]
 pub fn read_session(repo: &str, pr_number: u32) -> Result<Option<RallySession>> {
     let path = session_path(repo, pr_number)?;
@@ -105,33 +86,6 @@ pub fn write_session(session: &RallySession) -> Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
-pub fn read_context(repo: &str, pr_number: u32) -> Result<Option<RallyContext>> {
-    let path = context_path(repo, pr_number)?;
-    if !path.exists() {
-        return Ok(None);
-    }
-    let content = fs::read_to_string(&path).context("Failed to read context file")?;
-    let context: RallyContext =
-        serde_json::from_str(&content).context("Failed to parse context file")?;
-    Ok(Some(context))
-}
-
-#[allow(dead_code)]
-pub fn write_context(repo: &str, pr_number: u32, context: &RallyContext) -> Result<()> {
-    let dir = rally_dir(repo, pr_number)?;
-    fs::create_dir_all(&dir).context("Failed to create rally directory")?;
-
-    let path = context_path(repo, pr_number)?;
-    let content = serde_json::to_string_pretty(context).context("Failed to serialize context")?;
-
-    let temp_path = path.with_extension("tmp");
-    fs::write(&temp_path, content).context("Failed to write temporary context file")?;
-    fs::rename(&temp_path, &path).context("Failed to rename context file")?;
-
-    Ok(())
-}
-
 pub fn write_history_entry(
     repo: &str,
     pr_number: u32,
@@ -159,6 +113,7 @@ pub fn write_history_entry(
     Ok(())
 }
 
+// For --resume-rally feature (not yet implemented)
 #[allow(dead_code)]
 pub fn read_history(repo: &str, pr_number: u32) -> Result<Vec<RallyHistoryEntry>> {
     let dir = history_dir(repo, pr_number)?;
@@ -182,25 +137,7 @@ pub fn read_history(repo: &str, pr_number: u32) -> Result<Vec<RallyHistoryEntry>
     Ok(entries)
 }
 
-#[allow(dead_code)]
-pub fn append_log(repo: &str, pr_number: u32, log_type: &str, message: &str) -> Result<()> {
-    let dir = logs_dir(repo, pr_number)?;
-    fs::create_dir_all(&dir).context("Failed to create logs directory")?;
-
-    let path = dir.join(format!("{}.log", log_type));
-    let timestamp = chrono_now();
-    let log_line = format!("[{}] {}\n", timestamp, message);
-
-    use std::io::Write;
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)?;
-    file.write_all(log_line.as_bytes())?;
-
-    Ok(())
-}
-
+// For session cleanup after rally completion
 #[allow(dead_code)]
 pub fn cleanup_session(repo: &str, pr_number: u32) -> Result<()> {
     let dir = rally_dir(repo, pr_number)?;

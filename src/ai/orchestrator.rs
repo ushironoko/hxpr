@@ -38,6 +38,8 @@ pub enum RallyState {
 }
 
 /// Event emitted during rally for TUI updates
+///
+/// Variants are used by TUI handlers (ui/ai_rally.rs) via mpsc channel
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub enum RallyEvent {
@@ -58,6 +60,8 @@ pub enum RallyEvent {
 }
 
 /// Result of the rally process
+///
+/// Used by app.rs to handle rally completion state
 #[derive(Debug)]
 #[allow(dead_code)]
 pub enum RallyResult {
@@ -314,6 +318,9 @@ impl Orchestrator {
     }
 
     /// Continue after clarification answer
+    ///
+    /// For Clarification/Permission flow (not yet implemented)
+    /// See CLAUDE.md "Known Limitations"
     #[allow(dead_code)]
     pub async fn continue_with_clarification(&mut self, answer: &str) -> Result<()> {
         // Ask reviewer for clarification and log the response
@@ -337,6 +344,9 @@ impl Orchestrator {
     }
 
     /// Continue after permission granted
+    ///
+    /// For Clarification/Permission flow (not yet implemented)
+    /// See CLAUDE.md "Known Limitations"
     #[allow(dead_code)]
     pub async fn continue_with_permission(&mut self, action: &str) -> Result<()> {
         let prompt = build_permission_granted_prompt(action);
@@ -535,6 +545,7 @@ impl Orchestrator {
         github::fetch_pr_diff(&self.repo, self.pr_number).await
     }
 
+    // For debugging and session inspection
     #[allow(dead_code)]
     pub fn session(&self) -> &RallySession {
         &self.session

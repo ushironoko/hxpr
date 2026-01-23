@@ -230,6 +230,8 @@ impl ClaudeAdapter {
         }
     }
 
+    // For Clarification/Permission flow (not yet implemented)
+    // See CLAUDE.md "Known Limitations"
     #[allow(dead_code)]
     async fn continue_session(&self, session_id: &str, message: &str) -> Result<ClaudeResponse> {
         let mut cmd = Command::new("claude");
@@ -453,9 +455,11 @@ struct ClaudeResponse {
     session_id: String,
     #[serde(default)]
     result: Option<serde_json::Value>,
+    // For monitoring and cost analysis (future feature)
     #[serde(default)]
     #[allow(dead_code)]
     cost_usd: Option<f64>,
+    // For performance monitoring (future feature)
     #[serde(default)]
     #[allow(dead_code)]
     duration_ms: Option<u64>,
