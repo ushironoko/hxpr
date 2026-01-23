@@ -174,6 +174,7 @@ After making changes, you MUST commit locally (do NOT push):
 CRITICAL RULES:
 - Do NOT use `git push` - pushing is done manually by the user after review
 - NEVER use `git reset --hard` - this destroys work
+- NEVER use `git clean -fd` - this deletes untracked files permanently
 - Use `gh` commands for GitHub API operations (viewing PR info, comments, etc.)
 
 ## Your Task

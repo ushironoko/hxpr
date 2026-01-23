@@ -136,8 +136,6 @@ impl Orchestrator {
 
             self.send_event(RallyEvent::IterationStarted(iteration))
                 .await;
-            self.send_event(RallyEvent::Log(format!("Starting iteration {}", iteration)))
-                .await;
 
             // Update head_sha at start of each iteration (may have changed after push)
             if iteration > 1 {
@@ -165,6 +163,11 @@ impl Orchestrator {
             self.send_event(RallyEvent::ReviewCompleted(review_result.clone()))
                 .await;
             self.last_review = Some(review_result.clone());
+
+            // Update head_sha before posting review (ensure we have the latest commit)
+            if let Err(e) = self.update_head_sha().await {
+                warn!("Failed to update head_sha before posting review: {}", e);
+            }
 
             // Post review to PR
             if let Err(e) = self.post_review_to_pr(&review_result).await {
@@ -235,11 +238,6 @@ impl Orchestrator {
             // Handle reviewee status
             match fix_result.status {
                 RevieweeStatus::Completed => {
-                    self.send_event(RallyEvent::Log(format!(
-                        "Fix completed: {}",
-                        fix_result.summary
-                    )))
-                    .await;
                     // Store the fix result for the next re-review
                     self.last_fix = Some(fix_result.clone());
                     // Continue to next iteration

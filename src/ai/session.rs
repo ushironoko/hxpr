@@ -205,11 +205,7 @@ pub fn cleanup_session(repo: &str, pr_number: u32) -> Result<()> {
 }
 
 fn chrono_now() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let duration = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    format!("{}", duration.as_secs())
+    chrono::Utc::now().to_rfc3339()
 }
 
 impl RallySession {

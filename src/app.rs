@@ -141,6 +141,8 @@ pub struct App {
     rally_event_receiver: Option<mpsc::Receiver<RallyEvent>>,
     // Handle for aborting the rally orchestrator task
     rally_abort_handle: Option<AbortHandle>,
+    // Flag to start AI Rally when data is loaded (set by --ai-rally CLI flag)
+    start_ai_rally_on_load: bool,
 }
 
 impl App {
@@ -183,6 +185,7 @@ impl App {
             discussion_comment_receiver: None,
             rally_event_receiver: None,
             rally_abort_handle: None,
+            start_ai_rally_on_load: false,
         };
 
         (app, tx)
@@ -233,6 +236,7 @@ impl App {
             discussion_comment_receiver: None,
             rally_event_receiver: None,
             rally_abort_handle: None,
+            start_ai_rally_on_load: false,
         };
 
         (app, tx)
@@ -244,6 +248,12 @@ impl App {
 
     pub async fn run(&mut self) -> Result<()> {
         let mut terminal = ui::setup_terminal()?;
+
+        // Start AI Rally immediately if flag is set and data is already loaded (from cache)
+        if self.start_ai_rally_on_load && matches!(self.data_state, DataState::Loaded { .. }) {
+            self.start_ai_rally_on_load = false;
+            self.start_ai_rally();
+        }
 
         while !self.should_quit {
             self.poll_data_updates();
@@ -260,6 +270,11 @@ impl App {
 
     pub fn set_working_dir(&mut self, dir: Option<String>) {
         self.working_dir = dir;
+    }
+
+    /// Set flag to start AI Rally when data is loaded (used by --ai-rally CLI flag)
+    pub fn set_start_ai_rally_on_load(&mut self, start: bool) {
+        self.start_ai_rally_on_load = start;
     }
 
     /// バックグラウンドタスクからのデータ更新をポーリング
@@ -405,10 +420,10 @@ impl App {
                                     "Review completed".to_string(),
                                 ));
                             }
-                            RallyEvent::FixCompleted(_) => {
+                            RallyEvent::FixCompleted(fix) => {
                                 rally_state.logs.push(LogEntry::new(
                                     LogEventType::Fix,
-                                    "Fix completed".to_string(),
+                                    format!("Fix completed: {}", fix.summary),
                                 ));
                             }
                             RallyEvent::Error(e) => {
@@ -434,7 +449,14 @@ impl App {
         match result {
             DataLoadResult::Success { pr, files } => {
                 self.diff_line_count = Self::calc_diff_line_count(&files, self.selected_file);
+                // Check if we need to start AI Rally (--ai-rally flag was passed)
+                let should_start_rally =
+                    self.start_ai_rally_on_load && matches!(self.data_state, DataState::Loading);
                 self.data_state = DataState::Loaded { pr, files };
+                if should_start_rally {
+                    self.start_ai_rally_on_load = false; // Clear the flag
+                    self.start_ai_rally();
+                }
             }
             DataLoadResult::Error(msg) => {
                 // Loading状態の場合のみエラー表示（既にデータがある場合は無視）

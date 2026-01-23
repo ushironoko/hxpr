@@ -14,6 +14,23 @@ pub struct Context {
     pub pr_body: Option<String>,
     pub diff: String,
     pub working_dir: Option<String>,
+    /// HEAD SHA for inline comment posting
+    pub head_sha: String,
+    /// External tool comments (Copilot, CodeRabbit, etc.)
+    pub external_comments: Vec<ExternalComment>,
+}
+
+/// Comment from external tools (bots)
+#[derive(Debug, Clone)]
+pub struct ExternalComment {
+    /// Source bot name (e.g., "copilot[bot]", "coderabbitai[bot]")
+    pub source: String,
+    /// File path (None for general comments)
+    pub path: Option<String>,
+    /// Line number (None for general comments)
+    pub line: Option<u32>,
+    /// Comment body
+    pub body: String,
 }
 
 /// Review action from reviewer

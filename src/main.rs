@@ -49,9 +49,6 @@ struct Args {
     #[arg(long)]
     working_dir: Option<String>,
 
-    /// Resume an interrupted AI Rally session
-    #[arg(long, default_value = "false")]
-    resume_rally: bool,
 }
 
 /// Restore terminal to normal state
@@ -122,6 +119,11 @@ async fn main() -> Result<()> {
         if let Ok(cwd) = std::env::current_dir() {
             app.set_working_dir(Some(cwd.to_string_lossy().to_string()));
         }
+    }
+
+    // Set flag to start AI Rally mode when --ai-rally is passed
+    if args.ai_rally {
+        app.set_start_ai_rally_on_load(true);
     }
 
     // Cancellation token for graceful shutdown
