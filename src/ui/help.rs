@@ -55,6 +55,8 @@ pub fn render(frame: &mut Frame, _app: &App) {
                 .add_modifier(Modifier::BOLD),
         )]),
         Line::from("  j/k, Down/Up    Move line selection"),
+        Line::from("  n               Jump to next comment"),
+        Line::from("  N               Jump to previous comment"),
         Line::from("  Ctrl-d          Page down"),
         Line::from("  Ctrl-u          Page up"),
         Line::from("  c               Add comment at line"),

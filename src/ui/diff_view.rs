@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
@@ -13,6 +15,12 @@ use crate::diff::{classify_line, LineType};
 use crate::syntax::{get_theme, highlight_code_line, syntax_for_file};
 
 pub fn render(frame: &mut Frame, app: &App) {
+    // If current line has inline comments, show split view with comment panel
+    if app.has_comment_at_current_line() {
+        render_with_inline_comment(frame, app);
+        return;
+    }
+
     let has_rally = app.has_background_rally();
     let constraints = if has_rally {
         vec![
@@ -43,6 +51,40 @@ pub fn render(frame: &mut Frame, app: &App) {
         render_footer(frame, chunks[3]);
     } else {
         render_footer(frame, chunks[2]);
+    }
+}
+
+/// Render diff view with inline comment panel at bottom
+fn render_with_inline_comment(frame: &mut Frame, app: &App) {
+    let has_rally = app.has_background_rally();
+    let constraints = if has_rally {
+        vec![
+            Constraint::Length(3),      // Header
+            Constraint::Percentage(55), // Diff content
+            Constraint::Length(1),      // Rally status bar
+            Constraint::Percentage(40), // Inline comments
+        ]
+    } else {
+        vec![
+            Constraint::Length(3),      // Header
+            Constraint::Percentage(60), // Diff content
+            Constraint::Percentage(40), // Inline comments
+        ]
+    };
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(frame.area());
+
+    render_header(frame, app, chunks[0]);
+    render_diff_content(frame, app, chunks[1]);
+
+    if has_rally {
+        render_rally_status_bar(frame, chunks[2], app);
+        render_inline_comments(frame, app, chunks[3]);
+    } else {
+        render_inline_comments(frame, app, chunks[2]);
     }
 }
 
@@ -100,9 +142,22 @@ fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
     let file = app.files().get(app.selected_file);
     let theme_name = &app.config.diff.theme;
 
+    // Build set of lines that have comments
+    let comment_lines: HashSet<usize> = app
+        .file_comment_positions
+        .iter()
+        .map(|pos| pos.diff_line_index)
+        .collect();
+
     let lines: Vec<Line> = match file {
         Some(f) => match f.patch.as_ref() {
-            Some(patch) => parse_patch_to_lines(patch, app.selected_line, &f.filename, theme_name),
+            Some(patch) => parse_patch_to_lines(
+                patch,
+                app.selected_line,
+                &f.filename,
+                theme_name,
+                &comment_lines,
+            ),
             None => vec![Line::from("No diff available")],
         },
         None => vec![Line::from("No file selected")],
@@ -121,6 +176,7 @@ fn parse_patch_to_lines(
     selected_line: usize,
     filename: &str,
     theme_name: &str,
+    comment_lines: &HashSet<usize>,
 ) -> Vec<Line<'static>> {
     let syntax = syntax_for_file(filename);
     let theme = get_theme(theme_name);
@@ -131,9 +187,15 @@ fn parse_patch_to_lines(
         .enumerate()
         .map(|(i, line)| {
             let is_selected = i == selected_line;
+            let has_comment = comment_lines.contains(&i);
             let (line_type, content) = classify_line(line);
 
             let mut spans = build_line_spans(line_type, line, content, &mut highlighter);
+
+            // Add comment indicator at the beginning if this line has comments
+            if has_comment {
+                spans.insert(0, Span::styled("● ", Style::default().fg(Color::Yellow)));
+            }
 
             if is_selected {
                 for span in &mut spans {
@@ -207,7 +269,7 @@ fn highlight_or_fallback(
 
 fn render_footer(frame: &mut Frame, area: ratatui::layout::Rect) {
     let footer = Paragraph::new(
-        "j/k: move | c: comment | s: suggestion | Ctrl-d/u: page down/up | q/Esc: back to list",
+        "j/k: move | n/N: next/prev comment | c: comment | s: suggestion | Ctrl-d/u: page | q: back",
     )
     .block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, area);
@@ -332,4 +394,56 @@ fn render_suggestion_preview(frame: &mut Frame, app: &App, area: ratatui::layout
         .wrap(Wrap { trim: true });
 
     frame.render_widget(preview, area);
+}
+
+/// Render inline comments panel for current line
+fn render_inline_comments(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let indices = app.get_comment_indices_at_current_line();
+    let Some(ref comments) = app.review_comments else {
+        return;
+    };
+
+    let mut lines: Vec<Line> = vec![];
+    for (i, &idx) in indices.iter().enumerate() {
+        let Some(comment) = comments.get(idx) else {
+            continue;
+        };
+
+        if i > 0 {
+            // Separator between multiple comments
+            lines.push(Line::from(Span::styled(
+                "───────────────────────────────────────",
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+
+        // Header: @user (line N)
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("@{}", comment.user.login),
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::styled(
+                format!(" (line {})", comment.line.unwrap_or(0)),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+
+        // Body
+        for line in comment.body.lines() {
+            lines.push(Line::from(line.to_string()));
+        }
+        lines.push(Line::from("")); // Spacing after comment body
+    }
+
+    let title = format!(
+        "Comment{} (n/N: jump)",
+        if indices.len() > 1 { "s" } else { "" }
+    );
+
+    let paragraph = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .wrap(Wrap { trim: true });
+
+    frame.render_widget(paragraph, area);
 }
