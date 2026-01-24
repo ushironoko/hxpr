@@ -42,7 +42,7 @@ main.rs
 
 ### Module Structure
 
-- **app.rs**: アプリケーション状態管理（`AppState`/`DataState`）、キーイベント処理
+- **app.rs**: アプリケーション状態管理（`AppState`/`DataState`/`DiffCache`）、キーイベント処理
 - **github/**: GitHub API 通信
   - `client.rs`: `gh` CLI のラッパー（`gh_command`, `gh_api`, `gh_api_post`）
   - `pr.rs`: PR 情報取得、レビュー送信
@@ -55,10 +55,11 @@ main.rs
   - `session.rs`: セッション永続化
 - **ui/**: TUI レンダリング（ratatui ベース）
   - `file_list.rs`: ファイル一覧画面
-  - `diff_view.rs`: diff 表示画面
+  - `diff_view.rs`: diff 表示画面（インラインコメント表示、キャッシュ管理）
   - `comment_list.rs`: レビューコメント一覧画面
   - `ai_rally.rs`: AI Rally 画面
   - `help.rs`: ヘルプ画面
+- **diff.rs**: diff パース、行分類（`LineType`）、ハンク解析
 - **cache.rs**: キャッシュ管理（JSON ファイル、TTL ベース）
   - PRデータ: `~/.cache/octorus/{repo}_{pr}.json`
   - コメント: `~/.cache/octorus/{repo}_{pr}_comments.json`
@@ -73,6 +74,11 @@ main.rs
 - `FileList` → `CommentList` → `DiffView` (コメントジャンプ)
 - `FileList` → `AiRally` (AI Rally 画面)
 - `Help` (トグル)
+
+**Diff View Features**:
+- インラインコメント表示: コメントがある行は `●` マーカーで表示
+- コメントパネル: コメントのある行を選択すると下部にコメント内容を表示
+- `n` / `N` でコメント間をジャンプ（ラップなし、先頭にスクロール）
 
 **DataState** (データ状態):
 - `Loading` → `Loaded { pr, files }` or `Error(String)`
@@ -92,6 +98,20 @@ main.rs
 2. キャッシュヒット: 即座に表示、API呼び出しなし
 3. キャッシュ古い/なし: バックグラウンドで取得
 4. `App::poll_comment_updates()` が mpsc チャンネル経由で更新を受信
+
+### Diff Cache
+
+シンタックスハイライト済みの diff 行をキャッシュし、スクロール時の再計算を回避:
+
+- `DiffCache`: ファイルインデックス、patch ハッシュ、コメント行セット、キャッシュ済み行データを保持
+- `CachedDiffLine`: `Vec<Span<'static>>` を保持（REVERSED 修飾子なし）
+- `App::ensure_diff_cache()`: キャッシュの有効性を確認し、必要に応じて再構築
+- キャッシュ無効化条件: ファイル変更、patch 内容変更、コメント行変更
+
+**更新タイミング**:
+- `handle_file_list_input(Enter)`: ファイル選択時
+- `poll_comment_updates()`: コメント取得完了時
+- `jump_to_comment()`: コメントジャンプ時
 
 ## AI Rally Feature
 
@@ -218,10 +238,20 @@ AI Rallyでレビュイーが`NeedsClarification`または`NeedsPermission`を�
 1. **WaitingForClarification**: ユーザーに質問を表示し、`y`でエディタ入力、`n`でスキップ（abort）
 2. **WaitingForPermission**: ユーザーにアクション/理由を表示し、`y`で承認、`n`で拒否
 
-TUI キーバインド:
-- `y`: 承認またはエディタで回答入力
-- `n`: 拒否またはスキップ
-- `q`: abort
+### TUI Keybindings (AI Rally View)
+
+| キー | 操作 |
+|------|------|
+| `j` / `↓` | ログ内を下に移動 |
+| `k` / `↑` | ログ内を上に移動 |
+| `Enter` | ログ詳細を表示 |
+| `g` | 先頭にジャンプ |
+| `G` | 末尾にジャンプ |
+| `b` | バックグラウンド実行（ファイル一覧に戻る） |
+| `y` | 許可を付与 / 回答を入力 |
+| `n` | 許可を拒否 / スキップ |
+| `r` | リトライ（エラー時） |
+| `q` / `Esc` | Rally を中止して終了 |
 
 ## Requirements
 

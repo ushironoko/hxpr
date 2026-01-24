@@ -101,11 +101,15 @@ This creates:
 |-----|--------|
 | `j` / `↓` | Move down |
 | `k` / `↑` | Move up |
+| `n` | Jump to next comment |
+| `N` | Jump to previous comment |
 | `Ctrl-d` | Page down |
 | `Ctrl-u` | Page up |
 | `c` | Add comment at line |
 | `s` | Add suggestion at line |
 | `q` / `Esc` | Back to file list |
+
+**Note**: Lines with existing comments are marked with `●`. When you select a commented line, the comment content is displayed in a panel below the diff.
 
 #### Comment List View
 
@@ -219,14 +223,23 @@ AI Rally is an automated PR review and fix cycle that uses two AI agents:
 - **External Bot Support**: Collects feedback from Copilot, CodeRabbit, and other bots
 - **Safe Operations**: Dangerous git operations (`--force`, `reset --hard`) are prohibited
 - **Session Persistence**: Rally state is saved and can be resumed
+- **Interactive Flow**: When the AI agent needs clarification or permission, you can respond interactively
+- **Background Execution**: Press `b` to run rally in background while continuing to browse files
 
 ### Keybindings (AI Rally View)
 
 | Key | Action |
 |-----|--------|
-| `j` / `↓` | Scroll log down |
-| `k` / `↑` | Scroll log up |
-| `q` / `Esc` | Exit rally |
+| `j` / `↓` | Move down in log |
+| `k` / `↑` | Move up in log |
+| `Enter` | Show log detail |
+| `g` | Jump to top |
+| `G` | Jump to bottom |
+| `b` | Run in background (return to file list) |
+| `y` | Grant permission / Enter clarification |
+| `n` | Deny permission / Skip clarification |
+| `r` | Retry (on error) |
+| `q` / `Esc` | Abort and exit rally |
 
 ## License
 
