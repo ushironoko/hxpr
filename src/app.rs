@@ -1594,7 +1594,6 @@ impl App {
         };
 
         let target_path = &comment.path;
-        let target_line = comment.line;
 
         // Find file index by path
         let file_index = self.files().iter().position(|f| &f.filename == target_path);
@@ -1607,49 +1606,18 @@ impl App {
             self.update_diff_line_count();
             self.update_file_comment_positions();
 
-            // Try to scroll to the target line in the diff
-            if let Some(line_num) = target_line {
-                if let Some(file) = self.files().get(idx) {
-                    if let Some(patch) = file.patch.as_ref() {
-                        if let Some(diff_line_index) =
-                            self.find_diff_line_for_new_line(patch, line_num)
-                        {
-                            self.selected_line = diff_line_index;
-                            // Center the line in view
-                            self.scroll_offset = diff_line_index.saturating_sub(10);
-                        }
-                    }
-                }
+            // Find diff line index from pre-computed positions
+            let diff_line_index = self
+                .file_comment_positions
+                .iter()
+                .find(|pos| pos.comment_index == self.selected_comment)
+                .map(|pos| pos.diff_line_index);
+
+            if let Some(line_idx) = diff_line_index {
+                self.selected_line = line_idx;
+                self.scroll_offset = line_idx;
             }
         }
-    }
-
-    fn find_diff_line_for_new_line(&self, patch: &str, target_line: u32) -> Option<usize> {
-        let lines: Vec<&str> = patch.lines().collect();
-        let mut new_line_number: Option<u32> = None;
-
-        for (i, line) in lines.iter().enumerate() {
-            if line.starts_with("@@") {
-                // Parse hunk header to get starting line number
-                if let Some(plus_pos) = line.find('+') {
-                    let after_plus = &line[plus_pos + 1..];
-                    let end_pos = after_plus.find([',', ' ']).unwrap_or(after_plus.len());
-                    if let Ok(num) = after_plus[..end_pos].parse::<u32>() {
-                        new_line_number = Some(num);
-                    }
-                }
-            } else if line.starts_with('+') || line.starts_with(' ') {
-                if let Some(current) = new_line_number {
-                    if current == target_line {
-                        return Some(i);
-                    }
-                    new_line_number = Some(current + 1);
-                }
-            }
-            // Removed lines don't increment new_line_number
-        }
-
-        None
     }
 
     /// Update file_comment_positions based on current file and review_comments
