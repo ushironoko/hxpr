@@ -9,17 +9,11 @@ use std::panic;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-mod ai;
-mod app;
-mod cache;
-mod config;
-mod diff;
-mod editor;
-mod github;
+// Use modules from the library crate
+use octorus::{app, cache, config, loader, syntax};
+
+// init is only used by the binary, not needed for benchmarks
 mod init;
-mod loader;
-mod syntax;
-mod ui;
 
 #[derive(Parser, Debug)]
 #[command(name = "or")]

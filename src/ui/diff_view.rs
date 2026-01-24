@@ -171,28 +171,25 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     // Try to use cached lines if available
     let lines: Vec<Line> = if let Some(ref cache) = app.diff_cache {
-        // Use cached lines, apply REVERSED only to selected line
-        cache
-            .lines
+        // Calculate visible range for optimization
+        // Add buffer for smooth scrolling and wrap handling
+        let visible_height = area.height.saturating_sub(2) as usize;
+        let visible_start = app.scroll_offset.saturating_sub(2);
+        let visible_end = (app.scroll_offset + visible_height + 5).min(cache.lines.len());
+
+        // Only process visible lines (with buffer) for performance
+        cache.lines[visible_start..visible_end]
             .iter()
             .enumerate()
-            .map(|(i, cached)| {
-                let is_selected = i == app.selected_line;
+            .map(|(rel_idx, cached)| {
+                let abs_idx = visible_start + rel_idx;
+                let is_selected = abs_idx == app.selected_line;
                 if is_selected {
-                    // Selected line: apply REVERSED modifier
-                    let spans: Vec<Span> = cached
-                        .spans
-                        .iter()
-                        .map(|span| {
-                            Span::styled(
-                                span.content.clone(),
-                                span.style.add_modifier(Modifier::REVERSED),
-                            )
-                        })
-                        .collect();
-                    Line::from(spans)
+                    // Use Line::style() instead of cloning each span with REVERSED
+                    // This is more efficient as it applies style at the Line level
+                    Line::from(cached.spans.clone())
+                        .style(Style::default().add_modifier(Modifier::REVERSED))
                 } else {
-                    // Non-selected line: clone as-is
                     Line::from(cached.spans.clone())
                 }
             })
@@ -217,10 +214,18 @@ fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
         }
     };
 
+    // Adjust scroll offset for visible range processing
+    let adjusted_scroll = if app.diff_cache.is_some() {
+        let visible_start = app.scroll_offset.saturating_sub(2);
+        (app.scroll_offset - visible_start) as u16
+    } else {
+        app.scroll_offset as u16
+    };
+
     let diff_block = Paragraph::new(lines)
         .block(Block::default().borders(Borders::ALL))
         .wrap(Wrap { trim: false })
-        .scroll((app.scroll_offset as u16, 0));
+        .scroll((adjusted_scroll, 0));
 
     frame.render_widget(diff_block, area);
 }
