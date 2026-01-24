@@ -6,6 +6,7 @@ authors = ["ushironoko"]
 description = "A TUI tool for GitHub PR review, designed for Helix editor users"
 license = "MIT"
 repository = "https://github.com/ushironoko/octorus"
+exclude = ["benches/", ".github/", ".claude/", "assets/"]
 
 [[bin]]
 name = "or"
