@@ -1,7 +1,9 @@
 use anyhow::Result;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::SystemTime;
+use tracing::warn;
 use xdg::BaseDirectories;
 
 use crate::github::comment::{DiscussionComment, ReviewComment};
@@ -45,12 +47,29 @@ pub fn sanitize_repo_name(repo: &str) -> Result<String> {
     Ok(sanitized)
 }
 
+/// キャッシュ可能なエントリのトレイト
+trait Cacheable: Serialize + DeserializeOwned {
+    /// キャッシュファイルのサフィックス（例: "", "_comments", "_discussion_comments"）
+    fn cache_suffix() -> &'static str;
+    /// エントリの作成時刻を返す
+    fn created_at(&self) -> u64;
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheEntry {
     pub pr: PullRequest,
     pub files: Vec<ChangedFile>,
     pub created_at: u64,
     pub pr_updated_at: String,
+}
+
+impl Cacheable for CacheEntry {
+    fn cache_suffix() -> &'static str {
+        ""
+    }
+    fn created_at(&self) -> u64 {
+        self.created_at
+    }
 }
 
 pub enum CacheResult<T> {
@@ -66,33 +85,75 @@ pub fn cache_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from(".cache"))
 }
 
-/// キャッシュファイルパス: ~/.cache/octorus/{owner}_{repo}_{pr}.json
-/// Returns an error if the repository name contains invalid characters or path traversal patterns.
-pub fn cache_file_path(repo: &str, pr_number: u32) -> Result<PathBuf> {
+/// ジェネリックキャッシュファイルパス
+fn cache_file_path_generic<T: Cacheable>(repo: &str, pr_number: u32) -> Result<PathBuf> {
     let sanitized = sanitize_repo_name(repo)?;
-    Ok(cache_dir().join(format!("{}_{}.json", sanitized, pr_number)))
+    Ok(cache_dir().join(format!(
+        "{}_{}{}.json",
+        sanitized,
+        pr_number,
+        T::cache_suffix()
+    )))
 }
 
-/// キャッシュ読み込み
-pub fn read_cache(repo: &str, pr_number: u32, ttl_secs: u64) -> Result<CacheResult<CacheEntry>> {
-    let path = cache_file_path(repo, pr_number)?;
-    if !path.exists() {
-        return Ok(CacheResult::Miss);
-    }
+/// ジェネリックキャッシュ読み込み
+/// キャッシュファイルが破損している場合（JSONデシリアライズエラー）は CacheResult::Miss を返す
+/// その他のI/Oエラー（パーミッション問題、ディスク障害など）はエラーとして伝播する
+fn read_cache_generic<T: Cacheable>(
+    repo: &str,
+    pr_number: u32,
+    ttl_secs: u64,
+) -> Result<CacheResult<T>> {
+    let path = cache_file_path_generic::<T>(repo, pr_number)?;
 
-    let content = std::fs::read_to_string(&path)?;
-    let entry: CacheEntry = serde_json::from_str(&content)?;
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(CacheResult::Miss);
+        }
+        Err(e) => {
+            // Propagate unexpected I/O errors (permission issues, disk faults, etc.)
+            return Err(e.into());
+        }
+    };
+
+    let entry: T = match serde_json::from_str(&content) {
+        Ok(e) => e,
+        Err(e) => {
+            warn!("Cache file {:?} corrupted: {}, treating as miss", path, e);
+            return Ok(CacheResult::Miss);
+        }
+    };
 
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)?
         .as_secs();
-    let age = now.saturating_sub(entry.created_at);
+    let age = now.saturating_sub(entry.created_at());
 
     if age <= ttl_secs {
         Ok(CacheResult::Hit(entry))
     } else {
         Ok(CacheResult::Stale(entry))
     }
+}
+
+/// ジェネリックキャッシュ書き込み
+fn write_cache_generic<T: Cacheable>(repo: &str, pr_number: u32, entry: &T) -> Result<()> {
+    std::fs::create_dir_all(cache_dir())?;
+    let content = serde_json::to_string_pretty(entry)?;
+    std::fs::write(cache_file_path_generic::<T>(repo, pr_number)?, content)?;
+    Ok(())
+}
+
+/// キャッシュファイルパス: ~/.cache/octorus/{owner}_{repo}_{pr}.json
+/// Returns an error if the repository name contains invalid characters or path traversal patterns.
+pub fn cache_file_path(repo: &str, pr_number: u32) -> Result<PathBuf> {
+    cache_file_path_generic::<CacheEntry>(repo, pr_number)
+}
+
+/// キャッシュ読み込み
+pub fn read_cache(repo: &str, pr_number: u32, ttl_secs: u64) -> Result<CacheResult<CacheEntry>> {
+    read_cache_generic(repo, pr_number, ttl_secs)
 }
 
 /// キャッシュ書き込み
@@ -102,8 +163,6 @@ pub fn write_cache(
     pr: &PullRequest,
     files: &[ChangedFile],
 ) -> Result<()> {
-    std::fs::create_dir_all(cache_dir())?;
-
     let entry = CacheEntry {
         pr: pr.clone(),
         files: files.to_vec(),
@@ -112,10 +171,7 @@ pub fn write_cache(
             .as_secs(),
         pr_updated_at: pr.updated_at.clone(),
     };
-
-    let content = serde_json::to_string_pretty(&entry)?;
-    std::fs::write(cache_file_path(repo, pr_number)?, content)?;
-    Ok(())
+    write_cache_generic(repo, pr_number, &entry)
 }
 
 /// PRキャッシュ削除
@@ -156,11 +212,19 @@ pub struct CommentCacheEntry {
     pub created_at: u64,
 }
 
+impl Cacheable for CommentCacheEntry {
+    fn cache_suffix() -> &'static str {
+        "_comments"
+    }
+    fn created_at(&self) -> u64 {
+        self.created_at
+    }
+}
+
 /// コメントキャッシュファイルパス: ~/.cache/octorus/{owner}_{repo}_{pr}_comments.json
 /// Returns an error if the repository name contains invalid characters or path traversal patterns.
 pub fn comment_cache_file_path(repo: &str, pr_number: u32) -> Result<PathBuf> {
-    let sanitized = sanitize_repo_name(repo)?;
-    Ok(cache_dir().join(format!("{}_{}_comments.json", sanitized, pr_number)))
+    cache_file_path_generic::<CommentCacheEntry>(repo, pr_number)
 }
 
 /// コメントキャッシュ読み込み
@@ -169,40 +233,18 @@ pub fn read_comment_cache(
     pr_number: u32,
     ttl_secs: u64,
 ) -> Result<CacheResult<CommentCacheEntry>> {
-    let path = comment_cache_file_path(repo, pr_number)?;
-    if !path.exists() {
-        return Ok(CacheResult::Miss);
-    }
-
-    let content = std::fs::read_to_string(&path)?;
-    let entry: CommentCacheEntry = serde_json::from_str(&content)?;
-
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)?
-        .as_secs();
-    let age = now.saturating_sub(entry.created_at);
-
-    if age <= ttl_secs {
-        Ok(CacheResult::Hit(entry))
-    } else {
-        Ok(CacheResult::Stale(entry))
-    }
+    read_cache_generic(repo, pr_number, ttl_secs)
 }
 
 /// コメントキャッシュ書き込み
 pub fn write_comment_cache(repo: &str, pr_number: u32, comments: &[ReviewComment]) -> Result<()> {
-    std::fs::create_dir_all(cache_dir())?;
-
     let entry = CommentCacheEntry {
         comments: comments.to_vec(),
         created_at: SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)?
             .as_secs(),
     };
-
-    let content = serde_json::to_string_pretty(&entry)?;
-    std::fs::write(comment_cache_file_path(repo, pr_number)?, content)?;
-    Ok(())
+    write_cache_generic(repo, pr_number, &entry)
 }
 
 // ==================== Discussion Comment Cache ====================
@@ -213,14 +255,19 @@ pub struct DiscussionCommentCacheEntry {
     pub created_at: u64,
 }
 
+impl Cacheable for DiscussionCommentCacheEntry {
+    fn cache_suffix() -> &'static str {
+        "_discussion_comments"
+    }
+    fn created_at(&self) -> u64 {
+        self.created_at
+    }
+}
+
 /// ディスカッションコメントキャッシュファイルパス: ~/.cache/octorus/{owner}_{repo}_{pr}_discussion_comments.json
 /// Returns an error if the repository name contains invalid characters or path traversal patterns.
 pub fn discussion_comment_cache_file_path(repo: &str, pr_number: u32) -> Result<PathBuf> {
-    let sanitized = sanitize_repo_name(repo)?;
-    Ok(cache_dir().join(format!(
-        "{}_{}_discussion_comments.json",
-        sanitized, pr_number
-    )))
+    cache_file_path_generic::<DiscussionCommentCacheEntry>(repo, pr_number)
 }
 
 /// ディスカッションコメントキャッシュ読み込み
@@ -229,24 +276,7 @@ pub fn read_discussion_comment_cache(
     pr_number: u32,
     ttl_secs: u64,
 ) -> Result<CacheResult<DiscussionCommentCacheEntry>> {
-    let path = discussion_comment_cache_file_path(repo, pr_number)?;
-    if !path.exists() {
-        return Ok(CacheResult::Miss);
-    }
-
-    let content = std::fs::read_to_string(&path)?;
-    let entry: DiscussionCommentCacheEntry = serde_json::from_str(&content)?;
-
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)?
-        .as_secs();
-    let age = now.saturating_sub(entry.created_at);
-
-    if age <= ttl_secs {
-        Ok(CacheResult::Hit(entry))
-    } else {
-        Ok(CacheResult::Stale(entry))
-    }
+    read_cache_generic(repo, pr_number, ttl_secs)
 }
 
 /// ディスカッションコメントキャッシュ書き込み
@@ -255,21 +285,13 @@ pub fn write_discussion_comment_cache(
     pr_number: u32,
     comments: &[DiscussionComment],
 ) -> Result<()> {
-    std::fs::create_dir_all(cache_dir())?;
-
     let entry = DiscussionCommentCacheEntry {
         comments: comments.to_vec(),
         created_at: SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)?
             .as_secs(),
     };
-
-    let content = serde_json::to_string_pretty(&entry)?;
-    std::fs::write(
-        discussion_comment_cache_file_path(repo, pr_number)?,
-        content,
-    )?;
-    Ok(())
+    write_cache_generic(repo, pr_number, &entry)
 }
 
 #[cfg(test)]

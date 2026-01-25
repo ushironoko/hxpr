@@ -1,8 +1,18 @@
 use anyhow::{Context, Result};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use super::client::{gh_api, gh_api_post, FieldValue};
 use super::pr::User;
+
+/// ジェネリックなfetch & parse関数
+async fn fetch_and_parse<T: DeserializeOwned>(
+    endpoint: &str,
+    error_context: &'static str,
+) -> Result<T> {
+    let json = gh_api(endpoint).await?;
+    serde_json::from_value(json).context(error_context)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReviewComment {
@@ -15,9 +25,11 @@ pub struct ReviewComment {
 }
 
 pub async fn fetch_review_comments(repo: &str, pr_number: u32) -> Result<Vec<ReviewComment>> {
-    let endpoint = format!("repos/{}/pulls/{}/comments", repo, pr_number);
-    let json = gh_api(&endpoint).await?;
-    serde_json::from_value(json).context("Failed to parse review comments response")
+    fetch_and_parse(
+        &format!("repos/{}/pulls/{}/comments", repo, pr_number),
+        "Failed to parse review comments response",
+    )
+    .await
 }
 
 /// ディスカッションコメント（PRの会話タブのコメント）
@@ -33,9 +45,11 @@ pub async fn fetch_discussion_comments(
     repo: &str,
     pr_number: u32,
 ) -> Result<Vec<DiscussionComment>> {
-    let endpoint = format!("repos/{}/issues/{}/comments", repo, pr_number);
-    let json = gh_api(&endpoint).await?;
-    serde_json::from_value(json).context("Failed to parse discussion comments response")
+    fetch_and_parse(
+        &format!("repos/{}/issues/{}/comments", repo, pr_number),
+        "Failed to parse discussion comments response",
+    )
+    .await
 }
 
 /// PR レビュー（全体コメント）
@@ -49,9 +63,11 @@ pub struct Review {
 }
 
 pub async fn fetch_reviews(repo: &str, pr_number: u32) -> Result<Vec<Review>> {
-    let endpoint = format!("repos/{}/pulls/{}/reviews", repo, pr_number);
-    let json = gh_api(&endpoint).await?;
-    serde_json::from_value(json).context("Failed to parse reviews response")
+    fetch_and_parse(
+        &format!("repos/{}/pulls/{}/reviews", repo, pr_number),
+        "Failed to parse reviews response",
+    )
+    .await
 }
 
 pub async fn create_review_comment(
