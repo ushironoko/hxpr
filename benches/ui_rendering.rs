@@ -1,8 +1,13 @@
 //! UI rendering benchmarks for octorus TUI.
 //!
-//! These benchmarks measure the performance of:
-//! - Diff cache building (with and without syntax highlighting)
-//! - Selected line rendering (current vs improved approach)
+//! ## Active benchmarks (production code paths)
+//! - `diff_cache/` – cache building with/without syntax highlighting
+//! - `selected_line/` – span_clone (baseline) vs borrowed_spans (production)
+//! - `visible_range/` – all_lines (baseline) vs visible_borrowed (production)
+//!
+//! ## Archive benchmarks (historical, not used in production)
+//! - `archive/selected_line/line_style` – intermediate approach (clone + Line::style)
+//! - `archive/visible_range/visible_only` – visible range with clone (superseded by borrow)
 
 mod common;
 
@@ -13,7 +18,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 
 use common::{generate_comment_lines, generate_diff_patch};
-use octorus::build_diff_cache;
+use octorus::{build_diff_cache, render_cached_lines};
 
 /// Benchmark diff cache building with syntax highlighting.
 ///
@@ -123,59 +128,18 @@ fn bench_selected_line_rendering(c: &mut Criterion) {
             },
         );
 
-        // Benchmark improved approach: use Line::style()
-        group.bench_with_input(
-            BenchmarkId::new("line_style", line_count),
-            &cached_lines,
-            |b, cached_lines| {
-                b.iter(|| {
-                    let lines: Vec<Line> = cached_lines
-                        .iter()
-                        .enumerate()
-                        .map(|(i, cached)| {
-                            let is_selected = i == line_count / 2;
-                            if is_selected {
-                                Line::from(cached.spans.clone())
-                                    .style(Style::default().add_modifier(Modifier::REVERSED))
-                            } else {
-                                Line::from(cached.spans.clone())
-                            }
-                        })
-                        .collect();
-                    black_box(lines)
-                });
-            },
-        );
-
-        // Benchmark zero-clone approach: borrow spans from cache instead of cloning
+        // Benchmark zero-clone approach: calls the actual production function
         group.bench_with_input(
             BenchmarkId::new("borrowed_spans", line_count),
             &cached_lines,
             |b, cached_lines| {
                 b.iter(|| {
-                    let lines: Vec<Line> = cached_lines
-                        .iter()
-                        .enumerate()
-                        .map(|(i, cached)| {
-                            let is_selected = i == line_count / 2;
-                            // Borrow content from cache: Cow::Borrowed(&str) instead of
-                            // cloning Cow::Owned(String)
-                            let spans: Vec<ratatui::text::Span<'_>> = cached
-                                .spans
-                                .iter()
-                                .map(|s| {
-                                    ratatui::text::Span::styled(s.content.as_ref(), s.style)
-                                })
-                                .collect();
-                            if is_selected {
-                                Line::from(spans)
-                                    .style(Style::default().add_modifier(Modifier::REVERSED))
-                            } else {
-                                Line::from(spans)
-                            }
-                        })
-                        .collect();
-                    black_box(lines)
+                    let selected = line_count / 2;
+                    black_box(render_cached_lines(
+                        black_box(cached_lines),
+                        0,
+                        selected,
+                    ))
                 });
             },
         );
@@ -223,7 +187,90 @@ fn bench_visible_range_processing(c: &mut Criterion) {
             },
         );
 
-        // Process only visible range (optimized approach)
+        // Process only visible range with borrowed spans: calls the actual production function
+        group.bench_with_input(
+            BenchmarkId::new("visible_borrowed", total_lines),
+            &cached_lines,
+            |b, cached_lines| {
+                b.iter(|| {
+                    let visible_start = scroll_offset.saturating_sub(2);
+                    let visible_end = (scroll_offset + visible_height + 5).min(cached_lines.len());
+
+                    black_box(render_cached_lines(
+                        black_box(&cached_lines[visible_start..visible_end]),
+                        visible_start,
+                        scroll_offset,
+                    ))
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
+// Archive benchmarks: historical approaches no longer used in production.
+// Kept for regression tracking and comparison with current production code.
+// ---------------------------------------------------------------------------
+
+/// Archive: selected line rendering with Line::style() + clone.
+///
+/// Intermediate approach that was superseded by zero-copy borrowed_spans.
+/// Useful as a reference point between span_clone (worst) and borrowed_spans (best).
+fn bench_archive_selected_line(c: &mut Criterion) {
+    let mut group = c.benchmark_group("archive/selected_line");
+
+    for line_count in [100, 500, 1000] {
+        let patch = generate_diff_patch(line_count);
+        let empty_comments: HashSet<usize> = HashSet::new();
+        let cached_lines =
+            build_diff_cache(&patch, "test.rs", "base16-ocean.dark", &empty_comments);
+
+        group.bench_with_input(
+            BenchmarkId::new("line_style", line_count),
+            &cached_lines,
+            |b, cached_lines| {
+                b.iter(|| {
+                    let lines: Vec<Line> = cached_lines
+                        .iter()
+                        .enumerate()
+                        .map(|(i, cached)| {
+                            let is_selected = i == line_count / 2;
+                            if is_selected {
+                                Line::from(cached.spans.clone())
+                                    .style(Style::default().add_modifier(Modifier::REVERSED))
+                            } else {
+                                Line::from(cached.spans.clone())
+                            }
+                        })
+                        .collect();
+                    black_box(lines)
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+/// Archive: visible range processing with clone (no borrowing).
+///
+/// Superseded by visible_borrowed which uses zero-copy render_cached_lines().
+/// Useful as a reference to show the benefit of borrowing over cloning
+/// within the same visible-range optimization.
+fn bench_archive_visible_range(c: &mut Criterion) {
+    let mut group = c.benchmark_group("archive/visible_range");
+
+    for total_lines in [1000, 5000] {
+        let patch = generate_diff_patch(total_lines);
+        let empty_comments: HashSet<usize> = HashSet::new();
+        let cached_lines =
+            build_diff_cache(&patch, "test.rs", "base16-ocean.dark", &empty_comments);
+
+        let visible_height = 50_usize;
+        let scroll_offset = total_lines / 2;
+
         group.bench_with_input(
             BenchmarkId::new("visible_only", total_lines),
             &cached_lines,
@@ -250,41 +297,6 @@ fn bench_visible_range_processing(c: &mut Criterion) {
                 });
             },
         );
-
-        // Process only visible range with borrowed spans (zero-clone approach)
-        group.bench_with_input(
-            BenchmarkId::new("visible_borrowed", total_lines),
-            &cached_lines,
-            |b, cached_lines| {
-                b.iter(|| {
-                    let visible_start = scroll_offset.saturating_sub(2);
-                    let visible_end = (scroll_offset + visible_height + 5).min(cached_lines.len());
-
-                    let lines: Vec<Line> = cached_lines[visible_start..visible_end]
-                        .iter()
-                        .enumerate()
-                        .map(|(rel_idx, cached)| {
-                            let abs_idx = visible_start + rel_idx;
-                            let is_selected = abs_idx == scroll_offset;
-                            let spans: Vec<ratatui::text::Span<'_>> = cached
-                                .spans
-                                .iter()
-                                .map(|s| {
-                                    ratatui::text::Span::styled(s.content.as_ref(), s.style)
-                                })
-                                .collect();
-                            if is_selected {
-                                Line::from(spans)
-                                    .style(Style::default().add_modifier(Modifier::REVERSED))
-                            } else {
-                                Line::from(spans)
-                            }
-                        })
-                        .collect();
-                    black_box(lines)
-                });
-            },
-        );
     }
 
     group.finish();
@@ -296,5 +308,7 @@ criterion_group!(
     bench_build_diff_cache_no_highlight,
     bench_selected_line_rendering,
     bench_visible_range_processing,
+    bench_archive_selected_line,
+    bench_archive_visible_range,
 );
 criterion_main!(benches);

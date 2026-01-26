@@ -18,4 +18,4 @@ pub mod ui;
 // Re-export commonly used types for benchmarks
 pub use app::CachedDiffLine;
 pub use diff::{classify_line, get_line_info, LineType};
-pub use ui::diff_view::build_diff_cache;
+pub use ui::diff_view::{build_diff_cache, render_cached_lines};
