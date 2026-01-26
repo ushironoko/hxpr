@@ -370,7 +370,7 @@ impl AgentAdapter for ClaudeAdapter {
         // - gh pr close/merge/edit (could modify PR state unexpectedly)
         //
         // NOTE: git push is NOT included by default (Breaking change from v0.1.x).
-        // To enable, add GitPush to config.reviewee_additional_tools.
+        // To enable, add "Bash(git push:*)" to config.reviewee_additional_tools.
         //
         // GitHub CLI: Only safe, read-only PR operations (view, diff, checks) are allowed.
         // Excluded dangerous commands: gh pr close, gh pr merge, gh pr edit, gh pr ready, gh pr reopen

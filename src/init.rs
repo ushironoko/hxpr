@@ -21,6 +21,15 @@ reviewee = "claude"
 max_iterations = 10
 timeout_secs = 600
 # prompt_dir = "/custom/path/to/prompts"  # Optional: custom prompt directory
+
+# Additional tools for reviewer agent (Claude only)
+# Specify in Claude Code --allowedTools format
+# reviewer_additional_tools = ["Skill", "WebSearch"]
+
+# Additional tools for reviewee agent (Claude only)
+# NOTE: git push is disabled by default for safety.
+# To enable automatic push, add "Bash(git push:*)" to this list.
+# reviewee_additional_tools = ["Skill", "Bash(git push:*)"]
 "#;
 
 /// Default prompt templates (same as embedded in binary)
