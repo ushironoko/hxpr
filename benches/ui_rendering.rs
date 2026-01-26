@@ -13,7 +13,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 
 use common::{generate_comment_lines, generate_diff_patch};
-use octorus::build_diff_cache;
+use octorus::{build_diff_cache, render_cached_lines};
 
 /// Benchmark diff cache building with syntax highlighting.
 ///
@@ -147,35 +147,18 @@ fn bench_selected_line_rendering(c: &mut Criterion) {
             },
         );
 
-        // Benchmark zero-clone approach: borrow spans from cache instead of cloning
+        // Benchmark zero-clone approach: calls the actual production function
         group.bench_with_input(
             BenchmarkId::new("borrowed_spans", line_count),
             &cached_lines,
             |b, cached_lines| {
                 b.iter(|| {
-                    let lines: Vec<Line> = cached_lines
-                        .iter()
-                        .enumerate()
-                        .map(|(i, cached)| {
-                            let is_selected = i == line_count / 2;
-                            // Borrow content from cache: Cow::Borrowed(&str) instead of
-                            // cloning Cow::Owned(String)
-                            let spans: Vec<ratatui::text::Span<'_>> = cached
-                                .spans
-                                .iter()
-                                .map(|s| {
-                                    ratatui::text::Span::styled(s.content.as_ref(), s.style)
-                                })
-                                .collect();
-                            if is_selected {
-                                Line::from(spans)
-                                    .style(Style::default().add_modifier(Modifier::REVERSED))
-                            } else {
-                                Line::from(spans)
-                            }
-                        })
-                        .collect();
-                    black_box(lines)
+                    let selected = line_count / 2;
+                    black_box(render_cached_lines(
+                        black_box(cached_lines),
+                        0,
+                        selected,
+                    ))
                 });
             },
         );
@@ -251,7 +234,7 @@ fn bench_visible_range_processing(c: &mut Criterion) {
             },
         );
 
-        // Process only visible range with borrowed spans (zero-clone approach)
+        // Process only visible range with borrowed spans: calls the actual production function
         group.bench_with_input(
             BenchmarkId::new("visible_borrowed", total_lines),
             &cached_lines,
@@ -260,28 +243,11 @@ fn bench_visible_range_processing(c: &mut Criterion) {
                     let visible_start = scroll_offset.saturating_sub(2);
                     let visible_end = (scroll_offset + visible_height + 5).min(cached_lines.len());
 
-                    let lines: Vec<Line> = cached_lines[visible_start..visible_end]
-                        .iter()
-                        .enumerate()
-                        .map(|(rel_idx, cached)| {
-                            let abs_idx = visible_start + rel_idx;
-                            let is_selected = abs_idx == scroll_offset;
-                            let spans: Vec<ratatui::text::Span<'_>> = cached
-                                .spans
-                                .iter()
-                                .map(|s| {
-                                    ratatui::text::Span::styled(s.content.as_ref(), s.style)
-                                })
-                                .collect();
-                            if is_selected {
-                                Line::from(spans)
-                                    .style(Style::default().add_modifier(Modifier::REVERSED))
-                            } else {
-                                Line::from(spans)
-                            }
-                        })
-                        .collect();
-                    black_box(lines)
+                    black_box(render_cached_lines(
+                        black_box(&cached_lines[visible_start..visible_end]),
+                        visible_start,
+                        scroll_offset,
+                    ))
                 });
             },
         );

@@ -44,6 +44,40 @@ pub fn build_diff_cache(
         .collect()
 }
 
+/// Convert cached diff lines to renderable [`Line`]s using zero-copy borrowing.
+///
+/// Borrows span content from the cache (`Cow::Borrowed`) instead of cloning,
+/// avoiding heap allocations entirely.
+///
+/// * `cached_lines` – slice of cached lines to render (may be a sub-range).
+/// * `start_index`  – absolute index of the first element in `cached_lines`,
+///                    used to correctly identify the selected line.
+/// * `selected_line` – absolute index of the currently selected line.
+pub fn render_cached_lines<'a>(
+    cached_lines: &'a [CachedDiffLine],
+    start_index: usize,
+    selected_line: usize,
+) -> Vec<Line<'a>> {
+    cached_lines
+        .iter()
+        .enumerate()
+        .map(|(rel_idx, cached)| {
+            let abs_idx = start_index + rel_idx;
+            let is_selected = abs_idx == selected_line;
+            let spans: Vec<Span<'_>> = cached
+                .spans
+                .iter()
+                .map(|s| Span::styled(s.content.as_ref(), s.style))
+                .collect();
+            if is_selected {
+                Line::from(spans).style(Style::default().add_modifier(Modifier::REVERSED))
+            } else {
+                Line::from(spans)
+            }
+        })
+        .collect()
+}
+
 pub fn render(frame: &mut Frame, app: &App) {
     // If current line has inline comments, show split view with comment panel
     if app.has_comment_at_current_line() {
@@ -182,28 +216,11 @@ fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
 
         // Only process visible lines (with buffer) for performance
         // When visible_start >= visible_end, this produces an empty slice (safe)
-        cache.lines[visible_start..visible_end]
-            .iter()
-            .enumerate()
-            .map(|(rel_idx, cached)| {
-                let abs_idx = visible_start + rel_idx;
-                let is_selected = abs_idx == app.selected_line;
-                // Borrow spans from cache instead of cloning owned Strings.
-                // Each Span gets Cow::Borrowed(&str) pointing to the cached data,
-                // avoiding heap allocation entirely.
-                let spans: Vec<Span<'_>> = cached
-                    .spans
-                    .iter()
-                    .map(|s| Span::styled(s.content.as_ref(), s.style))
-                    .collect();
-                if is_selected {
-                    Line::from(spans)
-                        .style(Style::default().add_modifier(Modifier::REVERSED))
-                } else {
-                    Line::from(spans)
-                }
-            })
-            .collect()
+        render_cached_lines(
+            &cache.lines[visible_start..visible_end],
+            visible_start,
+            app.selected_line,
+        )
     } else {
         // Fallback: parse without cache (should rarely happen)
         let file = app.files().get(app.selected_file);
