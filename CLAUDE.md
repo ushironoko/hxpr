@@ -222,16 +222,18 @@ timeout_secs = 600
 # prompt_dir = "/custom/path/to/prompts"  # カスタムプロンプトディレクトリ
 
 # reviewer 用の追加ツール (Claude only)
+# Claude Code の --allowedTools 形式で指定
 # reviewer_additional_tools = []
 
 # reviewee 用の追加ツール (Claude only)
-# reviewee_additional_tools = ["Skill", "GitPush"]
+# reviewee_additional_tools = ["Skill", "Bash(git push:*)"]
 
-# 許可可能なツール (PascalCase で指定):
-#   - Skill      : Claude Code スキル実行
-#   - WebFetch   : URL コンテンツ取得
-#   - WebSearch  : Web 検索
-#   - GitPush    : git push (reviewee のみ有効)
+# 例:
+#   - "Skill"                      : Claude Code スキル実行
+#   - "WebFetch"                   : URL コンテンツ取得
+#   - "WebSearch"                  : Web 検索
+#   - "Bash(git push:*)"           : git push
+#   - "Bash(gh api --method POST:*)": GitHub API POST
 #
 # NOTE: git push はデフォルトで無効。リモートへの自動プッシュを許可する場合のみ設定
 ```

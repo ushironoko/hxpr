@@ -152,6 +152,14 @@ timeout_secs = 600
 
 # カスタムプロンプトディレクトリ（デフォルト: ~/.config/octorus/prompts/）
 # prompt_dir = "/custom/path/to/prompts"
+
+# reviewer 用の追加ツール（Claude only）
+# Claude Code の --allowedTools 形式で指定
+# reviewer_additional_tools = []
+
+# reviewee 用の追加ツール（Claude only）
+# 例: "Skill", "WebFetch", "WebSearch", "Bash(git push:*)"
+# reviewee_additional_tools = ["Skill", "Bash(git push:*)"]
 ```
 
 ### プロンプトテンプレートのカスタマイズ
@@ -225,6 +233,70 @@ AI Rally は2つの AI エージェントによる自動 PR レビュー＆修�
 - **セッション永続化**: Rally の状態は保存され、再開可能
 - **インタラクティブフロー**: AI エージェントが確認や許可を求める際、対話的に応答可能
 - **バックグラウンド実行**: `b` を押すと Rally をバックグラウンドで実行しながらファイル閲覧を継続可能
+
+### 推奨構成
+
+Codex はサンドボックスモードを使用し、細粒度のツール権限制御ができません。
+最大限のセキュリティのため、以下の構成を推奨:
+
+| 役割 | 推奨 | 理由 |
+|------|-------------|--------|
+| Reviewer | Codex または Claude | 読み取り専用操作のため、どちらも安全 |
+| Reviewee | **Claude** | allowedTools による細粒度のツール制御が可能 |
+
+安全な構成の例:
+
+```toml
+[ai]
+reviewer = "codex"   # 安全: 読み取り専用サンドボックス
+reviewee = "claude"  # 推奨: 細粒度のツール制御
+reviewee_additional_tools = ["Skill"]  # 必要なものだけ追加
+```
+
+**注意**: Codex を reviewee として使用する場合、`--full-auto` モードで実行され、
+ワークスペースへの書き込みアクセスとツール制限なしで動作します。
+
+### ツール権限
+
+#### デフォルトで許可されるツール
+
+**Reviewer**（読み取り専用操作）:
+
+| ツール | 説明 |
+|------|-------------|
+| Read, Glob, Grep | ファイル読み取りと検索 |
+| `gh pr view/diff/checks` | PR 情報の表示 |
+| `gh api --method GET` | GitHub API（GET のみ） |
+
+**Reviewee**（コード修正）:
+
+| カテゴリ | コマンド |
+|----------|----------|
+| ファイル | Read, Edit, Write, Glob, Grep |
+| Git | status, diff, add, commit, log, show, branch, switch, stash |
+| GitHub CLI | pr view, pr diff, pr checks, api GET |
+| Cargo | build, test, check, clippy, fmt, run |
+| npm/pnpm/bun | install, test, run |
+
+#### 追加ツール（Claude only）
+
+追加ツールは設定で有効化できます。Claude Code の `--allowedTools` 形式を使用:
+
+| 例 | 説明 |
+|---------|-------------|
+| `"Skill"` | Claude Code スキルの実行 |
+| `"WebFetch"` | URL コンテンツの取得 |
+| `"WebSearch"` | Web 検索 |
+| `"Bash(git push:*)"` | リモートへの git push |
+| `"Bash(gh api --method POST:*)"` | GitHub API POST リクエスト |
+
+```toml
+[ai]
+reviewee_additional_tools = ["Skill", "Bash(git push:*)"]
+```
+
+**Breaking Change (v0.2.0)**: `git push` はデフォルトで無効になりました。
+有効にするには `"Bash(git push:*)"` を `reviewee_additional_tools` に追加してください。
 
 ### キーバインド（AI Rally 画面）
 

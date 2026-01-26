@@ -46,22 +46,17 @@ impl ClaudeAdapter {
         if config.reviewer_additional_tools.is_empty() {
             base.to_string()
         } else {
-            let tools: Vec<&str> = config
-                .reviewer_additional_tools
-                .iter()
-                .map(|t| t.as_tool_pattern())
-                .collect();
-            format!("{},{}", base, tools.join(","))
+            format!("{},{}", base, config.reviewer_additional_tools.join(","))
         }
     }
 
     /// Build allowed tools string for reviewee.
     /// Base tools: File ops, git (without push), gh pr read-only, build/test commands.
     /// NOTE: git push is NOT included by default (Breaking change).
-    /// To enable, add GitPush to reviewee_additional_tools.
+    /// To enable, add "Bash(git push:*)" to reviewee_additional_tools.
     pub(crate) fn build_reviewee_allowed_tools(config: &AiConfig) -> String {
         // NOTE: git push is NOT included by default (Breaking change from v0.1.x).
-        // Users must explicitly add GitPush to reviewee_additional_tools to enable.
+        // Users must explicitly add "Bash(git push:*)" to reviewee_additional_tools to enable.
         let base = concat!(
             "Read,Edit,Write,Glob,Grep,",
             // Git: local operations only (no push by default)
@@ -88,12 +83,7 @@ impl ClaudeAdapter {
         if config.reviewee_additional_tools.is_empty() {
             base.to_string()
         } else {
-            let tools: Vec<&str> = config
-                .reviewee_additional_tools
-                .iter()
-                .map(|t| t.as_tool_pattern())
-                .collect();
-            format!("{},{}", base, tools.join(","))
+            format!("{},{}", base, config.reviewee_additional_tools.join(","))
         }
     }
 
@@ -655,7 +645,6 @@ fn summarize_text(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::AllowedTool;
 
     #[test]
     fn test_build_reviewer_allowed_tools_default() {
@@ -670,7 +659,7 @@ mod tests {
     #[test]
     fn test_build_reviewer_allowed_tools_with_skill() {
         let mut config = AiConfig::default();
-        config.reviewer_additional_tools = vec![AllowedTool::Skill];
+        config.reviewer_additional_tools = vec!["Skill".to_string()];
         let tools = ClaudeAdapter::build_reviewer_allowed_tools(&config);
         assert!(tools.ends_with(",Skill"));
     }
@@ -678,7 +667,7 @@ mod tests {
     #[test]
     fn test_build_reviewer_allowed_tools_with_multiple() {
         let mut config = AiConfig::default();
-        config.reviewer_additional_tools = vec![AllowedTool::Skill, AllowedTool::WebSearch];
+        config.reviewer_additional_tools = vec!["Skill".to_string(), "WebSearch".to_string()];
         let tools = ClaudeAdapter::build_reviewer_allowed_tools(&config);
         assert!(tools.contains("Skill"));
         assert!(tools.contains("WebSearch"));
@@ -698,7 +687,7 @@ mod tests {
     #[test]
     fn test_reviewee_with_git_push() {
         let mut config = AiConfig::default();
-        config.reviewee_additional_tools = vec![AllowedTool::GitPush];
+        config.reviewee_additional_tools = vec!["Bash(git push:*)".to_string()];
         let tools = ClaudeAdapter::build_reviewee_allowed_tools(&config);
         assert!(tools.contains("Bash(git push:*)"));
     }
@@ -706,7 +695,8 @@ mod tests {
     #[test]
     fn test_reviewee_with_multiple_tools() {
         let mut config = AiConfig::default();
-        config.reviewee_additional_tools = vec![AllowedTool::Skill, AllowedTool::GitPush];
+        config.reviewee_additional_tools =
+            vec!["Skill".to_string(), "Bash(git push:*)".to_string()];
         let tools = ClaudeAdapter::build_reviewee_allowed_tools(&config);
         assert!(tools.contains("Skill"));
         assert!(tools.contains("Bash(git push:*)"));
@@ -728,10 +718,11 @@ mod tests {
     }
 
     #[test]
-    fn test_allowed_tool_as_tool_pattern() {
-        assert_eq!(AllowedTool::Skill.as_tool_pattern(), "Skill");
-        assert_eq!(AllowedTool::WebFetch.as_tool_pattern(), "WebFetch");
-        assert_eq!(AllowedTool::WebSearch.as_tool_pattern(), "WebSearch");
-        assert_eq!(AllowedTool::GitPush.as_tool_pattern(), "Bash(git push:*)");
+    fn test_reviewee_with_complex_bash_pattern() {
+        let mut config = AiConfig::default();
+        // Test that arbitrary Bash patterns can be added
+        config.reviewee_additional_tools = vec!["Bash(gh api --method POST:*)".to_string()];
+        let tools = ClaudeAdapter::build_reviewee_allowed_tools(&config);
+        assert!(tools.contains("Bash(gh api --method POST:*)"));
     }
 }

@@ -4,36 +4,6 @@ use std::fs;
 use std::path::PathBuf;
 use xdg::BaseDirectories;
 
-/// Additional tools that can be allowed for AI Rally agents (Claude adapter only).
-/// Dangerous tools (Write, Edit, Bash) are intentionally excluded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "PascalCase")]
-pub enum AllowedTool {
-    // Claude Code tools
-    /// Execute Claude Code skills
-    Skill,
-    /// Fetch URL content
-    WebFetch,
-    /// Web search
-    WebSearch,
-    // Git operations (disabled by default)
-    /// git push to remote (reviewee only)
-    GitPush,
-}
-
-impl AllowedTool {
-    /// Convert to Claude CLI's --allowedTools format string.
-    /// GitPush returns a Bash pattern.
-    pub fn as_tool_pattern(&self) -> &'static str {
-        match self {
-            AllowedTool::Skill => "Skill",
-            AllowedTool::WebFetch => "WebFetch",
-            AllowedTool::WebSearch => "WebSearch",
-            AllowedTool::GitPush => "Bash(git push:*)",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -53,13 +23,13 @@ pub struct AiConfig {
     /// Custom prompt directory (default: ~/.config/octorus/prompts/)
     pub prompt_dir: Option<String>,
     /// Additional tools for reviewer (Claude adapter only).
-    /// Available: Skill, WebFetch, WebSearch
+    /// Use Claude Code's --allowedTools format (e.g., "Skill", "Bash(git push:*)").
     #[serde(default)]
-    pub reviewer_additional_tools: Vec<AllowedTool>,
+    pub reviewer_additional_tools: Vec<String>,
     /// Additional tools for reviewee (Claude adapter only).
-    /// Available: Skill, WebFetch, WebSearch, GitPush
+    /// Use Claude Code's --allowedTools format (e.g., "Skill", "Bash(git push:*)").
     #[serde(default)]
-    pub reviewee_additional_tools: Vec<AllowedTool>,
+    pub reviewee_additional_tools: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

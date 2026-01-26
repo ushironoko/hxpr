@@ -154,11 +154,12 @@ timeout_secs = 600
 # prompt_dir = "/custom/path/to/prompts"
 
 # Additional tools for reviewer (Claude only)
+# Use Claude Code's --allowedTools format
 # reviewer_additional_tools = []
 
 # Additional tools for reviewee (Claude only)
-# Available: Skill, WebFetch, WebSearch, GitPush
-# reviewee_additional_tools = ["Skill", "GitPush"]
+# Examples: "Skill", "WebFetch", "WebSearch", "Bash(git push:*)"
+# reviewee_additional_tools = ["Skill", "Bash(git push:*)"]
 ```
 
 ### Customizing Prompt Templates
@@ -279,22 +280,23 @@ workspace write access and no tool restrictions.
 
 #### Additional Tools (Claude only)
 
-These tools are disabled by default and can be enabled via config:
+Additional tools can be enabled via config using Claude Code's `--allowedTools` format:
 
-| Tool | Description |
-|------|-------------|
-| `Skill` | Execute Claude Code skills |
-| `WebFetch` | Fetch URL content |
-| `WebSearch` | Web search |
-| `GitPush` | git push to remote |
+| Example | Description |
+|---------|-------------|
+| `"Skill"` | Execute Claude Code skills |
+| `"WebFetch"` | Fetch URL content |
+| `"WebSearch"` | Web search |
+| `"Bash(git push:*)"` | git push to remote |
+| `"Bash(gh api --method POST:*)"` | GitHub API POST requests |
 
 ```toml
 [ai]
-reviewee_additional_tools = ["Skill", "GitPush"]
+reviewee_additional_tools = ["Skill", "Bash(git push:*)"]
 ```
 
 **Breaking Change (v0.2.0)**: `git push` is now disabled by default.
-To enable, add `GitPush` to `reviewee_additional_tools`.
+To enable, add `"Bash(git push:*)"` to `reviewee_additional_tools`.
 
 ### Keybindings (AI Rally View)
 
