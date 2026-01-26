@@ -128,8 +128,8 @@ impl Orchestrator {
         event_sender: mpsc::Sender<RallyEvent>,
         command_receiver: Option<mpsc::Receiver<OrchestratorCommand>>,
     ) -> Result<Self> {
-        let mut reviewer_adapter = create_adapter(&config.reviewer)?;
-        let mut reviewee_adapter = create_adapter(&config.reviewee)?;
+        let mut reviewer_adapter = create_adapter(&config.reviewer, &config)?;
+        let mut reviewee_adapter = create_adapter(&config.reviewee, &config)?;
 
         // Set event sender for streaming events
         reviewer_adapter.set_event_sender(event_sender.clone());

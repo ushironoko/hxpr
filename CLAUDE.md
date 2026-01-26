@@ -220,6 +220,29 @@ reviewee = "claude"
 max_iterations = 10
 timeout_secs = 600
 # prompt_dir = "/custom/path/to/prompts"  # カスタムプロンプトディレクトリ
+
+# reviewer 用の追加ツール (Claude only)
+# reviewer_additional_tools = []
+
+# reviewee 用の追加ツール (Claude only)
+# reviewee_additional_tools = ["Skill", "GitPush"]
+
+# 許可可能なツール (PascalCase で指定):
+#   - Skill      : Claude Code スキル実行
+#   - WebFetch   : URL コンテンツ取得
+#   - WebSearch  : Web 検索
+#   - GitPush    : git push (reviewee のみ有効)
+#
+# NOTE: git push はデフォルトで無効。リモートへの自動プッシュを許可する場合のみ設定
+```
+
+**推奨構成**: Codex は細粒度のツール制御ができないため、以下の構成を推奨:
+
+```toml
+[ai]
+reviewer = "codex"   # Codex は read-only sandbox で安全
+reviewee = "claude"  # Claude は allowedTools で細かく制御可能
+reviewee_additional_tools = ["Skill"]  # 必要に応じて追加
 ```
 
 ### Usage

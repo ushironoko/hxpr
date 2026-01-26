@@ -20,25 +20,25 @@ PR #{{pr_number}}: {{pr_title}}
 {{external_comments}}
 ## Git Operations
 
-After making changes, you MUST commit and push:
+After making changes, you MUST commit your changes locally:
 
 1. Check status: `git status`
 2. Stage files: `git add <files>`
 3. Commit: `git commit -m "fix: <description>"`
-4. Push: `git push`
+
+NOTE: Do NOT push changes. The user will review and push manually.
+If git push is needed and allowed, it will be explicitly permitted via config.
 
 CRITICAL RULES:
-- NEVER use `git push --force` or `git push -f` - this can destroy others' work
 - NEVER use `git reset --hard` - this destroys work
 - NEVER use `git clean -fd` - this deletes untracked files permanently
-- If push fails due to conflicts, set status to "needs_clarification"
 - Use `gh` commands for GitHub API operations (viewing PR info, comments, etc.)
 
 ## Your Task
 
 1. Address each blocking issue and review comment
 2. Make the necessary code changes
-3. Commit and push your changes
+3. Commit your changes locally
 4. If something is unclear, set status to "needs_clarification" and ask a question
 5. If you need permission for a significant change, set status to "needs_permission"
 

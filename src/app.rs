@@ -15,8 +15,8 @@ use crate::config::Config;
 use crate::github::comment::{DiscussionComment, ReviewComment};
 use crate::github::{self, ChangedFile, PullRequest};
 use crate::loader::{CommentSubmitResult, DataLoadResult};
-use std::time::Instant;
 use crate::ui;
+use std::time::Instant;
 
 /// コメントのdiff内位置を表す構造体
 #[derive(Debug, Clone)]
