@@ -742,9 +742,10 @@ impl Orchestrator {
             if let Some(ref working_dir) = ctx.working_dir {
                 let base_branch = &ctx.base_branch;
 
-                // Try git diff against origin/base_branch
+                // Try git diff against origin/base_branch using merge-base (three-dot) comparison
+                // This matches GitHub PR diff semantics and avoids including unrelated base-branch changes
                 let output = tokio::process::Command::new("git")
-                    .args(["diff", &format!("origin/{}..HEAD", base_branch)])
+                    .args(["diff", &format!("origin/{}...HEAD", base_branch)])
                     .current_dir(working_dir)
                     .output()
                     .await;
