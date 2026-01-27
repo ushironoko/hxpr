@@ -712,6 +712,12 @@ impl App {
                     self.selected_line = 0;
                     self.scroll_offset = 0;
                     self.update_diff_line_count();
+
+                    // コメント未取得の場合、バックグラウンドでロード開始
+                    if self.review_comments.is_none() {
+                        self.load_review_comments();
+                    }
+
                     self.update_file_comment_positions();
                     self.ensure_diff_cache();
                 }
