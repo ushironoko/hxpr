@@ -2973,4 +2973,50 @@ mod tests {
         app.jump_to_prev_comment();
         assert_eq!(app.selected_line, 10);
     }
+
+    #[test]
+    fn test_liststate_autoscroll_with_multiline_items() {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        use ratatui::text::Line;
+        use ratatui::widgets::{Block, Borders, List, ListItem, ListState, StatefulWidget};
+
+        // 10 multiline items (each 3 lines), area height = 12 (10 inner after borders)
+        let items: Vec<ListItem> = (0..10)
+            .map(|i| {
+                ListItem::new(vec![
+                    Line::from(format!("Header {}", i)),
+                    Line::from(format!("  Body {}", i)),
+                    Line::from(""),
+                ])
+            })
+            .collect();
+
+        let area = Rect::new(0, 0, 40, 12); // 12 total, 10 inner
+
+        // Simulate frame-by-frame scrolling like the real app
+        let mut offset = 0usize;
+        for selected in 0..10 {
+            let list = List::new(items.clone())
+                .block(Block::default().borders(Borders::ALL));
+            let mut state = ListState::default()
+                .with_offset(offset)
+                .with_selected(Some(selected));
+            let mut buf = Buffer::empty(area);
+            StatefulWidget::render(&list, area, &mut buf, &mut state);
+            offset = state.offset();
+
+            // selected should always be in visible range [offset, offset + visible_items)
+            // With 10 inner height and 3 lines per item, 3 items fit (9 lines)
+            assert!(
+                selected >= offset,
+                "selected={} should be >= offset={}",
+                selected,
+                offset
+            );
+        }
+
+        // After scrolling to last item, offset should be > 0
+        assert!(offset > 0, "offset should have scrolled, got {}", offset);
+    }
 }
