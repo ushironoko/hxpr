@@ -12,7 +12,14 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use ratatui::{backend::CrosstermBackend, Frame, Terminal};
+use ratatui::{
+    backend::CrosstermBackend,
+    layout::Rect,
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, List, ListItem},
+    Frame, Terminal,
+};
 use std::io::{self, Stdout};
 
 use crate::app::{App, AppState, DataState};
@@ -57,4 +64,69 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         }
         AppState::ReplyInput => diff_view::render_reply_input(frame, app),
     }
+
+    // シンボル選択ポップアップ（最前面に描画）
+    if let Some(ref popup) = app.symbol_popup {
+        render_symbol_popup(frame, popup);
+    }
+}
+
+/// 中央配置のフローティングポップアップ領域を計算
+fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    let y = area.y + area.height.saturating_sub(height) / 2;
+    Rect::new(
+        x,
+        y,
+        width.min(area.width),
+        height.min(area.height),
+    )
+}
+
+/// シンボル選択ポップアップを描画
+fn render_symbol_popup(frame: &mut Frame, popup: &crate::app::SymbolPopupState) {
+    let area = frame.area();
+
+    // ポップアップサイズ計算
+    let max_width = popup
+        .symbols
+        .iter()
+        .map(|(name, _, _)| name.len())
+        .max()
+        .unwrap_or(10) as u16
+        + 6; // padding + borders
+    let height = (popup.symbols.len() as u16 + 2).min(area.height.saturating_sub(4)); // +2 for borders
+    let width = max_width.max(20).min(area.width.saturating_sub(4));
+
+    let popup_area = centered_rect(width, height, area);
+
+    // 背景クリア
+    frame.render_widget(Clear, popup_area);
+
+    // リストアイテム作成
+    let items: Vec<ListItem> = popup
+        .symbols
+        .iter()
+        .enumerate()
+        .map(|(i, (name, _, _))| {
+            let style = if i == popup.selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            ListItem::new(Line::from(Span::styled(format!("  {}  ", name), style)))
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("Select symbol (j/k: move, Enter: jump, Esc: cancel)")
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
+
+    frame.render_widget(list, popup_area);
 }
