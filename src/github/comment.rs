@@ -96,13 +96,12 @@ pub async fn create_review_comment(
 
 pub async fn create_reply_comment(
     repo: &str,
-    pr_number: u32,
     comment_id: u64,
     body: &str,
 ) -> Result<ReviewComment> {
     let endpoint = format!(
-        "repos/{}/pulls/{}/comments/{}/replies",
-        repo, pr_number, comment_id
+        "repos/{}/pulls/comments/{}/replies",
+        repo, comment_id
     );
     let json = gh_api_post(&endpoint, &[("body", FieldValue::String(body))]).await?;
     serde_json::from_value(json).context("Failed to parse reply comment response")

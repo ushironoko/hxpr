@@ -2339,7 +2339,6 @@ impl App {
                 }
                 if let Some(ctx) = self.reply_context.take() {
                     let repo = self.repo.clone();
-                    let pr_number = self.pr_number;
                     let (tx, rx) = mpsc::channel(1);
                     self.comment_submit_receiver = Some(rx);
                     self.comment_submitting = true;
@@ -2347,7 +2346,6 @@ impl App {
                     tokio::spawn(async move {
                         let result = github::create_reply_comment(
                             &repo,
-                            pr_number,
                             ctx.comment_id,
                             &body,
                         )
