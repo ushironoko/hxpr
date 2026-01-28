@@ -1669,12 +1669,6 @@ impl App {
                 self.selected_line = self.selected_line.saturating_sub(20);
                 self.adjust_scroll(visible_lines);
             }
-            KeyCode::Char(c) if c == self.config.keybindings.comment => {
-                self.open_comment_editor(terminal).await?
-            }
-            KeyCode::Char(c) if c == self.config.keybindings.suggestion => {
-                self.open_suggestion_editor(terminal).await?
-            }
             KeyCode::Char('n') => self.jump_to_next_comment(),
             KeyCode::Char('N') => self.jump_to_prev_comment(),
             KeyCode::Enter => {
