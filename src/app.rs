@@ -996,8 +996,6 @@ impl App {
                     }
                 }
                 KeyCode::Right | KeyCode::Char('l') => {
-                    self.comment_panel_open = false;
-                    self.comment_panel_scroll = 0;
                     self.diff_view_return_state = AppState::SplitViewDiff;
                     self.preview_return_state = AppState::DiffView;
                     self.state = AppState::DiffView;
