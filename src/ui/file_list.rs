@@ -70,7 +70,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         "A: AI Rally"
     };
     let footer_text = format!(
-        "j/k: move | Enter: split view | a: approve | r: request changes | c: comment | C: comments | {} | q: quit | ?: help",
+        "j/k: move | Enter/→/l: split view | a: approve | r: request changes | c: comment | C: comments | {} | R: refresh | q: quit | ?: help",
         ai_rally_text
     );
     let footer = Paragraph::new(footer_text).block(Block::default().borders(Borders::ALL));
