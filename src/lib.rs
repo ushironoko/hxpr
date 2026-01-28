@@ -12,6 +12,7 @@ pub mod diff;
 pub mod editor;
 pub mod github;
 pub mod loader;
+pub mod symbol;
 pub mod syntax;
 pub mod ui;
 

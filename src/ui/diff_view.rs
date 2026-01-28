@@ -51,7 +51,7 @@ pub fn build_diff_cache(
 ///
 /// * `cached_lines` – slice of cached lines to render (may be a sub-range).
 /// * `start_index`  – absolute index of the first element in `cached_lines`,
-///                    used to correctly identify the selected line.
+///   used to correctly identify the selected line.
 /// * `selected_line` – absolute index of the currently selected line.
 pub fn render_cached_lines<'a>(
     cached_lines: &'a [CachedDiffLine],
@@ -76,6 +76,135 @@ pub fn render_cached_lines<'a>(
             }
         })
         .collect()
+}
+
+/// Render cached diff lines with cursor word highlight on the selected line.
+///
+/// Wraps `render_cached_lines` and applies `UNDERLINED` modifier to the word
+/// under the cursor on the selected line.
+pub fn render_cached_lines_with_cursor<'a>(
+    cached_lines: &'a [CachedDiffLine],
+    start_index: usize,
+    selected_line: usize,
+    cursor_column: usize,
+    line_content: Option<&str>,
+) -> Vec<Line<'a>> {
+    cached_lines
+        .iter()
+        .enumerate()
+        .map(|(rel_idx, cached)| {
+            let abs_idx = start_index + rel_idx;
+            let is_selected = abs_idx == selected_line;
+            let spans: Vec<Span<'_>> = cached
+                .spans
+                .iter()
+                .map(|s| Span::styled(s.content.as_ref(), s.style))
+                .collect();
+
+            if is_selected {
+                // Apply word highlight if we have line content
+                let highlighted_spans = if let Some(content) = line_content {
+                    if let Some((_word, word_start, word_end)) =
+                        crate::symbol::extract_word_at(content, cursor_column)
+                    {
+                        apply_word_highlight_spans(&spans, word_start, word_end, cached)
+                    } else {
+                        spans
+                    }
+                } else {
+                    spans
+                };
+                Line::from(highlighted_spans)
+                    .style(Style::default().add_modifier(Modifier::REVERSED))
+            } else {
+                Line::from(spans)
+            }
+        })
+        .collect()
+}
+
+/// Apply underline highlight to the word under cursor within span list.
+///
+/// Calculates the content offset (skipping diff markers like +/-/space and
+/// comment indicators) and splits spans at word boundaries to apply UNDERLINED.
+/// Returns owned spans to avoid lifetime issues.
+fn apply_word_highlight_spans<'a>(
+    spans: &[Span<'a>],
+    word_start: usize,
+    word_end: usize,
+    cached: &CachedDiffLine,
+) -> Vec<Span<'static>> {
+    // Calculate content offset: marker chars (+/-/space = 1 char) and optional
+    // comment indicator ("● " = 2 chars)
+    let mut content_offset = 0;
+    let first_span_content = cached
+        .spans
+        .first()
+        .map(|s| s.content.as_ref())
+        .unwrap_or("");
+
+    // Check if first span is a comment indicator
+    if first_span_content == "● " {
+        content_offset += 2; // comment indicator
+        // Next span is the diff marker
+        if cached.spans.len() > 1 {
+            content_offset += cached.spans[1].content.chars().count();
+        }
+    } else {
+        // First span is the diff marker (+/-/space)
+        content_offset += first_span_content.chars().count();
+    }
+
+    let abs_start = content_offset + word_start;
+    let abs_end = content_offset + word_end;
+
+    // Walk through spans and split at word boundaries to apply underline
+    let mut new_spans: Vec<Span<'static>> = Vec::new();
+    let mut char_pos = 0;
+
+    for span in spans {
+        let span_text: &str = span.content.as_ref();
+        let span_char_count = span_text.chars().count();
+        let span_end = char_pos + span_char_count;
+
+        if span_end <= abs_start || char_pos >= abs_end {
+            // Span is entirely outside the word range
+            new_spans.push(Span::styled(span_text.to_string(), span.style));
+        } else {
+            // Span overlaps with the word range - need to split
+            let chars: Vec<char> = span_text.chars().collect();
+
+            let local_start = abs_start.saturating_sub(char_pos);
+            let local_end = if abs_end < span_end {
+                abs_end - char_pos
+            } else {
+                span_char_count
+            };
+
+            // Before word
+            if local_start > 0 {
+                let before: String = chars[..local_start].iter().collect();
+                new_spans.push(Span::styled(before, span.style));
+            }
+
+            // Word portion (underlined)
+            let word_part: String = chars[local_start..local_end].iter().collect();
+            new_spans.push(Span::styled(
+                word_part,
+                span.style.add_modifier(Modifier::UNDERLINED),
+            ));
+
+            // After word
+            if local_end < span_char_count {
+                let after: String = chars[local_end..].iter().collect();
+                new_spans.push(Span::styled(after, span.style));
+            }
+        }
+
+        char_pos = span_end;
+    }
+
+    new_spans
 }
 
 pub fn render(frame: &mut Frame, app: &App) {
@@ -203,6 +332,12 @@ pub(crate) fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout:
 }
 
 pub(crate) fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    // Determine if we should show cursor word highlight
+    let in_diff_state = matches!(
+        app.state,
+        crate::app::AppState::DiffView | crate::app::AppState::SplitViewDiff
+    );
+
     // Try to use cached lines if available
     let lines: Vec<Line> = if let Some(ref cache) = app.diff_cache {
         // Calculate visible range for optimization
@@ -216,11 +351,21 @@ pub(crate) fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::l
 
         // Only process visible lines (with buffer) for performance
         // When visible_start >= visible_end, this produces an empty slice (safe)
-        render_cached_lines(
-            &cache.lines[visible_start..visible_end],
-            visible_start,
-            app.selected_line,
-        )
+        if in_diff_state {
+            render_cached_lines_with_cursor(
+                &cache.lines[visible_start..visible_end],
+                visible_start,
+                app.selected_line,
+                app.cursor_column,
+                app.current_line_content.as_deref(),
+            )
+        } else {
+            render_cached_lines(
+                &cache.lines[visible_start..visible_end],
+                visible_start,
+                app.selected_line,
+            )
+        }
     } else {
         // Fallback: parse without cache (should rarely happen)
         let file = app.files().get(app.selected_file);

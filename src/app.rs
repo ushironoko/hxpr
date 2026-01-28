@@ -27,6 +27,15 @@ pub struct CommentPosition {
     pub comment_index: usize,
 }
 
+/// ジャンプ履歴の1エントリ（Go to Definition / Jump Back 用）
+#[derive(Debug, Clone)]
+pub struct JumpLocation {
+    pub file_index: usize,
+    pub line_index: usize,
+    pub scroll_offset: usize,
+    pub cursor_column: usize,
+}
+
 /// Diff行のキャッシュ（シンタックスハイライト済み）
 #[derive(Clone)]
 pub struct CachedDiffLine {
@@ -223,6 +232,14 @@ pub struct App {
     submission_result_time: Option<Instant>,
     /// Spinner animation frame counter (incremented each tick)
     pub spinner_frame: usize,
+    /// カーソルのカラム位置（コード内容における文字インデックス）
+    pub cursor_column: usize,
+    /// ジャンプ履歴スタック（Go to Definition / Jump Back 用）
+    pub jump_stack: Vec<JumpLocation>,
+    /// 'g' キー入力待ち状態（gd, gg などの2キーコマンド用）
+    pub pending_g_key: bool,
+    /// 現在行の内容キャッシュ（h/l/w/b 移動時の O(n) パッチ走査回避用）
+    pub current_line_content: Option<String>,
 }
 
 impl App {
@@ -278,6 +295,10 @@ impl App {
             submission_result: None,
             submission_result_time: None,
             spinner_frame: 0,
+            cursor_column: 0,
+            jump_stack: Vec::new(),
+            pending_g_key: false,
+            current_line_content: None,
         };
 
         (app, tx)
@@ -341,6 +362,10 @@ impl App {
             submission_result: None,
             submission_result_time: None,
             spinner_frame: 0,
+            cursor_column: 0,
+            jump_stack: Vec::new(),
+            pending_g_key: false,
+            current_line_content: None,
         };
 
         (app, tx)
@@ -861,28 +886,83 @@ impl App {
         // Header(3) + Footer(3) + border(2) = 8 を差し引き、65%の高さ
         let visible_lines = (term_height * 65 / 100).saturating_sub(8);
 
+        // pending_g_key: 2キーコマンド処理
+        if self.pending_g_key {
+            self.pending_g_key = false;
+            match key.code {
+                KeyCode::Char('d') => {
+                    self.go_to_definition(terminal).await?;
+                    return Ok(());
+                }
+                KeyCode::Char('g') => {
+                    self.selected_line = 0;
+                    self.scroll_offset = 0;
+                    self.current_line_content = None;
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
                 if self.diff_line_count > 0 {
                     self.selected_line =
                         (self.selected_line + 1).min(self.diff_line_count.saturating_sub(1));
                     self.adjust_scroll(visible_lines);
+                    self.clamp_cursor_column();
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.selected_line = self.selected_line.saturating_sub(1);
                 self.adjust_scroll(visible_lines);
+                self.clamp_cursor_column();
+            }
+            KeyCode::Char('w') => {
+                if let Some(content) = self.get_current_line_content() {
+                    self.cursor_column =
+                        crate::symbol::next_word_boundary(&content, self.cursor_column);
+                }
+            }
+            KeyCode::Char('b') => {
+                if let Some(content) = self.get_current_line_content() {
+                    self.cursor_column =
+                        crate::symbol::prev_word_boundary(&content, self.cursor_column);
+                }
+            }
+            KeyCode::Char('0') => {
+                self.cursor_column = 0;
+            }
+            KeyCode::Char('$') => {
+                if let Some(content) = self.get_current_line_content() {
+                    self.cursor_column = content.chars().count().saturating_sub(1);
+                }
+            }
+            KeyCode::Char('g') => {
+                self.pending_g_key = true;
+            }
+            KeyCode::Char('G') => {
+                if self.diff_line_count > 0 {
+                    self.selected_line = self.diff_line_count.saturating_sub(1);
+                    self.adjust_scroll(visible_lines);
+                    self.current_line_content = None;
+                }
+            }
+            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.jump_back();
             }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if self.diff_line_count > 0 {
                     self.selected_line =
                         (self.selected_line + 20).min(self.diff_line_count.saturating_sub(1));
                     self.adjust_scroll(visible_lines);
+                    self.clamp_cursor_column();
                 }
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.selected_line = self.selected_line.saturating_sub(20);
                 self.adjust_scroll(visible_lines);
+                self.clamp_cursor_column();
             }
             KeyCode::Char('n') => self.jump_to_next_comment(),
             KeyCode::Char('N') => self.jump_to_prev_comment(),
@@ -1336,6 +1416,25 @@ impl App {
     ) -> Result<()> {
         let visible_lines = terminal.size()?.height.saturating_sub(8) as usize;
 
+        // pending_g_key: 2キーコマンド処理
+        if self.pending_g_key {
+            self.pending_g_key = false;
+            match key.code {
+                KeyCode::Char('d') => {
+                    self.go_to_definition(terminal).await?;
+                    return Ok(());
+                }
+                KeyCode::Char('g') => {
+                    // gg: 先頭行へジャンプ
+                    self.selected_line = 0;
+                    self.scroll_offset = 0;
+                    self.current_line_content = None;
+                    return Ok(());
+                }
+                _ => {} // 無効な組み合わせ → フォールスルーして通常処理
+            }
+        }
+
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.state = self.diff_view_return_state,
             KeyCode::Char('j') | KeyCode::Down => {
@@ -1343,22 +1442,69 @@ impl App {
                     self.selected_line =
                         (self.selected_line + 1).min(self.diff_line_count.saturating_sub(1));
                     self.adjust_scroll(visible_lines);
+                    self.clamp_cursor_column();
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.selected_line = self.selected_line.saturating_sub(1);
                 self.adjust_scroll(visible_lines);
+                self.clamp_cursor_column();
+            }
+            KeyCode::Char('h') | KeyCode::Left => {
+                self.cursor_column = self.cursor_column.saturating_sub(1);
+            }
+            KeyCode::Char('l') | KeyCode::Right => {
+                if let Some(content) = self.get_current_line_content() {
+                    let max_col = content.chars().count().saturating_sub(1);
+                    self.cursor_column = (self.cursor_column + 1).min(max_col);
+                }
+            }
+            KeyCode::Char('w') => {
+                if let Some(content) = self.get_current_line_content() {
+                    self.cursor_column =
+                        crate::symbol::next_word_boundary(&content, self.cursor_column);
+                }
+            }
+            KeyCode::Char('b') => {
+                if let Some(content) = self.get_current_line_content() {
+                    self.cursor_column =
+                        crate::symbol::prev_word_boundary(&content, self.cursor_column);
+                }
+            }
+            KeyCode::Char('0') => {
+                self.cursor_column = 0;
+            }
+            KeyCode::Char('$') => {
+                if let Some(content) = self.get_current_line_content() {
+                    self.cursor_column = content.chars().count().saturating_sub(1);
+                }
+            }
+            KeyCode::Char('g') => {
+                self.pending_g_key = true;
+            }
+            KeyCode::Char('G') => {
+                // G: 末尾行へジャンプ
+                if self.diff_line_count > 0 {
+                    self.selected_line = self.diff_line_count.saturating_sub(1);
+                    self.adjust_scroll(visible_lines);
+                    self.current_line_content = None;
+                }
+            }
+            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.jump_back();
             }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if self.diff_line_count > 0 {
                     self.selected_line =
                         (self.selected_line + 20).min(self.diff_line_count.saturating_sub(1));
                     self.adjust_scroll(visible_lines);
+                    self.clamp_cursor_column();
                 }
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.selected_line = self.selected_line.saturating_sub(20);
                 self.adjust_scroll(visible_lines);
+                self.clamp_cursor_column();
             }
             KeyCode::Char(c) if c == self.config.keybindings.comment => {
                 self.open_comment_editor(terminal).await?
@@ -1517,6 +1663,9 @@ impl App {
     fn sync_diff_to_selected_file(&mut self) {
         self.selected_line = 0;
         self.scroll_offset = 0;
+        self.cursor_column = 0;
+        self.pending_g_key = false;
+        self.current_line_content = None;
         self.update_diff_line_count();
         if self.review_comments.is_none() {
             self.load_review_comments();
@@ -2042,6 +2191,136 @@ impl App {
         if let Some(pos) = prev {
             self.selected_line = pos.diff_line_index;
             self.scroll_offset = self.selected_line;
+        }
+    }
+
+    /// 現在行のコード内容を取得（キャッシュ利用）
+    fn get_current_line_content(&mut self) -> Option<String> {
+        if let Some(ref content) = self.current_line_content {
+            return Some(content.clone());
+        }
+
+        let file = self.files().get(self.selected_file)?;
+        let patch = file.patch.as_ref()?;
+        let info = crate::diff::get_line_info(patch, self.selected_line)?;
+        let content = info.line_content;
+        self.current_line_content = Some(content.clone());
+        Some(content)
+    }
+
+    /// 現在位置をジャンプスタックに保存
+    fn push_jump_location(&mut self) {
+        let loc = JumpLocation {
+            file_index: self.selected_file,
+            line_index: self.selected_line,
+            scroll_offset: self.scroll_offset,
+            cursor_column: self.cursor_column,
+        };
+        self.jump_stack.push(loc);
+        // 上限 100 件
+        if self.jump_stack.len() > 100 {
+            self.jump_stack.remove(0);
+        }
+    }
+
+    /// ジャンプスタックから復元
+    fn jump_back(&mut self) {
+        let Some(loc) = self.jump_stack.pop() else {
+            return;
+        };
+
+        let file_changed = self.selected_file != loc.file_index;
+        self.selected_file = loc.file_index;
+        self.selected_line = loc.line_index;
+        self.scroll_offset = loc.scroll_offset;
+        self.cursor_column = loc.cursor_column;
+        self.current_line_content = None;
+
+        if file_changed {
+            self.update_diff_line_count();
+            self.update_file_comment_positions();
+            self.ensure_diff_cache();
+        }
+    }
+
+    /// Go to Definition: カーソル下のシンボルの定義元へジャンプ
+    async fn go_to_definition(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    ) -> Result<()> {
+        let content = match self.get_current_line_content() {
+            Some(c) => c,
+            None => return Ok(()),
+        };
+
+        let symbol = match crate::symbol::extract_word_at(&content, self.cursor_column) {
+            Some((word, _, _)) => word.to_string(),
+            None => return Ok(()),
+        };
+
+        // Phase 1: diff パッチ内を検索
+        let files: Vec<crate::github::ChangedFile> = self.files().to_vec();
+        if let Some((file_idx, line_idx)) =
+            crate::symbol::find_definition_in_patches(&symbol, &files, self.selected_file)
+        {
+            self.push_jump_location();
+            let file_changed = self.selected_file != file_idx;
+            self.selected_file = file_idx;
+            self.selected_line = line_idx;
+            self.scroll_offset = line_idx;
+            self.cursor_column = 0;
+            self.current_line_content = None;
+
+            if file_changed {
+                self.update_diff_line_count();
+                self.update_file_comment_positions();
+                self.ensure_diff_cache();
+            }
+            return Ok(());
+        }
+
+        // Phase 2: ローカルリポジトリ全体を検索
+        let repo_root = match &self.working_dir {
+            Some(dir) => {
+                let output = tokio::process::Command::new("git")
+                    .args(["rev-parse", "--show-toplevel"])
+                    .current_dir(dir)
+                    .output()
+                    .await;
+                match output {
+                    Ok(o) if o.status.success() => {
+                        String::from_utf8_lossy(&o.stdout).trim().to_string()
+                    }
+                    _ => return Ok(()),
+                }
+            }
+            None => return Ok(()),
+        };
+
+        let result =
+            crate::symbol::find_definition_in_repo(&symbol, std::path::Path::new(&repo_root))
+                .await;
+        if let Ok(Some((file_path, line_number))) = result {
+            let full_path = std::path::Path::new(&repo_root).join(&file_path);
+            let path_str = full_path.to_string_lossy().to_string();
+
+            // ターミナルを一時停止して外部エディタを開く
+            crate::ui::restore_terminal(terminal)?;
+            let _ = crate::editor::open_file_at_line(&self.config.editor, &path_str, line_number);
+            *terminal = crate::ui::setup_terminal()?;
+        }
+
+        Ok(())
+    }
+
+    /// j/k 移動後にカーソルカラムを行長にクランプ
+    fn clamp_cursor_column(&mut self) {
+        self.current_line_content = None;
+        if let Some(content) = self.get_current_line_content() {
+            let max_col = content.chars().count().saturating_sub(1);
+            if self.cursor_column > max_col {
+                self.cursor_column = max_col;
+            }
         }
     }
 

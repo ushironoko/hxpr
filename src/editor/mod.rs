@@ -107,6 +107,24 @@ pub fn open_suggestion_editor(
     )
 }
 
+/// Open external editor at a specific file and line number.
+///
+/// Uses the format `$EDITOR +{line} {file_path}` to open the file.
+/// The caller is responsible for suspending/restoring the TUI terminal.
+pub fn open_file_at_line(editor: &str, file_path: &str, line: usize) -> Result<()> {
+    let editor_cmd = resolve_editor(editor);
+    let status = Command::new(&editor_cmd)
+        .arg(format!("+{}", line))
+        .arg(file_path)
+        .status()?;
+
+    if !status.success() {
+        anyhow::bail!("Editor exited with non-zero status");
+    }
+
+    Ok(())
+}
+
 /// Open external editor for AI Rally clarification response
 /// Returns the user's answer to the clarification question
 pub fn open_clarification_editor(editor: &str, question: &str) -> Result<Option<String>> {
