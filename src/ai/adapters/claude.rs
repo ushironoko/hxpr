@@ -286,29 +286,88 @@ impl ClaudeAdapter {
         }
     }
 
-    // For Clarification/Permission flow (not yet implemented)
-    // See CLAUDE.md "Known Limitations"
+    /// Continue an existing session with streaming output
+    ///
+    /// Uses stream-json format like run_claude_streaming for consistent behavior
     #[allow(dead_code)]
     async fn continue_session(&self, session_id: &str, message: &str) -> Result<ClaudeResponse> {
         let mut cmd = Command::new("claude");
         cmd.arg("-p").arg(message);
         cmd.arg("--resume").arg(session_id);
-        cmd.arg("--output-format").arg("json");
+        cmd.arg("--output-format").arg("stream-json");
 
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        let output = cmd.output().await.context("Failed to execute claude")?;
+        let mut child = cmd.spawn().context("Failed to spawn claude process")?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(anyhow!("Claude process failed: {}", stderr));
+        let stdout = child.stdout.take().expect("stdout should be available");
+        let stderr = child.stderr.take().expect("stderr should be available");
+
+        let mut stdout_reader = BufReader::new(stdout).lines();
+        let mut stderr_reader = BufReader::new(stderr).lines();
+
+        let mut final_response: Option<ClaudeResponse> = None;
+        let mut error_lines = Vec::new();
+
+        // Process NDJSON stream
+        loop {
+            tokio::select! {
+                line = stdout_reader.next_line() => {
+                    match line {
+                        Ok(Some(l)) => {
+                            if l.trim().is_empty() {
+                                continue;
+                            }
+                            if let Ok(event) = serde_json::from_str::<StreamEvent>(&l) {
+                                self.handle_stream_event(&event).await;
+
+                                // Check if this is the final result
+                                if event.event_type == "result" {
+                                    let result_value = event
+                                        .structured_output
+                                        .clone()
+                                        .or_else(|| event.result.clone());
+                                    if let Some(result) = result_value {
+                                        final_response = Some(ClaudeResponse {
+                                            session_id: event.session_id.unwrap_or_default(),
+                                            result: Some(result),
+                                            cost_usd: event.cost_usd,
+                                            duration_ms: event.duration_ms,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(e) => return Err(anyhow!("Error reading stdout: {}", e)),
+                    }
+                }
+                line = stderr_reader.next_line() => {
+                    match line {
+                        Ok(Some(l)) => error_lines.push(l),
+                        Ok(None) => {},
+                        Err(e) => return Err(anyhow!("Error reading stderr: {}", e)),
+                    }
+                }
+            }
         }
 
-        let response: ClaudeResponse = serde_json::from_slice(&output.stdout)
-            .context("Failed to parse claude output as JSON")?;
+        let status = child
+            .wait()
+            .await
+            .context("Failed to wait for claude process")?;
 
-        Ok(response)
+        if !status.success() {
+            let stderr_output = error_lines.join("\n");
+            return Err(anyhow!(
+                "Claude process failed with status {}: {}",
+                status,
+                stderr_output
+            ));
+        }
+
+        final_response.ok_or_else(|| anyhow!("No result received from claude"))
     }
 }
 
