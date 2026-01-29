@@ -849,7 +849,8 @@ impl App {
         }
 
         if self.matches_single_key(&key, &kb.request_changes) {
-            self.submit_review(ReviewAction::RequestChanges, terminal).await?;
+            self.submit_review(ReviewAction::RequestChanges, terminal)
+                .await?;
             return Ok(());
         }
 
@@ -903,7 +904,8 @@ impl App {
         }
 
         if self.matches_single_key(&key, &kb.request_changes) {
-            self.submit_review(ReviewAction::RequestChanges, terminal).await?;
+            self.submit_review(ReviewAction::RequestChanges, terminal)
+                .await?;
             return Ok(true);
         }
 
@@ -3124,7 +3126,10 @@ impl App {
             }
         }
 
-        seq.0.get(pending_len).map(|expected| *expected == kb).unwrap_or(false)
+        seq.0
+            .get(pending_len)
+            .map(|expected| *expected == kb)
+            .unwrap_or(false)
     }
 }
 

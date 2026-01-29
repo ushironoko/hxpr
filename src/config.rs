@@ -285,7 +285,12 @@ impl Serialize for KeybindingsConfig {
             if seq.is_single() {
                 toml::Value::String(seq.display())
             } else {
-                toml::Value::Array(seq.0.iter().map(|k| toml::Value::String(k.display())).collect())
+                toml::Value::Array(
+                    seq.0
+                        .iter()
+                        .map(|k| toml::Value::String(k.display()))
+                        .collect(),
+                )
             }
         }
 

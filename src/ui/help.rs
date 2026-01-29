@@ -57,7 +57,10 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )]),
         Line::from(format!(
             "{}, Down/Up    Move selection",
-            fmt_key(&format!("{}/{}", kb.move_down.display(), kb.move_up.display()), key_width)
+            fmt_key(
+                &format!("{}/{}", kb.move_down.display(), kb.move_up.display()),
+                key_width
+            )
         )),
         Line::from(format!(
             "{}  Open split view",
@@ -91,10 +94,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             "{}  Toggle help",
             fmt_key(&kb.help.display(), key_width)
         )),
-        Line::from(format!(
-            "{}  Quit",
-            fmt_key(&kb.quit.display(), key_width)
-        )),
+        Line::from(format!("{}  Quit", fmt_key(&kb.quit.display(), key_width))),
         Line::from(""),
         Line::from(vec![Span::styled(
             "Split View",
@@ -108,7 +108,10 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )]),
         Line::from(format!(
             "{}, Down/Up    Move file selection (diff follows)",
-            fmt_key(&format!("{}/{}", kb.move_down.display(), kb.move_up.display()), key_width)
+            fmt_key(
+                &format!("{}/{}", kb.move_down.display(), kb.move_up.display()),
+                key_width
+            )
         )),
         Line::from(format!(
             "{}, Right, {}     Focus diff pane",
@@ -126,11 +129,17 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )]),
         Line::from(format!(
             "{}, Down/Up    Scroll diff",
-            fmt_key(&format!("{}/{}", kb.move_down.display(), kb.move_up.display()), key_width)
+            fmt_key(
+                &format!("{}/{}", kb.move_down.display(), kb.move_up.display()),
+                key_width
+            )
         )),
         Line::from(format!(
             "{}  Page scroll",
-            fmt_key(&format!("{}/{}", kb.page_down.display(), kb.page_up.display()), key_width)
+            fmt_key(
+                &format!("{}/{}", kb.page_down.display(), kb.page_up.display()),
+                key_width
+            )
         )),
         Line::from(format!(
             "{}  Go to definition",
@@ -179,7 +188,10 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )]),
         Line::from(format!(
             "{}, Down/Up    Move line selection",
-            fmt_key(&format!("{}/{}", kb.move_down.display(), kb.move_up.display()), key_width)
+            fmt_key(
+                &format!("{}/{}", kb.move_down.display(), kb.move_up.display()),
+                key_width
+            )
         )),
         Line::from(format!(
             "{}  Go to definition",
@@ -257,10 +269,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             fmt_key(&kb.next_comment.display(), 10),
             kb.prev_comment.display()
         )),
-        Line::from(format!(
-            "  Esc/{}        Close panel",
-            kb.quit.display()
-        )),
+        Line::from(format!("  Esc/{}        Close panel", kb.quit.display())),
         Line::from(""),
         Line::from(vec![Span::styled(
             "Comment List View",
@@ -271,7 +280,10 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         Line::from("  [, ]            Switch tab (Review/Discussion)"),
         Line::from(format!(
             "{}, Down/Up    Move selection",
-            fmt_key(&format!("{}/{}", kb.move_down.display(), kb.move_up.display()), key_width)
+            fmt_key(
+                &format!("{}/{}", kb.move_down.display(), kb.move_up.display()),
+                key_width
+            )
         )),
         Line::from(format!(
             "{}  Review: Jump to file | Discussion: View detail",
@@ -324,7 +336,11 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )]),
         Line::from(""),
         Line::from(vec![Span::styled(
-            format!("Press {} or {} to close this help", kb.quit.display(), kb.help.display()),
+            format!(
+                "Press {} or {} to close this help",
+                kb.quit.display(),
+                kb.help.display()
+            ),
             Style::default().fg(Color::DarkGray),
         )]),
     ];

@@ -235,8 +235,8 @@ impl KeyBinding {
                                     || ec.is_ascii_uppercase());
                             // For shift-only bindings (like 'G'), don't require SHIFT in modifiers
                             // if the character itself is uppercase
-                            let ctrl_match =
-                                !self.modifiers.ctrl || event.modifiers.contains(KeyModifiers::CONTROL);
+                            let ctrl_match = !self.modifiers.ctrl
+                                || event.modifiers.contains(KeyModifiers::CONTROL);
                             let alt_match =
                                 !self.modifiers.alt || event.modifiers.contains(KeyModifiers::ALT);
                             char_matches && ctrl_match && alt_match
@@ -456,11 +456,29 @@ fn parse_key_string(s: &str) -> Result<KeyBinding, String> {
     }
 
     // Check for modifier prefixes
-    let (modifiers, key_part) = if let Some(rest) = s.strip_prefix("Ctrl-").or(s.strip_prefix("ctrl-")).or(s.strip_prefix("C-")) {
+    let (modifiers, key_part) = if let Some(rest) = s
+        .strip_prefix("Ctrl-")
+        .or(s.strip_prefix("ctrl-"))
+        .or(s.strip_prefix("C-"))
+    {
         (Modifiers::ctrl(), rest)
-    } else if let Some(rest) = s.strip_prefix("Alt-").or(s.strip_prefix("alt-")).or(s.strip_prefix("A-")) {
-        (Modifiers { alt: true, ..Default::default() }, rest)
-    } else if let Some(rest) = s.strip_prefix("Shift-").or(s.strip_prefix("shift-")).or(s.strip_prefix("S-")) {
+    } else if let Some(rest) = s
+        .strip_prefix("Alt-")
+        .or(s.strip_prefix("alt-"))
+        .or(s.strip_prefix("A-"))
+    {
+        (
+            Modifiers {
+                alt: true,
+                ..Default::default()
+            },
+            rest,
+        )
+    } else if let Some(rest) = s
+        .strip_prefix("Shift-")
+        .or(s.strip_prefix("shift-"))
+        .or(s.strip_prefix("S-"))
+    {
         (Modifiers::shift(), rest)
     } else {
         (Modifiers::default(), s)
