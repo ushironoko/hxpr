@@ -10,7 +10,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthChar;
 
-use crate::keybinding::KeySequence;
+use crate::keybinding::{event_to_keybinding, KeySequence, SequenceMatch, SequenceState};
 
 /// テキストエリアのキー入力結果
 pub enum TextAreaAction {
@@ -20,6 +20,8 @@ pub enum TextAreaAction {
     Submit,
     /// Esc: キャンセル
     Cancel,
+    /// Waiting for more keys in a sequence
+    PendingSequence,
 }
 
 /// TUI内で動作するマルチラインテキスト入力ウィジェット
@@ -33,6 +35,8 @@ pub struct TextArea {
     visible_height: Cell<usize>,
     /// Custom submit key binding (default: Ctrl+S)
     submit_key: Option<KeySequence>,
+    /// State for tracking pending key sequences
+    sequence_state: SequenceState,
 }
 
 impl Default for TextArea {
@@ -50,6 +54,7 @@ impl TextArea {
             scroll_offset: 0,
             visible_height: Cell::new(1),
             submit_key: None,
+            sequence_state: SequenceState::new(),
         }
     }
 
@@ -62,6 +67,7 @@ impl TextArea {
             scroll_offset: 0,
             visible_height: Cell::new(1),
             submit_key: Some(submit_key),
+            sequence_state: SequenceState::new(),
         }
     }
 
@@ -70,29 +76,66 @@ impl TextArea {
         self.submit_key = Some(submit_key);
     }
 
-    /// Check if the key matches the submit binding
-    fn is_submit_key(&self, key: &event::KeyEvent) -> bool {
+    /// Get the submit key display string
+    pub fn submit_key_display(&self) -> String {
+        self.submit_key
+            .as_ref()
+            .map(|seq| seq.display())
+            .unwrap_or_else(|| "Ctrl-s".to_string())
+    }
+
+    /// Check if the key matches the submit binding (for single-key bindings)
+    /// Returns None if this is a multi-key sequence that needs sequence tracking
+    fn check_single_key_submit(&self, key: &event::KeyEvent) -> Option<bool> {
         if let Some(ref submit_seq) = self.submit_key {
-            // Only support single-key submit bindings
             if submit_seq.is_single() {
                 if let Some(first) = submit_seq.first() {
-                    return first.matches(key);
+                    return Some(first.matches(key));
                 }
             }
+            // Multi-key sequence - handled by sequence state
+            return None;
         }
         // Default: Ctrl+S
-        key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL)
+        Some(key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL))
     }
 
     /// キー入力を処理し、アクションを返す
     pub fn input(&mut self, key: event::KeyEvent) -> TextAreaAction {
-        // Check for submit key first
-        if self.is_submit_key(&key) {
-            return TextAreaAction::Submit;
+        // Check for timeout on pending sequence
+        self.sequence_state.check_timeout();
+
+        // Check for single-key submit binding first
+        if let Some(is_submit) = self.check_single_key_submit(&key) {
+            if is_submit {
+                self.sequence_state.clear();
+                return TextAreaAction::Submit;
+            }
+        } else {
+            // Multi-key sequence handling
+            if let Some(ref submit_seq) = self.submit_key {
+                if let Some(keybinding) = event_to_keybinding(&key) {
+                    self.sequence_state.push(keybinding);
+                    match self.sequence_state.matches(submit_seq) {
+                        SequenceMatch::Full => {
+                            self.sequence_state.clear();
+                            return TextAreaAction::Submit;
+                        }
+                        SequenceMatch::Partial => {
+                            return TextAreaAction::PendingSequence;
+                        }
+                        SequenceMatch::None => {
+                            // Not a match - clear and process as normal input
+                            self.sequence_state.clear();
+                        }
+                    }
+                }
+            }
         }
 
         match key.code {
             KeyCode::Esc => {
+                self.sequence_state.clear();
                 return TextAreaAction::Cancel;
             }
             KeyCode::Char(c) => {
@@ -164,12 +207,8 @@ impl TextArea {
 
     /// テキストエリアをレンダリング（デフォルトタイトル・プレースホルダー）
     pub fn render(&self, frame: &mut Frame, area: Rect) {
-        self.render_with_title(
-            frame,
-            area,
-            "Reply (Ctrl+S: submit, Esc: cancel)",
-            "Type your reply here...",
-        );
+        let title = format!("Reply ({}: submit, Esc: cancel)", self.submit_key_display());
+        self.render_with_title(frame, area, &title, "Type your reply here...");
     }
 
     /// カスタムタイトルとプレースホルダーでレンダリング

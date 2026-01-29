@@ -516,12 +516,10 @@ fn render_comment_context(
 
 /// Render TextArea for comment input
 fn render_comment_input_area(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    app.input_text_area.render_with_title(
-        frame,
-        area,
-        "Comment (Ctrl+S: submit, Esc: cancel)",
-        "Type your comment here...",
-    );
+    let submit_key = app.input_text_area.submit_key_display();
+    let title = format!("Comment ({}: submit, Esc: cancel)", submit_key);
+    app.input_text_area
+        .render_with_title(frame, area, &title, "Type your comment here...");
 }
 
 /// Render context info for suggestion input
@@ -578,12 +576,10 @@ fn render_suggestion_context(
 
 /// Render TextArea for suggestion input
 fn render_suggestion_input_area(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    app.input_text_area.render_with_title(
-        frame,
-        area,
-        "Suggested code (Ctrl+S: submit, Esc: cancel)",
-        "Edit the code...",
-    );
+    let submit_key = app.input_text_area.submit_key_display();
+    let title = format!("Suggested code ({}: submit, Esc: cancel)", submit_key);
+    app.input_text_area
+        .render_with_title(frame, area, &title, "Edit the code...");
 }
 
 /// Render context info for reply input
@@ -622,10 +618,8 @@ fn render_reply_context(
 
 /// Render TextArea for reply input
 fn render_reply_input_area(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    app.input_text_area.render_with_title(
-        frame,
-        area,
-        "Reply (Ctrl+S: submit, Esc: cancel)",
-        "Type your reply here...",
-    );
+    let submit_key = app.input_text_area.submit_key_display();
+    let title = format!("Reply ({}: submit, Esc: cancel)", submit_key);
+    app.input_text_area
+        .render_with_title(frame, area, &title, "Type your reply here...");
 }

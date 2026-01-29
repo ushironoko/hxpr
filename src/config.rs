@@ -255,11 +255,10 @@ impl KeybindingsConfig {
 fn is_context_compatible(name1: &str, name2: &str) -> bool {
     // These keybindings are used in different contexts:
     // - 'r' is used for 'reply' in comment panel and 'request_changes' in file list
-    // - 'c' is used for 'comment' which has context-specific behavior
-    let context_groups: &[&[&str]] = &[
-        &["reply", "request_changes"],
-        &["comment", "suggestion"],
-    ];
+    //
+    // NOTE: 'comment' and 'suggestion' are NOT compatible - both are active in diff view
+    // and comment panel contexts, so they must have different bindings.
+    let context_groups: &[&[&str]] = &[&["reply", "request_changes"]];
 
     for group in context_groups {
         if group.contains(&name1) && group.contains(&name2) {

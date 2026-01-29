@@ -2018,6 +2018,9 @@ impl App {
                 self.cancel_input();
             }
             TextAreaAction::Continue => {}
+            TextAreaAction::PendingSequence => {
+                // Waiting for more keys in a sequence, do nothing
+            }
         }
         Ok(())
     }
