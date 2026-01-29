@@ -737,6 +737,9 @@ impl Orchestrator {
     /// This allows the reviewer to see uncommitted/unpushed changes made by the reviewee.
     /// Falls back to GitHub API if local git diff fails or returns empty.
     async fn fetch_current_diff(&self) -> Result<String> {
+        // Timeout for git operations (30 seconds)
+        const GIT_TIMEOUT_SECS: u64 = 30;
+
         // Try local git diff first if we have working_dir and base_branch
         if let Some(ref ctx) = self.context {
             if let Some(ref working_dir) = ctx.working_dir {
@@ -744,18 +747,30 @@ impl Orchestrator {
 
                 // Try git diff against origin/base_branch using merge-base (three-dot) comparison
                 // This matches GitHub PR diff semantics and avoids including unrelated base-branch changes
-                let output = tokio::process::Command::new("git")
+                // Wrap in timeout to prevent hanging on network issues or auth prompts
+                let git_diff_future = tokio::process::Command::new("git")
                     .args(["diff", &format!("origin/{}...HEAD", base_branch)])
                     .current_dir(working_dir)
-                    .output()
-                    .await;
+                    .output();
 
-                if let Ok(output) = output {
-                    if output.status.success() {
+                match timeout(Duration::from_secs(GIT_TIMEOUT_SECS), git_diff_future).await {
+                    Ok(Ok(output)) if output.status.success() => {
                         let diff = String::from_utf8_lossy(&output.stdout).to_string();
                         if !diff.trim().is_empty() {
                             return Ok(diff);
                         }
+                    }
+                    Ok(Ok(_)) => {
+                        // git diff failed, fall through to GitHub API
+                    }
+                    Ok(Err(e)) => {
+                        warn!("git diff command failed: {}", e);
+                    }
+                    Err(_) => {
+                        warn!(
+                            "git diff timed out after {} seconds, falling back to GitHub API",
+                            GIT_TIMEOUT_SECS
+                        );
                     }
                 }
             }
