@@ -290,11 +290,17 @@ impl ClaudeAdapter {
     ///
     /// Uses stream-json format like run_claude_streaming for consistent behavior
     #[allow(dead_code)]
-    async fn continue_session(&self, session_id: &str, message: &str) -> Result<ClaudeResponse> {
+    async fn continue_session(
+        &self,
+        session_id: &str,
+        message: &str,
+        schema: &str,
+    ) -> Result<ClaudeResponse> {
         let mut cmd = Command::new("claude");
         cmd.arg("-p").arg(message);
         cmd.arg("--resume").arg(session_id);
         cmd.arg("--output-format").arg("stream-json");
+        cmd.arg("--json-schema").arg(schema);
 
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
@@ -463,7 +469,9 @@ impl AgentAdapter for ClaudeAdapter {
             .ok_or_else(|| anyhow!("No reviewer session to continue"))?
             .clone();
 
-        let response = self.continue_session(&session_id, message).await?;
+        let response = self
+            .continue_session(&session_id, message, REVIEWER_SCHEMA)
+            .await?;
         parse_reviewer_output(&response)
     }
 
@@ -474,7 +482,9 @@ impl AgentAdapter for ClaudeAdapter {
             .ok_or_else(|| anyhow!("No reviewee session to continue"))?
             .clone();
 
-        let response = self.continue_session(&session_id, message).await?;
+        let response = self
+            .continue_session(&session_id, message, REVIEWEE_SCHEMA)
+            .await?;
         parse_reviewee_output(&response)
     }
 }
