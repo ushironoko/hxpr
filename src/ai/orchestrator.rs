@@ -192,17 +192,42 @@ impl Orchestrator {
             self.session.update_state(RallyState::ReviewerReviewing);
             self.send_event(RallyEvent::StateChanged(RallyState::ReviewerReviewing))
                 .await;
-            write_session(&self.session)?;
+            if let Err(e) = write_session(&self.session) {
+                warn!("Failed to write session: {}", e);
+                self.send_event(RallyEvent::Log(format!(
+                    "Warning: Failed to write session: {}",
+                    e
+                )))
+                .await;
+            }
 
-            let review_result = self.run_reviewer_with_timeout(&context, iteration).await?;
+            let review_result = match self.run_reviewer_with_timeout(&context, iteration).await {
+                Ok(result) => result,
+                Err(e) => {
+                    self.session.update_state(RallyState::Error);
+                    let _ = write_session(&self.session);
+                    self.send_event(RallyEvent::Error(format!("Reviewer failed: {}", e)))
+                        .await;
+                    self.send_event(RallyEvent::StateChanged(RallyState::Error))
+                        .await;
+                    return Err(e);
+                }
+            };
 
             // Store the review for later use
-            write_history_entry(
+            if let Err(e) = write_history_entry(
                 &self.repo,
                 self.pr_number,
                 iteration,
                 &HistoryEntryType::Review(review_result.clone()),
-            )?;
+            ) {
+                warn!("Failed to write review history: {}", e);
+                self.send_event(RallyEvent::Log(format!(
+                    "Warning: Failed to write review history: {}",
+                    e
+                )))
+                .await;
+            }
 
             self.send_event(RallyEvent::ReviewCompleted(review_result.clone()))
                 .await;
@@ -226,7 +251,9 @@ impl Orchestrator {
             // Check for approval
             if review_result.action == ReviewAction::Approve {
                 self.session.update_state(RallyState::Completed);
-                write_session(&self.session)?;
+                if let Err(e) = write_session(&self.session) {
+                    warn!("Failed to write session: {}", e);
+                }
 
                 self.send_event(RallyEvent::Approved(review_result.summary.clone()))
                     .await;
@@ -243,7 +270,14 @@ impl Orchestrator {
             self.session.update_state(RallyState::RevieweeFix);
             self.send_event(RallyEvent::StateChanged(RallyState::RevieweeFix))
                 .await;
-            write_session(&self.session)?;
+            if let Err(e) = write_session(&self.session) {
+                warn!("Failed to write session: {}", e);
+                self.send_event(RallyEvent::Log(format!(
+                    "Warning: Failed to write session: {}",
+                    e
+                )))
+                .await;
+            }
 
             // Fetch external comments before reviewee starts
             let external_comments = self.fetch_external_comments().await;
@@ -265,16 +299,35 @@ impl Orchestrator {
                 .ok_or_else(|| anyhow!("Context not set"))?
                 .clone();
 
-            let fix_result = self
+            let fix_result = match self
                 .run_reviewee_with_timeout(&context, &review_result, iteration)
-                .await?;
+                .await
+            {
+                Ok(result) => result,
+                Err(e) => {
+                    self.session.update_state(RallyState::Error);
+                    let _ = write_session(&self.session);
+                    self.send_event(RallyEvent::Error(format!("Reviewee failed: {}", e)))
+                        .await;
+                    self.send_event(RallyEvent::StateChanged(RallyState::Error))
+                        .await;
+                    return Err(e);
+                }
+            };
 
-            write_history_entry(
+            if let Err(e) = write_history_entry(
                 &self.repo,
                 self.pr_number,
                 iteration,
                 &HistoryEntryType::Fix(fix_result.clone()),
-            )?;
+            ) {
+                warn!("Failed to write fix history: {}", e);
+                self.send_event(RallyEvent::Log(format!(
+                    "Warning: Failed to write fix history: {}",
+                    e
+                )))
+                .await;
+            }
 
             self.send_event(RallyEvent::FixCompleted(fix_result.clone()))
                 .await;
@@ -301,7 +354,9 @@ impl Orchestrator {
                     if let Some(question) = &fix_result.question {
                         self.session
                             .update_state(RallyState::WaitingForClarification);
-                        write_session(&self.session)?;
+                        if let Err(e) = write_session(&self.session) {
+                            warn!("Failed to write session: {}", e);
+                        }
 
                         self.send_event(RallyEvent::ClarificationNeeded(question.clone()))
                             .await;
@@ -316,7 +371,7 @@ impl Orchestrator {
                                 // Handle clarification response
                                 if let Err(e) = self.handle_clarification_response(&answer).await {
                                     self.session.update_state(RallyState::Error);
-                                    write_session(&self.session)?;
+                                    let _ = write_session(&self.session);
                                     self.send_event(RallyEvent::Error(e.to_string())).await;
                                     self.send_event(RallyEvent::StateChanged(RallyState::Error))
                                         .await;
@@ -330,7 +385,7 @@ impl Orchestrator {
                             Some(OrchestratorCommand::Abort) | None => {
                                 let reason = format!("Clarification aborted: {}", question);
                                 self.session.update_state(RallyState::Aborted);
-                                write_session(&self.session)?;
+                                let _ = write_session(&self.session);
                                 self.send_event(RallyEvent::Log(reason.clone())).await;
                                 self.send_event(RallyEvent::StateChanged(RallyState::Aborted))
                                     .await;
@@ -340,7 +395,7 @@ impl Orchestrator {
                                 // Ignore invalid command
                                 let reason = format!("Clarification needed: {}", question);
                                 self.session.update_state(RallyState::Aborted);
-                                write_session(&self.session)?;
+                                let _ = write_session(&self.session);
                                 self.send_event(RallyEvent::Log(reason.clone())).await;
                                 self.send_event(RallyEvent::StateChanged(RallyState::Aborted))
                                     .await;
@@ -352,7 +407,7 @@ impl Orchestrator {
                 RevieweeStatus::NeedsPermission => {
                     if let Some(perm) = &fix_result.permission_request {
                         self.session.update_state(RallyState::WaitingForPermission);
-                        write_session(&self.session)?;
+                        let _ = write_session(&self.session);
 
                         self.send_event(RallyEvent::PermissionNeeded(
                             perm.action.clone(),
@@ -371,7 +426,7 @@ impl Orchestrator {
                                         self.handle_permission_granted(&perm.action).await
                                     {
                                         self.session.update_state(RallyState::Error);
-                                        write_session(&self.session)?;
+                                        let _ = write_session(&self.session);
                                         self.send_event(RallyEvent::Error(e.to_string())).await;
                                         self.send_event(RallyEvent::StateChanged(
                                             RallyState::Error,
@@ -387,7 +442,7 @@ impl Orchestrator {
                                     // Permission denied
                                     let reason = format!("Permission denied: {}", perm.action);
                                     self.session.update_state(RallyState::Aborted);
-                                    write_session(&self.session)?;
+                                    let _ = write_session(&self.session);
                                     self.send_event(RallyEvent::Log(reason.clone())).await;
                                     self.send_event(RallyEvent::StateChanged(RallyState::Aborted))
                                         .await;
@@ -397,7 +452,7 @@ impl Orchestrator {
                             Some(OrchestratorCommand::Abort) | None => {
                                 let reason = format!("Permission aborted: {}", perm.action);
                                 self.session.update_state(RallyState::Aborted);
-                                write_session(&self.session)?;
+                                let _ = write_session(&self.session);
                                 self.send_event(RallyEvent::Log(reason.clone())).await;
                                 self.send_event(RallyEvent::StateChanged(RallyState::Aborted))
                                     .await;
@@ -407,7 +462,7 @@ impl Orchestrator {
                                 // Ignore invalid command
                                 let reason = format!("Permission needed: {}", perm.action);
                                 self.session.update_state(RallyState::Aborted);
-                                write_session(&self.session)?;
+                                let _ = write_session(&self.session);
                                 self.send_event(RallyEvent::Log(reason.clone())).await;
                                 self.send_event(RallyEvent::StateChanged(RallyState::Aborted))
                                     .await;
@@ -418,7 +473,7 @@ impl Orchestrator {
                 }
                 RevieweeStatus::Error => {
                     self.session.update_state(RallyState::Error);
-                    write_session(&self.session)?;
+                    let _ = write_session(&self.session);
 
                     let error = fix_result
                         .error_details
@@ -432,11 +487,19 @@ impl Orchestrator {
             }
         }
 
+        // Max iterations reached is a terminal state (not an error)
+        self.session.update_state(RallyState::Completed);
+        if let Err(e) = write_session(&self.session) {
+            warn!("Failed to write session: {}", e);
+        }
+
         self.send_event(RallyEvent::Log(format!(
             "Max iterations ({}) reached",
             self.config.max_iterations
         )))
         .await;
+        self.send_event(RallyEvent::StateChanged(RallyState::Completed))
+            .await;
 
         Ok(RallyResult::MaxIterationsReached {
             iteration: self.session.iteration,
@@ -474,7 +537,7 @@ impl Orchestrator {
         self.session.update_state(RallyState::RevieweeFix);
         self.send_event(RallyEvent::StateChanged(RallyState::RevieweeFix))
             .await;
-        write_session(&self.session)?;
+        let _ = write_session(&self.session);
 
         Ok(())
     }
@@ -487,13 +550,17 @@ impl Orchestrator {
         )))
         .await;
 
+        // Add the granted action to reviewee's allowed tools
+        // This allows the reviewee to execute the action without being blocked
+        self.reviewee_adapter.add_reviewee_allowed_tool(action);
+
         let prompt = build_permission_granted_prompt(action);
         self.reviewee_adapter.continue_reviewee(&prompt).await?;
 
         self.session.update_state(RallyState::RevieweeFix);
         self.send_event(RallyEvent::StateChanged(RallyState::RevieweeFix))
             .await;
-        write_session(&self.session)?;
+        let _ = write_session(&self.session);
 
         Ok(())
     }
@@ -745,6 +812,34 @@ impl Orchestrator {
             if let Some(ref working_dir) = ctx.working_dir {
                 let base_branch = &ctx.base_branch;
 
+                // Fetch latest base branch reference to ensure accurate diff
+                // Use timeout to prevent hanging on slow remotes or credential prompts
+                let fetch_future = tokio::process::Command::new("git")
+                    .args(["fetch", "origin", base_branch])
+                    .current_dir(working_dir)
+                    .output();
+
+                match timeout(Duration::from_secs(GIT_TIMEOUT_SECS), fetch_future).await {
+                    Ok(Ok(output)) if output.status.success() => {
+                        // Fetch succeeded
+                    }
+                    Ok(Ok(_)) => {
+                        warn!("git fetch failed, continuing with potentially stale ref");
+                    }
+                    Ok(Err(e)) => {
+                        warn!(
+                            "git fetch command failed: {}, continuing with potentially stale ref",
+                            e
+                        );
+                    }
+                    Err(_) => {
+                        warn!(
+                            "git fetch timed out after {} seconds, continuing with potentially stale ref",
+                            GIT_TIMEOUT_SECS
+                        );
+                    }
+                }
+
                 // Try git diff against origin/base_branch using merge-base (three-dot) comparison
                 // This matches GitHub PR diff semantics and avoids including unrelated base-branch changes
                 // Wrap in timeout to prevent hanging on network issues or auth prompts
@@ -757,6 +852,10 @@ impl Orchestrator {
                     Ok(Ok(output)) if output.status.success() => {
                         let diff = String::from_utf8_lossy(&output.stdout).to_string();
                         if !diff.trim().is_empty() {
+                            self.send_event(RallyEvent::Log(
+                                "Using local git diff for re-review".to_string(),
+                            ))
+                            .await;
                             return Ok(diff);
                         }
                     }
@@ -773,6 +872,11 @@ impl Orchestrator {
                         );
                     }
                 }
+
+                self.send_event(RallyEvent::Log(
+                    "Local git diff empty or failed, falling back to GitHub API".to_string(),
+                ))
+                .await;
             }
         }
 

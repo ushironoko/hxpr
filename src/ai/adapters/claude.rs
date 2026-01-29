@@ -286,29 +286,98 @@ impl ClaudeAdapter {
         }
     }
 
-    // For Clarification/Permission flow (not yet implemented)
-    // See CLAUDE.md "Known Limitations"
+    /// Continue an existing session with streaming output
+    ///
+    /// Uses stream-json format like run_claude_streaming for consistent behavior
     #[allow(dead_code)]
-    async fn continue_session(&self, session_id: &str, message: &str) -> Result<ClaudeResponse> {
+    async fn continue_session(
+        &self,
+        session_id: &str,
+        message: &str,
+        schema: &str,
+        allowed_tools: Option<&str>,
+    ) -> Result<ClaudeResponse> {
         let mut cmd = Command::new("claude");
         cmd.arg("-p").arg(message);
         cmd.arg("--resume").arg(session_id);
-        cmd.arg("--output-format").arg("json");
+        cmd.arg("--output-format").arg("stream-json");
+        cmd.arg("--json-schema").arg(schema);
+        if let Some(tools) = allowed_tools {
+            cmd.arg("--allowedTools").arg(tools);
+        }
 
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        let output = cmd.output().await.context("Failed to execute claude")?;
+        let mut child = cmd.spawn().context("Failed to spawn claude process")?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(anyhow!("Claude process failed: {}", stderr));
+        let stdout = child.stdout.take().expect("stdout should be available");
+        let stderr = child.stderr.take().expect("stderr should be available");
+
+        let mut stdout_reader = BufReader::new(stdout).lines();
+        let mut stderr_reader = BufReader::new(stderr).lines();
+
+        let mut final_response: Option<ClaudeResponse> = None;
+        let mut error_lines = Vec::new();
+
+        // Process NDJSON stream
+        loop {
+            tokio::select! {
+                line = stdout_reader.next_line() => {
+                    match line {
+                        Ok(Some(l)) => {
+                            if l.trim().is_empty() {
+                                continue;
+                            }
+                            if let Ok(event) = serde_json::from_str::<StreamEvent>(&l) {
+                                self.handle_stream_event(&event).await;
+
+                                // Check if this is the final result
+                                if event.event_type == "result" {
+                                    let result_value = event
+                                        .structured_output
+                                        .clone()
+                                        .or_else(|| event.result.clone());
+                                    if let Some(result) = result_value {
+                                        final_response = Some(ClaudeResponse {
+                                            session_id: event.session_id.unwrap_or_default(),
+                                            result: Some(result),
+                                            cost_usd: event.cost_usd,
+                                            duration_ms: event.duration_ms,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(e) => return Err(anyhow!("Error reading stdout: {}", e)),
+                    }
+                }
+                line = stderr_reader.next_line() => {
+                    match line {
+                        Ok(Some(l)) => error_lines.push(l),
+                        Ok(None) => {},
+                        Err(e) => return Err(anyhow!("Error reading stderr: {}", e)),
+                    }
+                }
+            }
         }
 
-        let response: ClaudeResponse = serde_json::from_slice(&output.stdout)
-            .context("Failed to parse claude output as JSON")?;
+        let status = child
+            .wait()
+            .await
+            .context("Failed to wait for claude process")?;
 
-        Ok(response)
+        if !status.success() {
+            let stderr_output = error_lines.join("\n");
+            return Err(anyhow!(
+                "Claude process failed with status {}: {}",
+                status,
+                stderr_output
+            ));
+        }
+
+        final_response.ok_or_else(|| anyhow!("No result received from claude"))
     }
 }
 
@@ -404,7 +473,14 @@ impl AgentAdapter for ClaudeAdapter {
             .ok_or_else(|| anyhow!("No reviewer session to continue"))?
             .clone();
 
-        let response = self.continue_session(&session_id, message).await?;
+        let response = self
+            .continue_session(
+                &session_id,
+                message,
+                REVIEWER_SCHEMA,
+                Some(&self.reviewer_allowed_tools),
+            )
+            .await?;
         parse_reviewer_output(&response)
     }
 
@@ -415,8 +491,24 @@ impl AgentAdapter for ClaudeAdapter {
             .ok_or_else(|| anyhow!("No reviewee session to continue"))?
             .clone();
 
-        let response = self.continue_session(&session_id, message).await?;
+        let response = self
+            .continue_session(
+                &session_id,
+                message,
+                REVIEWEE_SCHEMA,
+                Some(&self.reviewee_allowed_tools),
+            )
+            .await?;
         parse_reviewee_output(&response)
+    }
+
+    fn add_reviewee_allowed_tool(&mut self, tool: &str) {
+        // Skip if already included
+        if self.reviewee_allowed_tools.contains(tool) {
+            return;
+        }
+        self.reviewee_allowed_tools.push(',');
+        self.reviewee_allowed_tools.push_str(tool);
     }
 }
 
@@ -724,5 +816,27 @@ mod tests {
         config.reviewee_additional_tools = vec!["Bash(gh api --method POST:*)".to_string()];
         let tools = ClaudeAdapter::build_reviewee_allowed_tools(&config);
         assert!(tools.contains("Bash(gh api --method POST:*)"));
+    }
+
+    #[test]
+    fn test_add_reviewee_allowed_tool() {
+        use crate::ai::adapter::AgentAdapter;
+
+        let config = AiConfig::default();
+        let mut adapter = ClaudeAdapter::new(&config);
+
+        // Initially, git push should not be present
+        assert!(!adapter.reviewee_allowed_tools.contains("Bash(git push:*)"));
+
+        // Add git push dynamically
+        adapter.add_reviewee_allowed_tool("Bash(git push:*)");
+
+        // Now it should be present
+        assert!(adapter.reviewee_allowed_tools.contains("Bash(git push:*)"));
+
+        // Adding the same tool again should not duplicate it
+        let tools_before = adapter.reviewee_allowed_tools.clone();
+        adapter.add_reviewee_allowed_tool("Bash(git push:*)");
+        assert_eq!(adapter.reviewee_allowed_tools, tools_before);
     }
 }

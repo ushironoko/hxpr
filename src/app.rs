@@ -685,6 +685,15 @@ impl App {
                 Err(mpsc::error::TryRecvError::Empty) => break,
                 Err(mpsc::error::TryRecvError::Disconnected) => {
                     self.rally_event_receiver = None;
+                    if let Some(ref mut rally_state) = self.ai_rally_state {
+                        if rally_state.state.is_active() {
+                            rally_state.state = RallyState::Error;
+                            rally_state.logs.push(LogEntry::new(
+                                LogEventType::Error,
+                                "Rally process terminated unexpectedly".to_string(),
+                            ));
+                        }
+                    }
                     break;
                 }
             }
@@ -1158,9 +1167,10 @@ impl App {
                     RallyState::WaitingForPermission => {
                         // Send permission granted
                         self.send_rally_command(OrchestratorCommand::PermissionResponse(true));
-                        // Clear pending permission
+                        // Clear pending permission and update state to prevent duplicate sends
                         if let Some(ref mut rally_state) = self.ai_rally_state {
                             rally_state.pending_permission = None;
+                            rally_state.state = RallyState::RevieweeFix;
                             rally_state.logs.push(LogEntry::new(
                                 LogEventType::Info,
                                 "Permission granted, continuing...".to_string(),
@@ -1193,8 +1203,10 @@ impl App {
                     RallyState::WaitingForPermission => {
                         // Send permission denied
                         self.send_rally_command(OrchestratorCommand::PermissionResponse(false));
+                        // Update state to prevent duplicate sends
                         if let Some(ref mut rally_state) = self.ai_rally_state {
                             rally_state.pending_permission = None;
+                            rally_state.state = RallyState::Aborted;
                             rally_state.logs.push(LogEntry::new(
                                 LogEventType::Info,
                                 "Permission denied, aborting...".to_string(),
@@ -1204,8 +1216,10 @@ impl App {
                     RallyState::WaitingForClarification => {
                         // Send abort (skip clarification)
                         self.send_rally_command(OrchestratorCommand::Abort);
+                        // Update state to prevent duplicate sends
                         if let Some(ref mut rally_state) = self.ai_rally_state {
                             rally_state.pending_question = None;
+                            rally_state.state = RallyState::Aborted;
                             rally_state.logs.push(LogEntry::new(
                                 LogEventType::Info,
                                 "Clarification skipped, aborting...".to_string(),
@@ -1493,6 +1507,9 @@ impl App {
             match orchestrator_result {
                 Ok(mut orchestrator) => {
                     orchestrator.set_context(context);
+                    // Note: orchestrator.run() already emits RallyEvent::Error and
+                    // StateChanged(Error) when it fails, so we don't emit them again here
+                    // to avoid duplicate error logs in the UI
                     let _ = orchestrator.run().await;
                 }
                 Err(e) => {
@@ -2331,7 +2348,7 @@ impl App {
         if char_count == 0 {
             return 1;
         }
-        (char_count + panel_width - 1) / panel_width
+        char_count.div_ceil(panel_width)
     }
 
     /// コメント本文の折り返しを考慮した表示行数を計算
