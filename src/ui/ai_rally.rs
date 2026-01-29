@@ -442,7 +442,9 @@ fn render_status_bar(frame: &mut Frame, area: Rect, state: &AiRallyState) {
             }
             RallyState::Completed => "j/k/↑↓: select | Enter: detail | b: Background | q: Close",
             RallyState::Aborted => "j/k/↑↓: select | Enter: detail | b: Background | q: Close",
-            RallyState::Error => "r: Retry | j/k/↑↓: select | Enter: detail | b: Background | q: Close",
+            RallyState::Error => {
+                "r: Retry | j/k/↑↓: select | Enter: detail | b: Background | q: Close"
+            }
             _ => "j/k/↑↓: select | Enter: detail | b: Background | q: Abort",
         }
     };

@@ -54,13 +54,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     match app.state {
         AppState::FileList => file_list::render(frame, app),
         AppState::DiffView => diff_view::render(frame, app),
-        AppState::CommentPreview => diff_view::render_with_preview(frame, app),
-        AppState::SuggestionPreview => diff_view::render_with_suggestion_preview(frame, app),
+        AppState::TextInput => diff_view::render_text_input(frame, app),
         AppState::CommentList => comment_list::render(frame, app),
         AppState::Help => help::render(frame, app),
         AppState::AiRally => ai_rally::render(frame, app),
         AppState::SplitViewFileList | AppState::SplitViewDiff => split_view::render(frame, app),
-        AppState::ReplyInput => diff_view::render_reply_input(frame, app),
     }
 
     // シンボル選択ポップアップ（最前面に描画）
