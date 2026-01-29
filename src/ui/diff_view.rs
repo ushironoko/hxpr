@@ -10,7 +10,7 @@ use ratatui::{
 use syntect::easy::HighlightLines;
 
 use super::common::render_rally_status_bar;
-use crate::app::{App, CachedDiffLine};
+use crate::app::{App, CachedDiffLine, InputMode, LineInputContext};
 use crate::diff::{classify_line, LineType};
 use crate::syntax::{get_theme, highlight_code_line, syntax_for_file};
 
@@ -153,39 +153,6 @@ fn render_with_inline_comment(frame: &mut Frame, app: &App) {
     } else {
         render_inline_comments(frame, app, chunks[2]);
         render_footer(frame, app, chunks[3]);
-    }
-}
-
-pub fn render_with_preview(frame: &mut Frame, app: &App) {
-    let has_rally = app.has_background_rally();
-    let constraints = if has_rally {
-        vec![
-            Constraint::Length(3),      // Header
-            Constraint::Percentage(55), // Diff content (slightly reduced)
-            Constraint::Length(1),      // Rally status bar
-            Constraint::Percentage(40), // Comment preview
-        ]
-    } else {
-        vec![
-            Constraint::Length(3),      // Header
-            Constraint::Percentage(60), // Diff content
-            Constraint::Percentage(40), // Comment preview
-        ]
-    };
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(constraints)
-        .split(frame.area());
-
-    render_header(frame, app, chunks[0]);
-    render_diff_content(frame, app, chunks[1]);
-
-    if has_rally {
-        render_rally_status_bar(frame, chunks[2], app);
-        render_comment_preview(frame, app, chunks[3]);
-    } else {
-        render_comment_preview(frame, app, chunks[2]);
     }
 }
 
@@ -398,127 +365,6 @@ fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     frame.render_widget(footer, area);
 }
 
-fn render_comment_preview(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let preview_lines: Vec<Line> = if let Some(ref comment) = app.pending_comment {
-        vec![
-            Line::from(vec![
-                Span::styled("Line ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    comment.line_number.to_string(),
-                    Style::default().fg(Color::Cyan),
-                ),
-            ]),
-            Line::from(""),
-            Line::from(comment.body.as_str()),
-        ]
-    } else {
-        vec![Line::from("No comment pending")]
-    };
-
-    let preview = Paragraph::new(preview_lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Comment Preview (Enter: submit, Esc: cancel)"),
-        )
-        .wrap(Wrap { trim: true });
-
-    frame.render_widget(preview, area);
-}
-
-pub fn render_with_suggestion_preview(frame: &mut Frame, app: &App) {
-    let has_rally = app.has_background_rally();
-    let constraints = if has_rally {
-        vec![
-            Constraint::Length(3),      // Header
-            Constraint::Percentage(45), // Diff content (slightly reduced)
-            Constraint::Length(1),      // Rally status bar
-            Constraint::Percentage(50), // Suggestion preview
-        ]
-    } else {
-        vec![
-            Constraint::Length(3),      // Header
-            Constraint::Percentage(50), // Diff content
-            Constraint::Percentage(50), // Suggestion preview
-        ]
-    };
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(constraints)
-        .split(frame.area());
-
-    render_header(frame, app, chunks[0]);
-    render_diff_content(frame, app, chunks[1]);
-
-    if has_rally {
-        render_rally_status_bar(frame, chunks[2], app);
-        render_suggestion_preview(frame, app, chunks[3]);
-    } else {
-        render_suggestion_preview(frame, app, chunks[2]);
-    }
-}
-
-fn render_suggestion_preview(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let preview_lines: Vec<Line> = if let Some(ref suggestion) = app.pending_suggestion {
-        vec![
-            Line::from(vec![
-                Span::styled("Line ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    suggestion.line_number.to_string(),
-                    Style::default().fg(Color::Cyan),
-                ),
-            ]),
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                "Original:",
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            )]),
-            Line::from(vec![Span::styled(
-                format!("  {}", suggestion.original_code),
-                Style::default().fg(Color::Red),
-            )]),
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                "Suggested:",
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            )]),
-            Line::from(vec![Span::styled(
-                format!("  {}", suggestion.suggested_code.trim_end()),
-                Style::default().fg(Color::Green),
-            )]),
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                "Will be posted as:",
-                Style::default().fg(Color::DarkGray),
-            )]),
-            Line::from(vec![Span::styled(
-                format!(
-                    "```suggestion\n{}\n```",
-                    suggestion.suggested_code.trim_end()
-                ),
-                Style::default().fg(Color::White),
-            )]),
-        ]
-    } else {
-        vec![Line::from("No suggestion pending")]
-    };
-
-    let preview = Paragraph::new(preview_lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Suggestion Preview (Enter: submit, Esc: cancel)"),
-        )
-        .wrap(Wrap { trim: true });
-
-    frame.render_widget(preview, area);
-}
-
 /// Render inline comments panel for current line
 fn render_inline_comments(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let indices = app.get_comment_indices_at_current_line();
@@ -594,39 +440,170 @@ fn render_inline_comments(frame: &mut Frame, app: &App, area: ratatui::layout::R
     frame.render_widget(paragraph, area);
 }
 
-/// Render reply input view (upper: original comment, lower: text area)
-pub fn render_reply_input(frame: &mut Frame, app: &App) {
+/// Render unified text input view (comment/suggestion/reply)
+pub fn render_text_input(frame: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),      // Header
-            Constraint::Percentage(35), // 返信先コメント（読み取り専用）
-            Constraint::Percentage(65), // テキストエリア
+            Constraint::Percentage(40), // Context info area
+            Constraint::Percentage(60), // TextArea
         ])
         .split(frame.area());
 
     render_header(frame, app, chunks[0]);
-    render_reply_target(frame, app, chunks[1]);
-    app.reply_text_area.render(frame, chunks[2]);
+
+    match &app.input_mode {
+        Some(InputMode::Comment(ctx)) => {
+            render_comment_context(frame, app, chunks[1], ctx);
+            render_comment_input_area(frame, app, chunks[2]);
+        }
+        Some(InputMode::Suggestion {
+            context,
+            original_code,
+        }) => {
+            render_suggestion_context(frame, app, chunks[1], context, original_code);
+            render_suggestion_input_area(frame, app, chunks[2]);
+        }
+        Some(InputMode::Reply {
+            reply_to_user,
+            reply_to_body,
+            ..
+        }) => {
+            render_reply_context(frame, chunks[1], reply_to_user, reply_to_body);
+            render_reply_input_area(frame, app, chunks[2]);
+        }
+        None => {}
+    }
 }
 
-/// Render the original comment being replied to (read-only)
-fn render_reply_target(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let Some(ref ctx) = app.reply_context else {
-        return;
-    };
+/// Render context info for comment input
+fn render_comment_context(
+    frame: &mut Frame,
+    app: &App,
+    area: ratatui::layout::Rect,
+    ctx: &LineInputContext,
+) {
+    let filename = app
+        .files()
+        .get(ctx.file_index)
+        .map(|f| f.filename.as_str())
+        .unwrap_or("Unknown file");
 
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("File: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(filename, Style::default().fg(Color::Cyan)),
+        ]),
+        Line::from(vec![
+            Span::styled("Line: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                ctx.line_number.to_string(),
+                Style::default().fg(Color::Yellow),
+            ),
+        ]),
+    ];
+
+    let paragraph = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Comment Location"),
+        )
+        .wrap(Wrap { trim: true });
+    frame.render_widget(paragraph, area);
+}
+
+/// Render TextArea for comment input
+fn render_comment_input_area(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    app.input_text_area.render_with_title(
+        frame,
+        area,
+        "Comment (Ctrl+Enter: submit, Esc: cancel)",
+        "Type your comment here...",
+    );
+}
+
+/// Render context info for suggestion input
+fn render_suggestion_context(
+    frame: &mut Frame,
+    app: &App,
+    area: ratatui::layout::Rect,
+    ctx: &LineInputContext,
+    original_code: &str,
+) {
+    let filename = app
+        .files()
+        .get(ctx.file_index)
+        .map(|f| f.filename.as_str())
+        .unwrap_or("Unknown file");
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("File: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(filename, Style::default().fg(Color::Cyan)),
+        ]),
+        Line::from(vec![
+            Span::styled("Line: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                ctx.line_number.to_string(),
+                Style::default().fg(Color::Yellow),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "Original code:",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(vec![Span::styled(
+            format!("  {}", original_code),
+            Style::default().fg(Color::Red),
+        )]),
+    ];
+
+    // Add hint about what will be submitted
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![Span::styled(
+        "Edit the code below. It will be posted as a GitHub suggestion.",
+        Style::default().fg(Color::DarkGray),
+    )]));
+
+    let paragraph = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::ALL).title("Suggestion"))
+        .wrap(Wrap { trim: true });
+    frame.render_widget(paragraph, area);
+}
+
+/// Render TextArea for suggestion input
+fn render_suggestion_input_area(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    app.input_text_area.render_with_title(
+        frame,
+        area,
+        "Suggested code (Ctrl+Enter: submit, Esc: cancel)",
+        "Edit the code...",
+    );
+}
+
+/// Render context info for reply input
+fn render_reply_context(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    reply_to_user: &str,
+    reply_to_body: &str,
+) {
     let mut lines = vec![
         Line::from(vec![
             Span::styled("Reply to ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                format!("@{}", ctx.reply_to_user),
+                format!("@{}", reply_to_user),
                 Style::default().fg(Color::Cyan),
             ),
         ]),
         Line::from(""),
     ];
-    for line in ctx.reply_to_body.lines() {
+    for line in reply_to_body.lines() {
         lines.push(Line::from(Span::styled(
             format!("> {}", line),
             Style::default().fg(Color::DarkGray),
@@ -641,4 +618,14 @@ fn render_reply_target(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
         )
         .wrap(Wrap { trim: true });
     frame.render_widget(paragraph, area);
+}
+
+/// Render TextArea for reply input
+fn render_reply_input_area(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    app.input_text_area.render_with_title(
+        frame,
+        area,
+        "Reply (Ctrl+Enter: submit, Esc: cancel)",
+        "Type your reply here...",
+    );
 }

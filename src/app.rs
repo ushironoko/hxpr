@@ -71,18 +71,38 @@ fn hash_string(s: &str) -> u64 {
     hasher.finish()
 }
 
+/// 行ベース入力のコンテキスト（コメント/サジェスチョン共通）
+#[derive(Debug, Clone)]
+pub struct LineInputContext {
+    pub file_index: usize,
+    pub line_number: u32,
+}
+
+/// 統一入力モード
+#[derive(Debug, Clone)]
+pub enum InputMode {
+    Comment(LineInputContext),
+    Suggestion {
+        context: LineInputContext,
+        original_code: String,
+    },
+    Reply {
+        comment_id: u64,
+        reply_to_user: String,
+        reply_to_body: String,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AppState {
     FileList,
     DiffView,
-    CommentPreview,
-    SuggestionPreview,
+    TextInput,
     CommentList,
     Help,
     AiRally,
     SplitViewFileList,
     SplitViewDiff,
-    ReplyInput,
 }
 
 /// Log event type for AI Rally
@@ -160,26 +180,6 @@ pub enum CommentTab {
 }
 
 #[derive(Debug, Clone)]
-pub struct SuggestionData {
-    pub original_code: String,
-    pub suggested_code: String,
-    pub line_number: u32,
-}
-
-#[derive(Debug, Clone)]
-pub struct CommentData {
-    pub body: String,
-    pub line_number: u32,
-}
-
-#[derive(Debug, Clone)]
-pub struct ReplyContext {
-    pub comment_id: u64,
-    pub reply_to_user: String,
-    pub reply_to_body: String,
-}
-
-#[derive(Debug, Clone)]
 pub enum DataState {
     Loading,
     Loaded {
@@ -204,8 +204,10 @@ pub struct App {
     pub selected_line: usize,
     pub diff_line_count: usize,
     pub scroll_offset: usize,
-    pub pending_comment: Option<CommentData>,
-    pub pending_suggestion: Option<SuggestionData>,
+    /// 統一入力モード
+    pub input_mode: Option<InputMode>,
+    /// 統一入力テキストエリア
+    pub input_text_area: TextArea,
     pub config: Config,
     pub should_quit: bool,
     // Review comments (inline comments + reviews)
@@ -258,10 +260,6 @@ pub struct App {
     pub spinner_frame: usize,
     /// インラインコメントパネル内の選択インデックス
     pub selected_inline_comment: usize,
-    /// 返信先のコンテキスト
-    pub reply_context: Option<ReplyContext>,
-    /// 返信入力テキストエリア
-    pub reply_text_area: TextArea,
     /// ジャンプ履歴スタック（Go to Definition / Jump Back 用）
     pub jump_stack: Vec<JumpLocation>,
     /// 'g' キー入力待ち状態（gd, gg などの2キーコマンド用）
@@ -291,8 +289,8 @@ impl App {
             selected_line: 0,
             diff_line_count: 0,
             scroll_offset: 0,
-            pending_comment: None,
-            pending_suggestion: None,
+            input_mode: None,
+            input_text_area: TextArea::new(),
             config,
             should_quit: false,
             review_comments: None,
@@ -327,8 +325,6 @@ impl App {
             submission_result_time: None,
             spinner_frame: 0,
             selected_inline_comment: 0,
-            reply_context: None,
-            reply_text_area: TextArea::new(),
             jump_stack: Vec::new(),
             pending_g_key: false,
             symbol_popup: None,
@@ -363,8 +359,8 @@ impl App {
             selected_line: 0,
             diff_line_count,
             scroll_offset: 0,
-            pending_comment: None,
-            pending_suggestion: None,
+            input_mode: None,
+            input_text_area: TextArea::new(),
             config,
             should_quit: false,
             review_comments: None,
@@ -399,8 +395,6 @@ impl App {
             submission_result_time: None,
             spinner_frame: 0,
             selected_inline_comment: 0,
-            reply_context: None,
-            reply_text_area: TextArea::new(),
             jump_stack: Vec::new(),
             pending_g_key: false,
             symbol_popup: None,
@@ -776,8 +770,7 @@ impl App {
                 match self.state {
                     AppState::FileList => self.handle_file_list_input(key, terminal).await?,
                     AppState::DiffView => self.handle_diff_view_input(key, terminal).await?,
-                    AppState::CommentPreview => self.handle_comment_preview_input(key)?,
-                    AppState::SuggestionPreview => self.handle_suggestion_preview_input(key)?,
+                    AppState::TextInput => self.handle_text_input(key)?,
                     AppState::CommentList => self.handle_comment_list_input(key, terminal).await?,
                     AppState::Help => self.handle_help_input(key)?,
                     AppState::AiRally => self.handle_ai_rally_input(key, terminal).await?,
@@ -788,7 +781,6 @@ impl App {
                     AppState::SplitViewDiff => {
                         self.handle_split_view_diff_input(key, terminal).await?
                     }
-                    AppState::ReplyInput => self.handle_reply_input(key)?,
                 }
             }
         }
@@ -974,16 +966,13 @@ impl App {
                     }
                 }
                 KeyCode::Char(c) if c == self.config.keybindings.comment => {
-                    self.preview_return_state = AppState::SplitViewDiff;
-                    self.open_comment_editor(terminal).await?;
+                    self.enter_comment_input();
                 }
                 KeyCode::Char(c) if c == self.config.keybindings.suggestion => {
-                    self.preview_return_state = AppState::SplitViewDiff;
-                    self.open_suggestion_editor(terminal).await?;
+                    self.enter_suggestion_input();
                 }
                 KeyCode::Char('r') => {
                     if self.has_comment_at_current_line() {
-                        self.preview_return_state = AppState::SplitViewDiff;
                         self.enter_reply_input();
                     }
                 }
@@ -1579,10 +1568,10 @@ impl App {
                     }
                 }
                 KeyCode::Char(c) if c == self.config.keybindings.comment => {
-                    self.open_comment_editor(terminal).await?;
+                    self.enter_comment_input();
                 }
                 KeyCode::Char(c) if c == self.config.keybindings.suggestion => {
-                    self.open_suggestion_editor(terminal).await?;
+                    self.enter_suggestion_input();
                 }
                 KeyCode::Char('r') => {
                     if self.has_comment_at_current_line() {
@@ -1691,6 +1680,12 @@ impl App {
                 self.comment_panel_scroll = 0;
                 self.selected_inline_comment = 0;
             }
+            KeyCode::Char(c) if c == self.config.keybindings.comment => {
+                self.enter_comment_input();
+            }
+            KeyCode::Char(c) if c == self.config.keybindings.suggestion => {
+                self.enter_suggestion_input();
+            }
             _ => {}
         }
 
@@ -1709,54 +1704,148 @@ impl App {
         }
     }
 
-    fn handle_comment_preview_input(&mut self, key: event::KeyEvent) -> Result<()> {
-        match key.code {
-            KeyCode::Enter => {
-                if let Some(comment) = self.pending_comment.take() {
-                    if let Some(file) = self.files().get(self.selected_file) {
-                        if let Some(pr) = self.pr() {
-                            let commit_id = pr.head.sha.clone();
-                            let filename = file.filename.clone();
-                            let repo = self.repo.clone();
-                            let pr_number = self.pr_number;
-                            let line_number = comment.line_number;
-                            let body = comment.body;
+    /// 統一入力ハンドラー（コメント/サジェスチョン/リプライ共通）
+    fn handle_text_input(&mut self, key: event::KeyEvent) -> Result<()> {
+        // 送信中は入力を無視
+        if self.comment_submitting {
+            return Ok(());
+        }
 
-                            // Start background submission
-                            let (tx, rx) = mpsc::channel(1);
-                            self.comment_submit_receiver = Some(rx);
-                            self.comment_submitting = true;
+        match self.input_text_area.input(key) {
+            TextAreaAction::Submit => {
+                let content = self.input_text_area.content();
+                if content.trim().is_empty() {
+                    // 空の場合はキャンセル扱い
+                    self.cancel_input();
+                    return Ok(());
+                }
 
-                            tokio::spawn(async move {
-                                let result = github::create_review_comment(
-                                    &repo,
-                                    pr_number,
-                                    &commit_id,
-                                    &filename,
-                                    line_number,
-                                    &body,
-                                )
-                                .await;
-
-                                let _ = tx
-                                    .send(match result {
-                                        Ok(_) => CommentSubmitResult::Success,
-                                        Err(e) => CommentSubmitResult::Error(e.to_string()),
-                                    })
-                                    .await;
-                            });
-                        }
+                match self.input_mode.take() {
+                    Some(InputMode::Comment(ctx)) => {
+                        self.submit_comment(ctx, content);
                     }
+                    Some(InputMode::Suggestion {
+                        context,
+                        original_code: _,
+                    }) => {
+                        self.submit_suggestion(context, content);
+                    }
+                    Some(InputMode::Reply { comment_id, .. }) => {
+                        self.submit_reply(comment_id, content);
+                    }
+                    None => {}
                 }
                 self.state = self.preview_return_state;
             }
-            KeyCode::Esc => {
-                self.pending_comment = None;
-                self.state = self.preview_return_state;
+            TextAreaAction::Cancel => {
+                self.cancel_input();
             }
-            _ => {}
+            TextAreaAction::Continue => {}
         }
         Ok(())
+    }
+
+    fn cancel_input(&mut self) {
+        self.input_mode = None;
+        self.input_text_area.clear();
+        self.state = self.preview_return_state;
+    }
+
+    fn submit_comment(&mut self, ctx: LineInputContext, body: String) {
+        let Some(file) = self.files().get(ctx.file_index) else {
+            return;
+        };
+        let Some(pr) = self.pr() else {
+            return;
+        };
+
+        let commit_id = pr.head.sha.clone();
+        let filename = file.filename.clone();
+        let repo = self.repo.clone();
+        let pr_number = self.pr_number;
+        let line_number = ctx.line_number;
+
+        let (tx, rx) = mpsc::channel(1);
+        self.comment_submit_receiver = Some(rx);
+        self.comment_submitting = true;
+
+        tokio::spawn(async move {
+            let result = github::create_review_comment(
+                &repo,
+                pr_number,
+                &commit_id,
+                &filename,
+                line_number,
+                &body,
+            )
+            .await;
+
+            let _ = tx
+                .send(match result {
+                    Ok(_) => CommentSubmitResult::Success,
+                    Err(e) => CommentSubmitResult::Error(e.to_string()),
+                })
+                .await;
+        });
+    }
+
+    fn submit_suggestion(&mut self, ctx: LineInputContext, suggested_code: String) {
+        let Some(file) = self.files().get(ctx.file_index) else {
+            return;
+        };
+        let Some(pr) = self.pr() else {
+            return;
+        };
+
+        let commit_id = pr.head.sha.clone();
+        let filename = file.filename.clone();
+        let body = format!("```suggestion\n{}\n```", suggested_code.trim_end());
+        let repo = self.repo.clone();
+        let pr_number = self.pr_number;
+        let line_number = ctx.line_number;
+
+        let (tx, rx) = mpsc::channel(1);
+        self.comment_submit_receiver = Some(rx);
+        self.comment_submitting = true;
+
+        tokio::spawn(async move {
+            let result = github::create_review_comment(
+                &repo,
+                pr_number,
+                &commit_id,
+                &filename,
+                line_number,
+                &body,
+            )
+            .await;
+
+            let _ = tx
+                .send(match result {
+                    Ok(_) => CommentSubmitResult::Success,
+                    Err(e) => CommentSubmitResult::Error(e.to_string()),
+                })
+                .await;
+        });
+    }
+
+    fn submit_reply(&mut self, comment_id: u64, body: String) {
+        let repo = self.repo.clone();
+        let pr_number = self.pr_number;
+
+        let (tx, rx) = mpsc::channel(1);
+        self.comment_submit_receiver = Some(rx);
+        self.comment_submitting = true;
+
+        tokio::spawn(async move {
+            let result = github::create_reply_comment(&repo, pr_number, comment_id, &body).await;
+
+            let _ = tx
+                .send(match result {
+                    Ok(_) => CommentSubmitResult::Success,
+                    Err(e) => CommentSubmitResult::Error(e.to_string()),
+                })
+                .await;
+        });
     }
 
     fn handle_help_input(&mut self, key: event::KeyEvent) -> Result<()> {
@@ -1769,20 +1858,18 @@ impl App {
         Ok(())
     }
 
-    async fn open_comment_editor(
-        &mut self,
-        terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-    ) -> Result<()> {
+    /// コメント入力を開始（組み込みTextArea）
+    fn enter_comment_input(&mut self) {
         let Some(file) = self.files().get(self.selected_file) else {
-            return Ok(());
+            return;
         };
         let Some(patch) = file.patch.as_ref() else {
-            return Ok(());
+            return;
         };
 
         // Get actual line number from diff
         let Some(line_info) = crate::diff::get_line_info(patch, self.selected_line) else {
-            return Ok(());
+            return;
         };
 
         // Only allow comments on Added or Context lines (not Removed/Header/Meta)
@@ -1790,30 +1877,20 @@ impl App {
             line_info.line_type,
             crate::diff::LineType::Added | crate::diff::LineType::Context
         ) {
-            return Ok(());
+            return;
         }
 
         let Some(line_number) = line_info.new_line_number else {
-            return Ok(());
+            return;
         };
 
-        let filename = file.filename.clone();
-
-        ui::restore_terminal(terminal)?;
-
-        let comment = crate::editor::open_comment_editor(
-            &self.config.editor,
-            &filename,
-            line_number as usize,
-        )?;
-
-        *terminal = ui::setup_terminal()?;
-
-        if let Some(body) = comment {
-            self.pending_comment = Some(CommentData { body, line_number });
-            self.state = AppState::CommentPreview;
-        }
-        Ok(())
+        self.input_mode = Some(InputMode::Comment(LineInputContext {
+            file_index: self.selected_file,
+            line_number,
+        }));
+        self.input_text_area.clear();
+        self.preview_return_state = self.state;
+        self.state = AppState::TextInput;
     }
 
     async fn submit_review(
@@ -1853,20 +1930,18 @@ impl App {
         self.ensure_diff_cache();
     }
 
-    async fn open_suggestion_editor(
-        &mut self,
-        terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-    ) -> Result<()> {
+    /// サジェスチョン入力を開始（組み込みTextArea）
+    fn enter_suggestion_input(&mut self) {
         let Some(file) = self.files().get(self.selected_file) else {
-            return Ok(());
+            return;
         };
         let Some(patch) = file.patch.as_ref() else {
-            return Ok(());
+            return;
         };
 
         // Check if this line can have a suggestion
         let Some(line_info) = crate::diff::get_line_info(patch, self.selected_line) else {
-            return Ok(());
+            return;
         };
 
         // Only allow suggestions on Added or Context lines
@@ -1874,89 +1949,26 @@ impl App {
             line_info.line_type,
             crate::diff::LineType::Added | crate::diff::LineType::Context
         ) {
-            return Ok(());
+            return;
         }
 
-        let Some(new_line_number) = line_info.new_line_number else {
-            return Ok(());
+        let Some(line_number) = line_info.new_line_number else {
+            return;
         };
 
-        let filename = file.filename.clone();
         let original_code = line_info.line_content.clone();
 
-        ui::restore_terminal(terminal)?;
-
-        let suggested = crate::editor::open_suggestion_editor(
-            &self.config.editor,
-            &filename,
-            new_line_number as usize,
-            &original_code,
-        )?;
-
-        *terminal = ui::setup_terminal()?;
-
-        if let Some(suggested_code) = suggested {
-            self.pending_suggestion = Some(SuggestionData {
-                original_code,
-                suggested_code,
-                line_number: new_line_number,
-            });
-            self.state = AppState::SuggestionPreview;
-        }
-        Ok(())
-    }
-
-    fn handle_suggestion_preview_input(&mut self, key: event::KeyEvent) -> Result<()> {
-        match key.code {
-            KeyCode::Enter => {
-                if let Some(suggestion) = self.pending_suggestion.take() {
-                    if let Some(file) = self.files().get(self.selected_file) {
-                        if let Some(pr) = self.pr() {
-                            let commit_id = pr.head.sha.clone();
-                            let filename = file.filename.clone();
-                            let body = format!(
-                                "```suggestion\n{}\n```",
-                                suggestion.suggested_code.trim_end()
-                            );
-                            let repo = self.repo.clone();
-                            let pr_number = self.pr_number;
-                            let line_number = suggestion.line_number;
-
-                            // Start background submission
-                            let (tx, rx) = mpsc::channel(1);
-                            self.comment_submit_receiver = Some(rx);
-                            self.comment_submitting = true;
-
-                            tokio::spawn(async move {
-                                let result = github::create_review_comment(
-                                    &repo,
-                                    pr_number,
-                                    &commit_id,
-                                    &filename,
-                                    line_number,
-                                    &body,
-                                )
-                                .await;
-
-                                let _ = tx
-                                    .send(match result {
-                                        Ok(_) => CommentSubmitResult::Success,
-                                        Err(e) => CommentSubmitResult::Error(e.to_string()),
-                                    })
-                                    .await;
-                            });
-                        }
-                    }
-                }
-                self.state = self.preview_return_state;
-            }
-            KeyCode::Esc => {
-                self.pending_suggestion = None;
-                self.state = self.preview_return_state;
-            }
-            _ => {}
-        }
-        Ok(())
+        self.input_mode = Some(InputMode::Suggestion {
+            context: LineInputContext {
+                file_index: self.selected_file,
+                line_number,
+            },
+            original_code: original_code.clone(),
+        });
+        // サジェスチョンは元コードを初期値として設定
+        self.input_text_area.set_content(&original_code);
+        self.preview_return_state = self.state;
+        self.state = AppState::TextInput;
     }
 
     fn open_comment_list(&mut self) {
@@ -2447,7 +2459,7 @@ impl App {
         }
     }
 
-    /// 返信入力モードに遷移
+    /// 返信入力モードに遷移（統一TextArea）
     fn enter_reply_input(&mut self) {
         let indices = self.get_comment_indices_at_current_line();
         if indices.is_empty() {
@@ -2466,54 +2478,14 @@ impl App {
             return;
         };
 
-        self.reply_context = Some(ReplyContext {
+        self.input_mode = Some(InputMode::Reply {
             comment_id: comment.id,
             reply_to_user: comment.user.login.clone(),
             reply_to_body: comment.body.clone(),
         });
-        self.reply_text_area = TextArea::new();
+        self.input_text_area.clear();
         self.preview_return_state = self.state;
-        self.state = AppState::ReplyInput;
-    }
-
-    /// 返信入力のキーハンドリング
-    fn handle_reply_input(&mut self, key: event::KeyEvent) -> Result<()> {
-        match self.reply_text_area.input(key) {
-            TextAreaAction::Submit => {
-                let body = self.reply_text_area.content();
-                if body.trim().is_empty() {
-                    self.reply_context = None;
-                    self.state = self.preview_return_state;
-                    return Ok(());
-                }
-                if let Some(ctx) = self.reply_context.take() {
-                    let repo = self.repo.clone();
-                    let pr_number = self.pr_number;
-                    let (tx, rx) = mpsc::channel(1);
-                    self.comment_submit_receiver = Some(rx);
-                    self.comment_submitting = true;
-
-                    tokio::spawn(async move {
-                        let result =
-                            github::create_reply_comment(&repo, pr_number, ctx.comment_id, &body)
-                                .await;
-                        let _ = tx
-                            .send(match result {
-                                Ok(_) => CommentSubmitResult::Success,
-                                Err(e) => CommentSubmitResult::Error(e.to_string()),
-                            })
-                            .await;
-                    });
-                }
-                self.state = self.preview_return_state;
-            }
-            TextAreaAction::Cancel => {
-                self.reply_context = None;
-                self.state = self.preview_return_state;
-            }
-            TextAreaAction::Continue => {}
-        }
-        Ok(())
+        self.state = AppState::TextInput;
     }
 
     /// 現在位置をジャンプスタックに保存

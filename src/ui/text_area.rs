@@ -51,6 +51,11 @@ impl TextArea {
     /// キー入力を処理し、アクションを返す
     pub fn input(&mut self, key: event::KeyEvent) -> TextAreaAction {
         match key.code {
+            // Ctrl+Enter で送信
+            KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                return TextAreaAction::Submit;
+            }
+            // Ctrl+S は後方互換性のため残す
             KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 return TextAreaAction::Submit;
             }
@@ -60,6 +65,7 @@ impl TextArea {
             KeyCode::Char(c) => {
                 self.insert_char(c);
             }
+            // 通常の Enter は改行
             KeyCode::Enter => {
                 self.insert_newline();
             }
@@ -103,8 +109,38 @@ impl TextArea {
         self.lines.len() == 1 && self.lines[0].is_empty()
     }
 
-    /// テキストエリアをレンダリング
+    /// 初期コンテンツを設定する（カーソル・スクロールをリセット）
+    pub fn set_content(&mut self, content: &str) {
+        self.lines = if content.is_empty() {
+            vec![String::new()]
+        } else {
+            content.lines().map(String::from).collect()
+        };
+        self.cursor_row = 0;
+        self.cursor_col = 0;
+        self.scroll_offset = 0;
+    }
+
+    /// テキストエリアをクリアする
+    pub fn clear(&mut self) {
+        self.lines = vec![String::new()];
+        self.cursor_row = 0;
+        self.cursor_col = 0;
+        self.scroll_offset = 0;
+    }
+
+    /// テキストエリアをレンダリング（デフォルトタイトル・プレースホルダー）
     pub fn render(&self, frame: &mut Frame, area: Rect) {
+        self.render_with_title(
+            frame,
+            area,
+            "Reply (Ctrl+Enter: submit, Esc: cancel)",
+            "Type your reply here...",
+        );
+    }
+
+    /// カスタムタイトルとプレースホルダーでレンダリング
+    pub fn render_with_title(&self, frame: &mut Frame, area: Rect, title: &str, placeholder: &str) {
         let visible_height = area.height.saturating_sub(2).max(1) as usize; // borders
         self.visible_height.set(visible_height);
 
@@ -118,16 +154,13 @@ impl TextArea {
 
         let placeholder_style = Style::default().fg(Color::DarkGray);
         let display_text = if self.is_empty() {
-            vec![Line::styled("Type your reply here...", placeholder_style)]
+            vec![Line::styled(placeholder, placeholder_style)]
         } else {
             text
         };
 
-        let paragraph = Paragraph::new(display_text).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Reply (Ctrl+S: submit, Esc: cancel)"),
-        );
+        let paragraph =
+            Paragraph::new(display_text).block(Block::default().borders(Borders::ALL).title(title));
         frame.render_widget(paragraph, area);
 
         // カーソル表示（CJK文字の表示幅を考慮）
@@ -358,10 +391,58 @@ mod tests {
     }
 
     #[test]
+    fn test_ctrl_enter_submit() {
+        let mut ta = TextArea::new();
+        let action = ta.input(ctrl_key_event(KeyCode::Enter));
+        assert!(matches!(action, TextAreaAction::Submit));
+    }
+
+    #[test]
+    fn test_enter_inserts_newline_not_submit() {
+        let mut ta = TextArea::new();
+        ta.input(key_event(KeyCode::Char('a')));
+        let action = ta.input(key_event(KeyCode::Enter)); // Ctrl なし
+        assert!(matches!(action, TextAreaAction::Continue));
+        ta.input(key_event(KeyCode::Char('b')));
+        assert_eq!(ta.content(), "a\nb");
+    }
+
+    #[test]
     fn test_cancel_action() {
         let mut ta = TextArea::new();
         let action = ta.input(key_event(KeyCode::Esc));
         assert!(matches!(action, TextAreaAction::Cancel));
+    }
+
+    #[test]
+    fn test_set_content() {
+        let mut ta = TextArea::new();
+        ta.set_content("line1\nline2");
+        assert_eq!(ta.content(), "line1\nline2");
+        assert_eq!(ta.cursor_row, 0);
+        assert_eq!(ta.cursor_col, 0);
+    }
+
+    #[test]
+    fn test_set_content_empty() {
+        let mut ta = TextArea::new();
+        ta.input(key_event(KeyCode::Char('x')));
+        ta.set_content("");
+        assert!(ta.is_empty());
+        assert_eq!(ta.cursor_row, 0);
+        assert_eq!(ta.cursor_col, 0);
+    }
+
+    #[test]
+    fn test_clear() {
+        let mut ta = TextArea::new();
+        ta.input(key_event(KeyCode::Char('a')));
+        ta.input(key_event(KeyCode::Enter));
+        ta.input(key_event(KeyCode::Char('b')));
+        ta.clear();
+        assert!(ta.is_empty());
+        assert_eq!(ta.cursor_row, 0);
+        assert_eq!(ta.cursor_col, 0);
     }
 
     #[test]

@@ -120,13 +120,14 @@ pub fn render(frame: &mut Frame, _app: &App) {
         Line::from("  q, Esc          Back to file list"),
         Line::from(""),
         Line::from(vec![Span::styled(
-            "Comment/Suggestion Preview",
+            "Input Mode (Comment/Suggestion/Reply)",
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )]),
-        Line::from("  Enter           Submit comment/suggestion"),
-        Line::from("  Esc             Cancel"),
+        Line::from("  Ctrl+Enter      Submit comment/suggestion/reply"),
+        Line::from("  Ctrl+S          Submit (alternative)"),
+        Line::from("  Esc             Cancel input"),
         Line::from(""),
         Line::from(vec![Span::styled(
             "AI Rally View",
