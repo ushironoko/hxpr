@@ -1099,14 +1099,6 @@ impl App {
             KeyCode::Char('q') | KeyCode::Esc => {
                 self.state = AppState::FileList;
             }
-            KeyCode::Char(c) if c == self.config.keybindings.comment => {
-                self.preview_return_state = AppState::SplitViewDiff;
-                self.open_comment_editor(terminal).await?;
-            }
-            KeyCode::Char(c) if c == self.config.keybindings.suggestion => {
-                self.preview_return_state = AppState::SplitViewDiff;
-                self.open_suggestion_editor(terminal).await?;
-            }
             _ => {}
         }
 

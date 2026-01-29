@@ -123,9 +123,8 @@ The split view shows the file list (left, 35%) and a diff preview (right, 65%). 
 | `Ctrl-u` | Page up |
 | `n` | Jump to next comment |
 | `N` | Jump to previous comment |
+| `Enter` | Open comment panel |
 | `Tab` / `→` / `l` | Open fullscreen diff view |
-| `c` | Add comment at line |
-| `s` | Add suggestion at line |
 | `←` / `h` | Focus file list |
 | `q` | Back to file list |
 
@@ -143,8 +142,7 @@ The split view shows the file list (left, 35%) and a diff preview (right, 65%). 
 | `N` | Jump to previous comment |
 | `Ctrl-d` | Page down |
 | `Ctrl-u` | Page up |
-| `c` | Add comment at line |
-| `s` | Add suggestion at line |
+| `Enter` | Open comment panel |
 | `←` / `h` / `q` / `Esc` | Back to previous view |
 
 **Note**: Lines with existing comments are marked with `●`. When you select a commented line, the comment content is displayed in a panel below the diff.
