@@ -550,6 +550,10 @@ impl Orchestrator {
         )))
         .await;
 
+        // Add the granted action to reviewee's allowed tools
+        // This allows the reviewee to execute the action without being blocked
+        self.reviewee_adapter.add_reviewee_allowed_tool(action);
+
         let prompt = build_permission_granted_prompt(action);
         self.reviewee_adapter.continue_reviewee(&prompt).await?;
 

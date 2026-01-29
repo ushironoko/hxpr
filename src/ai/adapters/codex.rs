@@ -509,6 +509,12 @@ impl AgentAdapter for CodexAdapter {
 
         parse_reviewee_output(&response)
     }
+
+    fn add_reviewee_allowed_tool(&mut self, _tool: &str) {
+        // Codex doesn't support granular tool permissions like Claude's --allowedTools.
+        // It uses sandbox policies (read-only vs full-auto) instead.
+        // This is a no-op for Codex.
+    }
 }
 
 // Codex event types based on actual CLI output

@@ -138,6 +138,12 @@ pub trait AgentAdapter: Send + Sync {
     /// See CLAUDE.md "Known Limitations"
     #[allow(dead_code)]
     async fn continue_reviewee(&mut self, message: &str) -> Result<RevieweeOutput>;
+
+    /// Add a tool to reviewee's allowed tools dynamically
+    ///
+    /// Used when user grants permission for a specific action (e.g., "Bash(git push:*)").
+    /// This allows the reviewee to execute the permitted action in subsequent calls.
+    fn add_reviewee_allowed_tool(&mut self, tool: &str);
 }
 
 /// Supported agent types

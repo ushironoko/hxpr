@@ -501,6 +501,15 @@ impl AgentAdapter for ClaudeAdapter {
             .await?;
         parse_reviewee_output(&response)
     }
+
+    fn add_reviewee_allowed_tool(&mut self, tool: &str) {
+        // Skip if already included
+        if self.reviewee_allowed_tools.contains(tool) {
+            return;
+        }
+        self.reviewee_allowed_tools.push(',');
+        self.reviewee_allowed_tools.push_str(tool);
+    }
 }
 
 /// Stream event from Claude CLI stream-json output
@@ -807,5 +816,27 @@ mod tests {
         config.reviewee_additional_tools = vec!["Bash(gh api --method POST:*)".to_string()];
         let tools = ClaudeAdapter::build_reviewee_allowed_tools(&config);
         assert!(tools.contains("Bash(gh api --method POST:*)"));
+    }
+
+    #[test]
+    fn test_add_reviewee_allowed_tool() {
+        use crate::ai::adapter::AgentAdapter;
+
+        let config = AiConfig::default();
+        let mut adapter = ClaudeAdapter::new(&config);
+
+        // Initially, git push should not be present
+        assert!(!adapter.reviewee_allowed_tools.contains("Bash(git push:*)"));
+
+        // Add git push dynamically
+        adapter.add_reviewee_allowed_tool("Bash(git push:*)");
+
+        // Now it should be present
+        assert!(adapter.reviewee_allowed_tools.contains("Bash(git push:*)"));
+
+        // Adding the same tool again should not duplicate it
+        let tools_before = adapter.reviewee_allowed_tools.clone();
+        adapter.add_reviewee_allowed_tool("Bash(git push:*)");
+        assert_eq!(adapter.reviewee_allowed_tools, tools_before);
     }
 }
