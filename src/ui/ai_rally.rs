@@ -289,7 +289,7 @@ fn render_logs(frame: &mut Frame, area: Rect, state: &mut AiRallyState) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!(
-            " Logs ({}/{}) [↑↓ select, Enter: detail] ",
+            " Logs ({}/{}) [j/k/↑↓: select, Enter: detail] ",
             scroll_offset.saturating_add(visible_height).min(total_logs),
             total_logs
         ))
@@ -435,15 +435,15 @@ fn render_status_bar(frame: &mut Frame, area: Rect, state: &AiRallyState) {
     } else {
         match state.state {
             RallyState::WaitingForClarification => {
-                "y: Open editor | n: Skip | ↑↓: Select | Enter: Detail | q: Abort"
+                "y: Open editor | n: Skip | j/k/↑↓: select | Enter: detail | q: Abort"
             }
             RallyState::WaitingForPermission => {
-                "y: Approve | n: Deny | ↑↓: Select | Enter: Detail | q: Abort"
+                "y: Approve | n: Deny | j/k/↑↓: select | Enter: detail | q: Abort"
             }
-            RallyState::Completed => "↑↓: Select | Enter: Detail | b: Background | q: Close",
-            RallyState::Aborted => "↑↓: Select | Enter: Detail | b: Background | q: Close",
-            RallyState::Error => "r: Retry | ↑↓: Select | Enter: Detail | b: Background | q: Close",
-            _ => "↑↓: Select | Enter: Detail | b: Background | q: Abort",
+            RallyState::Completed => "j/k/↑↓: select | Enter: detail | b: Background | q: Close",
+            RallyState::Aborted => "j/k/↑↓: select | Enter: detail | b: Background | q: Close",
+            RallyState::Error => "r: Retry | j/k/↑↓: select | Enter: detail | b: Background | q: Close",
+            _ => "j/k/↑↓: select | Enter: detail | b: Background | q: Abort",
         }
     };
 

@@ -95,8 +95,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // Footer
     let footer_chunk_idx = if has_rally { 3 } else { 2 };
     let footer_text = match app.comment_tab {
-        CommentTab::Review => "j/k: move | Enter: jump to file | [/]: switch tab | q: back",
-        CommentTab::Discussion => "j/k: move | Enter: view detail | [/]: switch tab | q: back",
+        CommentTab::Review => "j/k/↑↓: move | Enter: jump to file | [/]: switch tab | q: back",
+        CommentTab::Discussion => "j/k/↑↓: move | Enter: view detail | [/]: switch tab | q: back",
     };
     let footer = Paragraph::new(footer_text).block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, chunks[footer_chunk_idx]);
@@ -416,7 +416,7 @@ fn render_discussion_detail(frame: &mut Frame, app: &App) {
 
     // Footer
     let footer_chunk_idx = if has_rally { 3 } else { 2 };
-    let footer = Paragraph::new("j/k: scroll | Ctrl+d/u: page | Enter/Esc: back to list")
+    let footer = Paragraph::new("j/k/↑↓: scroll | Ctrl+d/u: page | Enter/Esc: back to list")
         .block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, chunks[footer_chunk_idx]);
 }

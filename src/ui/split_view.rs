@@ -100,7 +100,7 @@ fn render_file_list_pane(
 
     // Footer
     let footer_text = if is_focused {
-        "j/k: move | Enter/→/l: diff | ←/h/q: back"
+        "j/k/↑↓: move | Enter/→/l: diff | ←/h/q: back"
     } else {
         "←/h: focus files"
     };
@@ -150,7 +150,7 @@ fn render_diff_pane_normal(
 
     // Footer
     let footer_text = if is_focused {
-        "j/k: scroll | n/N: next/prev comment | Enter: comments | →/l: fullscreen | ←/h: files | q: back"
+        "j/k/↑↓: scroll | n/N: next/prev comment | Enter: comments | →/l: fullscreen | ←/h: files | q: back"
     } else {
         "Enter/→: focus diff"
     };
@@ -261,7 +261,7 @@ fn render_diff_pane_with_comments(
         }
     }
 
-    let title = "Comments (j/k: scroll, c: comment, s: suggest, r: reply)";
+    let title = "Comments (j/k/↑↓: scroll, c: comment, s: suggest, r: reply)";
 
     let paragraph = Paragraph::new(lines)
         .block(
@@ -275,7 +275,7 @@ fn render_diff_pane_with_comments(
     frame.render_widget(paragraph, chunks[2]);
 
     // Footer
-    let footer_text = "j/k: scroll | n/N: jump | Tab: switch | r: reply | c: comment | s: suggest | →/l: fullscreen | ←/h/q: close";
+    let footer_text = "j/k/↑↓: scroll | n/N: jump | Tab: switch | r: reply | c: comment | s: suggest | →/l: fullscreen | ←/h/q: close";
     render_diff_footer(frame, app, chunks[3], footer_text, border_color);
 }
 

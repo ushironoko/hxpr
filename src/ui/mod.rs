@@ -117,7 +117,7 @@ fn render_symbol_popup(frame: &mut Frame, popup: &crate::app::SymbolPopupState) 
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
-            .title("Select symbol (j/k: move, Enter: jump, Esc: cancel)")
+            .title("Select symbol (j/k/↑↓: move, Enter: jump, Esc: cancel)")
             .border_style(Style::default().fg(Color::Cyan)),
     );
 
