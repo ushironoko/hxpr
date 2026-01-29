@@ -294,17 +294,7 @@ fn render_review_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
         .skip(app.comment_list_scroll_offset)
         .collect();
 
-    let list = List::new(visible_items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(format!(
-                " sel={} off={} h={} total={} ",
-                app.selected_comment,
-                app.comment_list_scroll_offset,
-                inner_height,
-                comments.len()
-            )),
-    );
+    let list = List::new(visible_items).block(Block::default().borders(Borders::ALL));
     frame.render_widget(list, area);
 }
 
