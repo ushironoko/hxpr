@@ -54,6 +54,9 @@ impl TextArea {
             KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 return TextAreaAction::Submit;
             }
+            KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                return TextAreaAction::Submit;
+            }
             KeyCode::Esc => {
                 return TextAreaAction::Cancel;
             }
@@ -126,7 +129,7 @@ impl TextArea {
         let paragraph = Paragraph::new(display_text).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Reply (Ctrl+S: submit, Esc: cancel)"),
+                .title("Reply (Ctrl+Enter/Ctrl+S: submit, Esc: cancel)"),
         );
         frame.render_widget(paragraph, area);
 
@@ -351,9 +354,16 @@ mod tests {
     }
 
     #[test]
-    fn test_submit_action() {
+    fn test_submit_action_ctrl_s() {
         let mut ta = TextArea::new();
         let action = ta.input(ctrl_key_event(KeyCode::Char('s')));
+        assert!(matches!(action, TextAreaAction::Submit));
+    }
+
+    #[test]
+    fn test_submit_action_ctrl_enter() {
+        let mut ta = TextArea::new();
+        let action = ta.input(ctrl_key_event(KeyCode::Enter));
         assert!(matches!(action, TextAreaAction::Submit));
     }
 
