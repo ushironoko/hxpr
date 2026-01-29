@@ -1005,7 +1005,7 @@ impl App {
                     self.preview_return_state = AppState::DiffView;
                     self.state = AppState::DiffView;
                 }
-                KeyCode::Esc | KeyCode::Char('q') => {
+                KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc | KeyCode::Char('q') => {
                     self.comment_panel_open = false;
                     self.comment_panel_scroll = 0;
                 }
@@ -1598,6 +1598,9 @@ impl App {
                         }
                     }
                 }
+                KeyCode::Left | KeyCode::Char('h') => {
+                    self.state = self.diff_view_return_state;
+                }
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.comment_panel_open = false;
                     self.comment_panel_scroll = 0;
@@ -1665,12 +1668,6 @@ impl App {
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.selected_line = self.selected_line.saturating_sub(20);
                 self.adjust_scroll(visible_lines);
-            }
-            KeyCode::Char(c) if c == self.config.keybindings.comment => {
-                self.open_comment_editor(terminal).await?
-            }
-            KeyCode::Char(c) if c == self.config.keybindings.suggestion => {
-                self.open_suggestion_editor(terminal).await?
             }
             KeyCode::Char('n') => self.jump_to_next_comment(),
             KeyCode::Char('N') => self.jump_to_prev_comment(),

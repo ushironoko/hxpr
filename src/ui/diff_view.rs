@@ -358,7 +358,11 @@ fn highlight_or_fallback(
 }
 
 fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let help_text = "j/k: move | n/N: next/prev comment | c: comment | s: suggestion | Ctrl-d/u: page | q: back";
+    let help_text = if app.comment_panel_open {
+        "j/k: scroll | n/N: jump | Tab: switch | r: reply | c: comment | s: suggest | ←/h: back | Esc/q: close"
+    } else {
+        "j/k: move | n/N: next/prev comment | Enter: comments | Ctrl-d/u: page | ←/h/q: back"
+    };
 
     // Build footer content with submission status
     let mut spans = vec![Span::raw(help_text)];
