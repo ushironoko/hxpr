@@ -7,9 +7,15 @@ use ratatui::{
 };
 
 use crate::app::App;
+use crate::config::KeybindingsConfig;
 use crate::syntax::available_themes;
 
-pub fn render(frame: &mut Frame, _app: &App) {
+/// Format a key display with padding for alignment
+fn fmt_key(key: &str, width: usize) -> String {
+    format!("  {:<width$}", key, width = width)
+}
+
+pub fn render(frame: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -28,8 +34,20 @@ pub fn render(frame: &mut Frame, _app: &App) {
         .block(Block::default().borders(Borders::ALL).title("Help"));
     frame.render_widget(title, chunks[0]);
 
-    // Help content
-    let help_lines = vec![
+    // Get keybindings from config
+    let kb = &app.config.keybindings;
+
+    // Help content with dynamic keybindings
+    let help_lines = build_help_lines(kb);
+
+    let help = Paragraph::new(help_lines).block(Block::default().borders(Borders::ALL));
+    frame.render_widget(help, chunks[1]);
+}
+
+fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
+    let key_width = 14; // Width for key column
+
+    let lines = vec![
         Line::from(""),
         Line::from(vec![Span::styled(
             "File List View",
@@ -37,16 +55,46 @@ pub fn render(frame: &mut Frame, _app: &App) {
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )]),
-        Line::from("  j/k, Down/Up    Move selection"),
-        Line::from("  Enter           Open split view"),
-        Line::from("  a               Approve PR"),
-        Line::from("  r               Request changes"),
-        Line::from("  c               Comment only"),
-        Line::from("  C               View review comments"),
-        Line::from("  A               Start AI Rally"),
-        Line::from("  R               Refresh (clear cache and reload)"),
-        Line::from("  ?               Toggle help"),
-        Line::from("  q               Quit"),
+        Line::from(format!(
+            "{}, Down/Up    Move selection",
+            fmt_key(&format!("{}/{}", kb.move_down.display(), kb.move_up.display()), key_width)
+        )),
+        Line::from(format!(
+            "{}  Open split view",
+            fmt_key(&kb.open_panel.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Approve PR",
+            fmt_key(&kb.approve.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Request changes",
+            fmt_key(&kb.request_changes.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Comment only",
+            fmt_key(&kb.comment.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  View review comments",
+            fmt_key(&kb.comment_list.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Start AI Rally",
+            fmt_key(&kb.ai_rally.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Refresh (clear cache and reload)",
+            fmt_key(&kb.refresh.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Toggle help",
+            fmt_key(&kb.help.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Quit",
+            fmt_key(&kb.quit.display(), key_width)
+        )),
         Line::from(""),
         Line::from(vec![Span::styled(
             "Split View",
@@ -58,24 +106,70 @@ pub fn render(frame: &mut Frame, _app: &App) {
             "  File List Focus:",
             Style::default().fg(Color::DarkGray),
         )]),
-        Line::from("  j/k, Down/Up    Move file selection (diff follows)"),
-        Line::from("  Enter, →, l     Focus diff pane"),
-        Line::from("  ←, h, q         Back to file list"),
+        Line::from(format!(
+            "{}, Down/Up    Move file selection (diff follows)",
+            fmt_key(&format!("{}/{}", kb.move_down.display(), kb.move_up.display()), key_width)
+        )),
+        Line::from(format!(
+            "{}, Right, {}     Focus diff pane",
+            fmt_key(&kb.open_panel.display(), 5),
+            kb.move_right.display()
+        )),
+        Line::from(format!(
+            "  Left, {}, {}    Back to file list",
+            kb.move_left.display(),
+            kb.quit.display()
+        )),
         Line::from(vec![Span::styled(
             "  Diff Focus:",
             Style::default().fg(Color::DarkGray),
         )]),
-        Line::from("  j/k, Down/Up    Scroll diff"),
-        Line::from("  Ctrl-d/u        Page scroll"),
-        Line::from("  gd              Go to definition"),
-        Line::from("  gf              Open file in $EDITOR"),
-        Line::from("  gg/G            Jump to first/last line"),
-        Line::from("  Ctrl-o          Jump back"),
-        Line::from("  n/N             Next/prev comment"),
-        Line::from("  Enter           Open comment panel"),
-        Line::from("  →/l             Open fullscreen diff"),
-        Line::from("  ←, h            Back to file focus"),
-        Line::from("  q               Back to file list"),
+        Line::from(format!(
+            "{}, Down/Up    Scroll diff",
+            fmt_key(&format!("{}/{}", kb.move_down.display(), kb.move_up.display()), key_width)
+        )),
+        Line::from(format!(
+            "{}  Page scroll",
+            fmt_key(&format!("{}/{}", kb.page_down.display(), kb.page_up.display()), key_width)
+        )),
+        Line::from(format!(
+            "{}  Go to definition",
+            fmt_key(&kb.go_to_definition.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Open file in $EDITOR",
+            fmt_key(&kb.go_to_file.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}/{}  Jump to first/last line",
+            fmt_key(&kb.jump_to_first.display(), 10),
+            kb.jump_to_last.display()
+        )),
+        Line::from(format!(
+            "{}  Jump back",
+            fmt_key(&kb.jump_back.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}/{}  Next/prev comment",
+            fmt_key(&kb.next_comment.display(), 10),
+            kb.prev_comment.display()
+        )),
+        Line::from(format!(
+            "{}  Open comment panel",
+            fmt_key(&kb.open_panel.display(), key_width)
+        )),
+        Line::from(format!(
+            "  Right, {}       Open fullscreen diff",
+            kb.move_right.display()
+        )),
+        Line::from(format!(
+            "  Left, {}        Back to file focus",
+            kb.move_left.display()
+        )),
+        Line::from(format!(
+            "{}  Back to file list",
+            fmt_key(&kb.quit.display(), key_width)
+        )),
         Line::from(""),
         Line::from(vec![Span::styled(
             "Diff View",
@@ -83,30 +177,90 @@ pub fn render(frame: &mut Frame, _app: &App) {
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )]),
-        Line::from("  j/k, Down/Up    Move line selection"),
-        Line::from("  gd              Go to definition"),
-        Line::from("  gf              Open file in $EDITOR"),
-        Line::from("  gg/G            Jump to first/last line"),
-        Line::from("  Ctrl-o          Jump back"),
-        Line::from("  n               Jump to next comment"),
-        Line::from("  N               Jump to previous comment"),
-        Line::from("  Enter           Open comment panel"),
-        Line::from("  Ctrl-d          Page down"),
-        Line::from("  Ctrl-u          Page up"),
-        Line::from("  c               Add comment at line"),
-        Line::from("  s               Add suggestion at line"),
-        Line::from("  q, Esc          Back to file list"),
+        Line::from(format!(
+            "{}, Down/Up    Move line selection",
+            fmt_key(&format!("{}/{}", kb.move_down.display(), kb.move_up.display()), key_width)
+        )),
+        Line::from(format!(
+            "{}  Go to definition",
+            fmt_key(&kb.go_to_definition.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Open file in $EDITOR",
+            fmt_key(&kb.go_to_file.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}/{}  Jump to first/last line",
+            fmt_key(&kb.jump_to_first.display(), 10),
+            kb.jump_to_last.display()
+        )),
+        Line::from(format!(
+            "{}  Jump back",
+            fmt_key(&kb.jump_back.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Jump to next comment",
+            fmt_key(&kb.next_comment.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Jump to previous comment",
+            fmt_key(&kb.prev_comment.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Open comment panel",
+            fmt_key(&kb.open_panel.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Page down",
+            fmt_key(&kb.page_down.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Page up",
+            fmt_key(&kb.page_up.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Add comment at line",
+            fmt_key(&kb.comment.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Add suggestion at line",
+            fmt_key(&kb.suggestion.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}, Esc       Back to file list",
+            fmt_key(&kb.quit.display(), key_width)
+        )),
         Line::from(vec![Span::styled(
             "  Comment Panel (focused):",
             Style::default().fg(Color::DarkGray),
         )]),
-        Line::from("  j/k             Scroll panel"),
-        Line::from("  c               Add comment"),
-        Line::from("  s               Add suggestion"),
-        Line::from("  r               Reply to comment"),
+        Line::from(format!(
+            "{}/{}  Scroll panel",
+            fmt_key(&kb.move_down.display(), 10),
+            kb.move_up.display()
+        )),
+        Line::from(format!(
+            "{}  Add comment",
+            fmt_key(&kb.comment.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Add suggestion",
+            fmt_key(&kb.suggestion.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Reply to comment",
+            fmt_key(&kb.reply.display(), key_width)
+        )),
         Line::from("  Tab/Shift-Tab   Select reply target (multiple)"),
-        Line::from("  n/N             Jump to next/prev comment"),
-        Line::from("  Esc/q           Close panel"),
+        Line::from(format!(
+            "{}/{}  Jump to next/prev comment",
+            fmt_key(&kb.next_comment.display(), 10),
+            kb.prev_comment.display()
+        )),
+        Line::from(format!(
+            "  Esc/{}        Close panel",
+            kb.quit.display()
+        )),
         Line::from(""),
         Line::from(vec![Span::styled(
             "Comment List View",
@@ -115,9 +269,18 @@ pub fn render(frame: &mut Frame, _app: &App) {
                 .add_modifier(Modifier::BOLD),
         )]),
         Line::from("  [, ]            Switch tab (Review/Discussion)"),
-        Line::from("  j/k, Down/Up    Move selection"),
-        Line::from("  Enter           Review: Jump to file | Discussion: View detail"),
-        Line::from("  q, Esc          Back to file list"),
+        Line::from(format!(
+            "{}, Down/Up    Move selection",
+            fmt_key(&format!("{}/{}", kb.move_down.display(), kb.move_up.display()), key_width)
+        )),
+        Line::from(format!(
+            "{}  Review: Jump to file | Discussion: View detail",
+            fmt_key(&kb.open_panel.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}, Esc       Back to file list",
+            fmt_key(&kb.quit.display(), key_width)
+        )),
         Line::from(""),
         Line::from(vec![Span::styled(
             "Input Mode (Comment/Suggestion/Reply)",
@@ -125,7 +288,10 @@ pub fn render(frame: &mut Frame, _app: &App) {
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )]),
-        Line::from("  Ctrl+S          Submit"),
+        Line::from(format!(
+            "{}  Submit",
+            fmt_key(&kb.submit.display(), key_width)
+        )),
         Line::from("  Esc             Cancel input"),
         Line::from(""),
         Line::from(vec![Span::styled(
@@ -140,7 +306,10 @@ pub fn render(frame: &mut Frame, _app: &App) {
         )]),
         Line::from("  y               Grant permission / Answer yes"),
         Line::from("  n               Deny permission / Skip"),
-        Line::from("  q               Abort rally"),
+        Line::from(format!(
+            "{}  Abort rally",
+            fmt_key(&kb.quit.display(), key_width)
+        )),
         Line::from(""),
         Line::from(vec![Span::styled(
             "Available Themes",
@@ -155,11 +324,10 @@ pub fn render(frame: &mut Frame, _app: &App) {
         )]),
         Line::from(""),
         Line::from(vec![Span::styled(
-            "Press q or ? to close this help",
+            format!("Press {} or {} to close this help", kb.quit.display(), kb.help.display()),
             Style::default().fg(Color::DarkGray),
         )]),
     ];
 
-    let help = Paragraph::new(help_lines).block(Block::default().borders(Borders::ALL));
-    frame.render_widget(help, chunks[1]);
+    lines
 }

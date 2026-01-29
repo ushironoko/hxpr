@@ -1218,6 +1218,7 @@ dependencies = [
  "ratatui 0.30.0",
  "serde",
  "serde_json",
+ "smallvec",
  "syntect",
  "syntect-tui",
  "tempfile",

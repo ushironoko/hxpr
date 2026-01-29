@@ -3,8 +3,9 @@ use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{backend::CrosstermBackend, text::Span, Terminal};
+use smallvec::SmallVec;
 use std::io::Stdout;
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
@@ -14,6 +15,9 @@ use crate::ai::{Context, Orchestrator, RallyState};
 use crate::config::Config;
 use crate::github::comment::{DiscussionComment, ReviewComment};
 use crate::github::{self, ChangedFile, PullRequest};
+use crate::keybinding::{
+    event_to_keybinding, KeyBinding, KeySequence, SequenceMatch, SEQUENCE_TIMEOUT,
+};
 use crate::loader::{CommentSubmitResult, DataLoadResult};
 use crate::ui;
 use crate::ui::text_area::{TextArea, TextAreaAction};
@@ -262,8 +266,10 @@ pub struct App {
     pub selected_inline_comment: usize,
     /// ジャンプ履歴スタック（Go to Definition / Jump Back 用）
     pub jump_stack: Vec<JumpLocation>,
-    /// 'g' キー入力待ち状態（gd, gg などの2キーコマンド用）
-    pub pending_g_key: bool,
+    /// Pending keys for multi-key sequences (e.g., "gg", "gd")
+    pub pending_keys: SmallVec<[KeyBinding; 4]>,
+    /// Timestamp when pending keys started (for timeout)
+    pub pending_since: Option<Instant>,
     /// シンボル選択ポップアップの状態
     pub symbol_popup: Option<SymbolPopupState>,
 }
@@ -290,7 +296,7 @@ impl App {
             diff_line_count: 0,
             scroll_offset: 0,
             input_mode: None,
-            input_text_area: TextArea::new(),
+            input_text_area: TextArea::with_submit_key(config.keybindings.submit.clone()),
             config,
             should_quit: false,
             review_comments: None,
@@ -326,7 +332,8 @@ impl App {
             spinner_frame: 0,
             selected_inline_comment: 0,
             jump_stack: Vec::new(),
-            pending_g_key: false,
+            pending_keys: SmallVec::new(),
+            pending_since: None,
             symbol_popup: None,
         };
 
@@ -360,7 +367,7 @@ impl App {
             diff_line_count,
             scroll_offset: 0,
             input_mode: None,
-            input_text_area: TextArea::new(),
+            input_text_area: TextArea::with_submit_key(config.keybindings.submit.clone()),
             config,
             should_quit: false,
             review_comments: None,
@@ -396,7 +403,8 @@ impl App {
             spinner_frame: 0,
             selected_inline_comment: 0,
             jump_stack: Vec::new(),
-            pending_g_key: false,
+            pending_keys: SmallVec::new(),
+            pending_since: None,
             symbol_popup: None,
         };
 
@@ -799,47 +807,85 @@ impl App {
         key: event::KeyEvent,
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) -> Result<()> {
-        match key.code {
-            KeyCode::Char('q') => self.should_quit = true,
-            KeyCode::Char('j') | KeyCode::Down => {
-                if !self.files().is_empty() {
-                    self.selected_file =
-                        (self.selected_file + 1).min(self.files().len().saturating_sub(1));
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.selected_file = self.selected_file.saturating_sub(1);
-            }
-            // Split view を開く際は diff ペインにフォーカスした状態で遷移する。
-            // ファイル一覧側へのフォーカス切替は ←/h で行う。
-            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
-                if !self.files().is_empty() {
-                    self.state = AppState::SplitViewDiff;
-                    self.sync_diff_to_selected_file();
-                }
-            }
-            KeyCode::Char(c) if c == self.config.keybindings.approve => {
-                self.submit_review(ReviewAction::Approve, terminal).await?
-            }
-            KeyCode::Char(c) if c == self.config.keybindings.request_changes => {
-                self.submit_review(ReviewAction::RequestChanges, terminal)
-                    .await?
-            }
-            KeyCode::Char(c) if c == self.config.keybindings.comment => {
-                self.submit_review(ReviewAction::Comment, terminal).await?
-            }
-            KeyCode::Char('C') => {
-                self.previous_state = AppState::FileList;
-                self.open_comment_list();
-            }
-            KeyCode::Char('R') => self.refresh_all(),
-            KeyCode::Char('A') => self.resume_or_start_ai_rally(),
-            KeyCode::Char('?') => {
-                self.previous_state = AppState::FileList;
-                self.state = AppState::Help;
-            }
-            _ => {}
+        let kb = &self.config.keybindings;
+
+        // Quit
+        if self.matches_single_key(&key, &kb.quit) {
+            self.should_quit = true;
+            return Ok(());
         }
+
+        // Move down (j or Down arrow - arrows always work)
+        if self.matches_single_key(&key, &kb.move_down) || key.code == KeyCode::Down {
+            if !self.files().is_empty() {
+                self.selected_file =
+                    (self.selected_file + 1).min(self.files().len().saturating_sub(1));
+            }
+            return Ok(());
+        }
+
+        // Move up (k or Up arrow)
+        if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
+            self.selected_file = self.selected_file.saturating_sub(1);
+            return Ok(());
+        }
+
+        // Open split view (Enter, Right arrow, or l)
+        if self.matches_single_key(&key, &kb.open_panel)
+            || self.matches_single_key(&key, &kb.move_right)
+            || key.code == KeyCode::Right
+        {
+            if !self.files().is_empty() {
+                self.state = AppState::SplitViewDiff;
+                self.sync_diff_to_selected_file();
+            }
+            return Ok(());
+        }
+
+        // Actions
+        if self.matches_single_key(&key, &kb.approve) {
+            self.submit_review(ReviewAction::Approve, terminal).await?;
+            return Ok(());
+        }
+
+        if self.matches_single_key(&key, &kb.request_changes) {
+            self.submit_review(ReviewAction::RequestChanges, terminal).await?;
+            return Ok(());
+        }
+
+        // Note: In FileList, 'comment' key triggers review comment (not inline comment)
+        // Using separate check for review comment in FileList context
+        if self.matches_single_key(&key, &kb.comment) {
+            self.submit_review(ReviewAction::Comment, terminal).await?;
+            return Ok(());
+        }
+
+        // Comment list
+        if self.matches_single_key(&key, &kb.comment_list) {
+            self.previous_state = AppState::FileList;
+            self.open_comment_list();
+            return Ok(());
+        }
+
+        // Refresh
+        if self.matches_single_key(&key, &kb.refresh) {
+            self.refresh_all();
+            return Ok(());
+        }
+
+        // AI Rally
+        if self.matches_single_key(&key, &kb.ai_rally) {
+            self.resume_or_start_ai_rally();
+            return Ok(());
+        }
+
+        // Help
+        if self.matches_single_key(&key, &kb.help) {
+            self.previous_state = AppState::FileList;
+            self.state = AppState::Help;
+            return Ok(());
+        }
+
         Ok(())
     }
 
@@ -849,30 +895,34 @@ impl App {
         key: event::KeyEvent,
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) -> Result<bool> {
-        match key.code {
-            KeyCode::Char(c) if c == self.config.keybindings.approve => {
-                self.submit_review(ReviewAction::Approve, terminal).await?;
-                Ok(true)
-            }
-            KeyCode::Char(c) if c == self.config.keybindings.request_changes => {
-                self.submit_review(ReviewAction::RequestChanges, terminal)
-                    .await?;
-                Ok(true)
-            }
-            KeyCode::Char(c) if c == self.config.keybindings.comment => {
-                self.submit_review(ReviewAction::Comment, terminal).await?;
-                Ok(true)
-            }
-            KeyCode::Char('R') => {
-                self.refresh_all();
-                Ok(true)
-            }
-            KeyCode::Char('A') => {
-                self.resume_or_start_ai_rally();
-                Ok(true)
-            }
-            _ => Ok(false),
+        let kb = &self.config.keybindings;
+
+        if self.matches_single_key(&key, &kb.approve) {
+            self.submit_review(ReviewAction::Approve, terminal).await?;
+            return Ok(true);
         }
+
+        if self.matches_single_key(&key, &kb.request_changes) {
+            self.submit_review(ReviewAction::RequestChanges, terminal).await?;
+            return Ok(true);
+        }
+
+        if self.matches_single_key(&key, &kb.comment) {
+            self.submit_review(ReviewAction::Comment, terminal).await?;
+            return Ok(true);
+        }
+
+        if self.matches_single_key(&key, &kb.refresh) {
+            self.refresh_all();
+            return Ok(true);
+        }
+
+        if self.matches_single_key(&key, &kb.ai_rally) {
+            self.resume_or_start_ai_rally();
+            return Ok(true);
+        }
+
+        Ok(false)
     }
 
     async fn handle_split_view_file_list_input(
@@ -880,40 +930,65 @@ impl App {
         key: event::KeyEvent,
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) -> Result<()> {
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if !self.files().is_empty() {
-                    self.selected_file =
-                        (self.selected_file + 1).min(self.files().len().saturating_sub(1));
-                    self.sync_diff_to_selected_file();
-                }
+        let kb = &self.config.keybindings;
+
+        // Move down
+        if self.matches_single_key(&key, &kb.move_down) || key.code == KeyCode::Down {
+            if !self.files().is_empty() {
+                self.selected_file =
+                    (self.selected_file + 1).min(self.files().len().saturating_sub(1));
+                self.sync_diff_to_selected_file();
             }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if self.selected_file > 0 {
-                    self.selected_file = self.selected_file.saturating_sub(1);
-                    self.sync_diff_to_selected_file();
-                }
-            }
-            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
-                if !self.files().is_empty() {
-                    self.state = AppState::SplitViewDiff;
-                }
-            }
-            KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('q') | KeyCode::Esc => {
-                self.state = AppState::FileList;
-            }
-            KeyCode::Char('C') => {
-                self.previous_state = AppState::SplitViewFileList;
-                self.open_comment_list();
-            }
-            KeyCode::Char('?') => {
-                self.previous_state = AppState::SplitViewFileList;
-                self.state = AppState::Help;
-            }
-            _ => {
-                self.handle_common_file_list_keys(key, terminal).await?;
-            }
+            return Ok(());
         }
+
+        // Move up
+        if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
+            if self.selected_file > 0 {
+                self.selected_file = self.selected_file.saturating_sub(1);
+                self.sync_diff_to_selected_file();
+            }
+            return Ok(());
+        }
+
+        // Focus diff pane
+        if self.matches_single_key(&key, &kb.open_panel)
+            || self.matches_single_key(&key, &kb.move_right)
+            || key.code == KeyCode::Right
+        {
+            if !self.files().is_empty() {
+                self.state = AppState::SplitViewDiff;
+            }
+            return Ok(());
+        }
+
+        // Back to file list
+        if self.matches_single_key(&key, &kb.quit)
+            || self.matches_single_key(&key, &kb.move_left)
+            || key.code == KeyCode::Left
+            || key.code == KeyCode::Esc
+        {
+            self.state = AppState::FileList;
+            return Ok(());
+        }
+
+        // Comment list
+        if self.matches_single_key(&key, &kb.comment_list) {
+            self.previous_state = AppState::SplitViewFileList;
+            self.open_comment_list();
+            return Ok(());
+        }
+
+        // Help
+        if self.matches_single_key(&key, &kb.help) {
+            self.previous_state = AppState::SplitViewFileList;
+            self.state = AppState::Help;
+            return Ok(());
+        }
+
+        // Fallback to common file list keys
+        self.handle_common_file_list_keys(key, terminal).await?;
+
         Ok(())
     }
 
@@ -936,159 +1011,259 @@ impl App {
         let visible_lines = (term_height * 65 / 100).saturating_sub(8);
         let panel_inner_width = self.comment_panel_inner_width(term_width);
 
+        // Clone keybindings to avoid borrow issues with self
+        let kb = self.config.keybindings.clone();
+
         // コメントパネルフォーカス中
         if self.comment_panel_open {
-            match key.code {
-                KeyCode::Char('j') | KeyCode::Down => {
-                    let max_scroll = self.max_comment_panel_scroll(term_height, term_width);
-                    self.comment_panel_scroll =
-                        self.comment_panel_scroll.saturating_add(1).min(max_scroll);
-                }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    self.comment_panel_scroll = self.comment_panel_scroll.saturating_sub(1);
-                }
-                KeyCode::Char('n') => {
-                    let prev_line = self.selected_line;
-                    self.jump_to_next_comment();
-                    if self.selected_line != prev_line {
-                        self.comment_panel_scroll = 0;
-                        self.selected_inline_comment = 0;
-                        self.adjust_scroll(visible_lines);
-                    }
-                }
-                KeyCode::Char('N') => {
-                    let prev_line = self.selected_line;
-                    self.jump_to_prev_comment();
-                    if self.selected_line != prev_line {
-                        self.comment_panel_scroll = 0;
-                        self.selected_inline_comment = 0;
-                        self.adjust_scroll(visible_lines);
-                    }
-                }
-                KeyCode::Char(c) if c == self.config.keybindings.comment => {
-                    self.enter_comment_input();
-                }
-                KeyCode::Char(c) if c == self.config.keybindings.suggestion => {
-                    self.enter_suggestion_input();
-                }
-                KeyCode::Char('r') => {
-                    if self.has_comment_at_current_line() {
-                        self.enter_reply_input();
-                    }
-                }
-                KeyCode::Tab => {
-                    if self.has_comment_at_current_line() {
-                        let count = self.get_comment_indices_at_current_line().len();
-                        if count > 1 && self.selected_inline_comment + 1 < count {
-                            self.selected_inline_comment += 1;
-                            self.comment_panel_scroll = self.comment_panel_offset_for(
-                                self.selected_inline_comment,
-                                panel_inner_width,
-                            );
-                        }
-                    }
-                }
-                KeyCode::BackTab => {
-                    if self.has_comment_at_current_line() {
-                        let count = self.get_comment_indices_at_current_line().len();
-                        if count > 1 && self.selected_inline_comment > 0 {
-                            self.selected_inline_comment -= 1;
-                            self.comment_panel_scroll = self.comment_panel_offset_for(
-                                self.selected_inline_comment,
-                                panel_inner_width,
-                            );
-                        }
-                    }
-                }
-                KeyCode::Right | KeyCode::Char('l') => {
-                    self.diff_view_return_state = AppState::SplitViewDiff;
-                    self.preview_return_state = AppState::DiffView;
-                    self.state = AppState::DiffView;
-                }
-                KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc | KeyCode::Char('q') => {
-                    self.comment_panel_open = false;
-                    self.comment_panel_scroll = 0;
-                }
-                _ => {}
+            // Move down in panel
+            if self.matches_single_key(&key, &kb.move_down) || key.code == KeyCode::Down {
+                let max_scroll = self.max_comment_panel_scroll(term_height, term_width);
+                self.comment_panel_scroll =
+                    self.comment_panel_scroll.saturating_add(1).min(max_scroll);
+                return Ok(());
             }
+
+            // Move up in panel
+            if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
+                self.comment_panel_scroll = self.comment_panel_scroll.saturating_sub(1);
+                return Ok(());
+            }
+
+            // Next comment
+            if self.matches_single_key(&key, &kb.next_comment) {
+                let prev_line = self.selected_line;
+                self.jump_to_next_comment();
+                if self.selected_line != prev_line {
+                    self.comment_panel_scroll = 0;
+                    self.selected_inline_comment = 0;
+                    self.adjust_scroll(visible_lines);
+                }
+                return Ok(());
+            }
+
+            // Previous comment
+            if self.matches_single_key(&key, &kb.prev_comment) {
+                let prev_line = self.selected_line;
+                self.jump_to_prev_comment();
+                if self.selected_line != prev_line {
+                    self.comment_panel_scroll = 0;
+                    self.selected_inline_comment = 0;
+                    self.adjust_scroll(visible_lines);
+                }
+                return Ok(());
+            }
+
+            // Add comment
+            if self.matches_single_key(&key, &kb.comment) {
+                self.enter_comment_input();
+                return Ok(());
+            }
+
+            // Add suggestion
+            if self.matches_single_key(&key, &kb.suggestion) {
+                self.enter_suggestion_input();
+                return Ok(());
+            }
+
+            // Reply
+            if self.matches_single_key(&key, &kb.reply) {
+                if self.has_comment_at_current_line() {
+                    self.enter_reply_input();
+                }
+                return Ok(());
+            }
+
+            // Tab - select next inline comment
+            if key.code == KeyCode::Tab {
+                if self.has_comment_at_current_line() {
+                    let count = self.get_comment_indices_at_current_line().len();
+                    if count > 1 && self.selected_inline_comment + 1 < count {
+                        self.selected_inline_comment += 1;
+                        self.comment_panel_scroll = self.comment_panel_offset_for(
+                            self.selected_inline_comment,
+                            panel_inner_width,
+                        );
+                    }
+                }
+                return Ok(());
+            }
+
+            // Shift-Tab - select previous inline comment
+            if key.code == KeyCode::BackTab {
+                if self.has_comment_at_current_line() {
+                    let count = self.get_comment_indices_at_current_line().len();
+                    if count > 1 && self.selected_inline_comment > 0 {
+                        self.selected_inline_comment -= 1;
+                        self.comment_panel_scroll = self.comment_panel_offset_for(
+                            self.selected_inline_comment,
+                            panel_inner_width,
+                        );
+                    }
+                }
+                return Ok(());
+            }
+
+            // Go to fullscreen diff
+            if self.matches_single_key(&key, &kb.move_right) || key.code == KeyCode::Right {
+                self.diff_view_return_state = AppState::SplitViewDiff;
+                self.preview_return_state = AppState::DiffView;
+                self.state = AppState::DiffView;
+                return Ok(());
+            }
+
+            // Close panel
+            if self.matches_single_key(&key, &kb.quit)
+                || self.matches_single_key(&key, &kb.move_left)
+                || key.code == KeyCode::Left
+                || key.code == KeyCode::Esc
+            {
+                self.comment_panel_open = false;
+                self.comment_panel_scroll = 0;
+                return Ok(());
+            }
+
             return Ok(());
         }
 
-        // pending_g_key: 2キーコマンド処理
-        if self.pending_g_key {
-            self.pending_g_key = false;
-            match key.code {
-                KeyCode::Char('d') => {
+        // Check for sequence timeout
+        self.check_sequence_timeout();
+
+        // Get KeyBinding for current event
+        let current_kb = event_to_keybinding(&key);
+
+        // Try to match two-key sequences (gd, gf, gg)
+        if let Some(kb_event) = current_kb {
+            // Check if this key continues a pending sequence
+            if !self.pending_keys.is_empty() {
+                self.push_pending_key(kb_event);
+
+                // Check for go_to_definition (gd)
+                if self.try_match_sequence(&kb.go_to_definition) == SequenceMatch::Full {
+                    self.clear_pending_keys();
                     self.open_symbol_popup(terminal).await?;
                     return Ok(());
                 }
-                KeyCode::Char('f') => {
+
+                // Check for go_to_file (gf)
+                if self.try_match_sequence(&kb.go_to_file) == SequenceMatch::Full {
+                    self.clear_pending_keys();
                     self.open_current_file_in_editor(terminal).await?;
                     return Ok(());
                 }
-                KeyCode::Char('g') => {
+
+                // Check for jump_to_first (gg)
+                if self.try_match_sequence(&kb.jump_to_first) == SequenceMatch::Full {
+                    self.clear_pending_keys();
                     self.selected_line = 0;
                     self.scroll_offset = 0;
                     return Ok(());
                 }
-                _ => {}
+
+                // No match - clear pending keys and fall through
+                self.clear_pending_keys();
+            } else {
+                // Check if this key could start a sequence
+                let could_start_gd = self.key_could_match_sequence(&key, &kb.go_to_definition);
+                let could_start_gf = self.key_could_match_sequence(&key, &kb.go_to_file);
+                let could_start_gg = self.key_could_match_sequence(&key, &kb.jump_to_first);
+
+                if could_start_gd || could_start_gf || could_start_gg {
+                    self.push_pending_key(kb_event);
+                    return Ok(());
+                }
             }
         }
 
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if self.diff_line_count > 0 {
-                    self.selected_line =
-                        (self.selected_line + 1).min(self.diff_line_count.saturating_sub(1));
-                    self.adjust_scroll(visible_lines);
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.selected_line = self.selected_line.saturating_sub(1);
+        // Single-key bindings
+
+        // Move down
+        if self.matches_single_key(&key, &kb.move_down) || key.code == KeyCode::Down {
+            if self.diff_line_count > 0 {
+                self.selected_line =
+                    (self.selected_line + 1).min(self.diff_line_count.saturating_sub(1));
                 self.adjust_scroll(visible_lines);
             }
-            KeyCode::Char('g') => {
-                self.pending_g_key = true;
-            }
-            KeyCode::Char('G') => {
-                if self.diff_line_count > 0 {
-                    self.selected_line = self.diff_line_count.saturating_sub(1);
-                    self.adjust_scroll(visible_lines);
-                }
-            }
-            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.jump_back();
-            }
-            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if self.diff_line_count > 0 {
-                    self.selected_line =
-                        (self.selected_line + 20).min(self.diff_line_count.saturating_sub(1));
-                    self.adjust_scroll(visible_lines);
-                }
-            }
-            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.selected_line = self.selected_line.saturating_sub(20);
+            return Ok(());
+        }
+
+        // Move up
+        if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
+            self.selected_line = self.selected_line.saturating_sub(1);
+            self.adjust_scroll(visible_lines);
+            return Ok(());
+        }
+
+        // Jump to last
+        if self.matches_single_key(&key, &kb.jump_to_last) {
+            if self.diff_line_count > 0 {
+                self.selected_line = self.diff_line_count.saturating_sub(1);
                 self.adjust_scroll(visible_lines);
             }
-            KeyCode::Char('n') => self.jump_to_next_comment(),
-            KeyCode::Char('N') => self.jump_to_prev_comment(),
-            KeyCode::Enter => {
-                self.comment_panel_open = true;
-                self.comment_panel_scroll = 0;
-                self.selected_inline_comment = 0;
+            return Ok(());
+        }
+
+        // Jump back
+        if self.matches_single_key(&key, &kb.jump_back) {
+            self.jump_back();
+            return Ok(());
+        }
+
+        // Page down
+        if self.matches_single_key(&key, &kb.page_down) {
+            if self.diff_line_count > 0 {
+                self.selected_line =
+                    (self.selected_line + 20).min(self.diff_line_count.saturating_sub(1));
+                self.adjust_scroll(visible_lines);
             }
-            KeyCode::Right | KeyCode::Char('l') => {
-                self.diff_view_return_state = AppState::SplitViewDiff;
-                self.preview_return_state = AppState::DiffView;
-                self.state = AppState::DiffView;
-            }
-            KeyCode::Left | KeyCode::Char('h') => {
-                self.state = AppState::SplitViewFileList;
-            }
-            KeyCode::Char('q') | KeyCode::Esc => {
-                self.state = AppState::FileList;
-            }
-            _ => {}
+            return Ok(());
+        }
+
+        // Page up
+        if self.matches_single_key(&key, &kb.page_up) {
+            self.selected_line = self.selected_line.saturating_sub(20);
+            self.adjust_scroll(visible_lines);
+            return Ok(());
+        }
+
+        // Next comment
+        if self.matches_single_key(&key, &kb.next_comment) {
+            self.jump_to_next_comment();
+            return Ok(());
+        }
+
+        // Previous comment
+        if self.matches_single_key(&key, &kb.prev_comment) {
+            self.jump_to_prev_comment();
+            return Ok(());
+        }
+
+        // Open panel
+        if self.matches_single_key(&key, &kb.open_panel) {
+            self.comment_panel_open = true;
+            self.comment_panel_scroll = 0;
+            self.selected_inline_comment = 0;
+            return Ok(());
+        }
+
+        // Go to fullscreen diff
+        if self.matches_single_key(&key, &kb.move_right) || key.code == KeyCode::Right {
+            self.diff_view_return_state = AppState::SplitViewDiff;
+            self.preview_return_state = AppState::DiffView;
+            self.state = AppState::DiffView;
+            return Ok(());
+        }
+
+        // Back to file list focus
+        if self.matches_single_key(&key, &kb.move_left) || key.code == KeyCode::Left {
+            self.state = AppState::SplitViewFileList;
+            return Ok(());
+        }
+
+        // Quit to file list
+        if self.matches_single_key(&key, &kb.quit) || key.code == KeyCode::Esc {
+            self.state = AppState::FileList;
+            return Ok(());
         }
 
         Ok(())
@@ -1538,155 +1713,257 @@ impl App {
         let visible_lines = term_h.saturating_sub(8);
         let panel_inner_width = self.comment_panel_inner_width(term_w);
 
+        // Clone keybindings to avoid borrow issues with self
+        let kb = self.config.keybindings.clone();
+
         // コメントパネルフォーカス中
         if self.comment_panel_open {
-            match key.code {
-                KeyCode::Char('j') | KeyCode::Down => {
-                    let max_scroll = self.max_comment_panel_scroll(term_h, term_w);
-                    self.comment_panel_scroll =
-                        self.comment_panel_scroll.saturating_add(1).min(max_scroll);
-                }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    self.comment_panel_scroll = self.comment_panel_scroll.saturating_sub(1);
-                }
-                KeyCode::Char('n') => {
-                    let prev_line = self.selected_line;
-                    self.jump_to_next_comment();
-                    if self.selected_line != prev_line {
-                        self.comment_panel_scroll = 0;
-                        self.selected_inline_comment = 0;
-                        self.adjust_scroll(visible_lines);
-                    }
-                }
-                KeyCode::Char('N') => {
-                    let prev_line = self.selected_line;
-                    self.jump_to_prev_comment();
-                    if self.selected_line != prev_line {
-                        self.comment_panel_scroll = 0;
-                        self.selected_inline_comment = 0;
-                        self.adjust_scroll(visible_lines);
-                    }
-                }
-                KeyCode::Char(c) if c == self.config.keybindings.comment => {
-                    self.enter_comment_input();
-                }
-                KeyCode::Char(c) if c == self.config.keybindings.suggestion => {
-                    self.enter_suggestion_input();
-                }
-                KeyCode::Char('r') => {
-                    if self.has_comment_at_current_line() {
-                        self.enter_reply_input();
-                    }
-                }
-                KeyCode::Tab => {
-                    if self.has_comment_at_current_line() {
-                        let count = self.get_comment_indices_at_current_line().len();
-                        if count > 1 && self.selected_inline_comment + 1 < count {
-                            self.selected_inline_comment += 1;
-                            self.comment_panel_scroll = self.comment_panel_offset_for(
-                                self.selected_inline_comment,
-                                panel_inner_width,
-                            );
-                        }
-                    }
-                }
-                KeyCode::BackTab => {
-                    if self.has_comment_at_current_line() {
-                        let count = self.get_comment_indices_at_current_line().len();
-                        if count > 1 && self.selected_inline_comment > 0 {
-                            self.selected_inline_comment -= 1;
-                            self.comment_panel_scroll = self.comment_panel_offset_for(
-                                self.selected_inline_comment,
-                                panel_inner_width,
-                            );
-                        }
-                    }
-                }
-                KeyCode::Left | KeyCode::Char('h') => {
-                    self.state = self.diff_view_return_state;
-                }
-                KeyCode::Esc | KeyCode::Char('q') => {
-                    self.comment_panel_open = false;
-                    self.comment_panel_scroll = 0;
-                }
-                _ => {}
+            // Move down in panel
+            if self.matches_single_key(&key, &kb.move_down) || key.code == KeyCode::Down {
+                let max_scroll = self.max_comment_panel_scroll(term_h, term_w);
+                self.comment_panel_scroll =
+                    self.comment_panel_scroll.saturating_add(1).min(max_scroll);
+                return Ok(());
             }
+
+            // Move up in panel
+            if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
+                self.comment_panel_scroll = self.comment_panel_scroll.saturating_sub(1);
+                return Ok(());
+            }
+
+            // Next comment
+            if self.matches_single_key(&key, &kb.next_comment) {
+                let prev_line = self.selected_line;
+                self.jump_to_next_comment();
+                if self.selected_line != prev_line {
+                    self.comment_panel_scroll = 0;
+                    self.selected_inline_comment = 0;
+                    self.adjust_scroll(visible_lines);
+                }
+                return Ok(());
+            }
+
+            // Previous comment
+            if self.matches_single_key(&key, &kb.prev_comment) {
+                let prev_line = self.selected_line;
+                self.jump_to_prev_comment();
+                if self.selected_line != prev_line {
+                    self.comment_panel_scroll = 0;
+                    self.selected_inline_comment = 0;
+                    self.adjust_scroll(visible_lines);
+                }
+                return Ok(());
+            }
+
+            // Add comment
+            if self.matches_single_key(&key, &kb.comment) {
+                self.enter_comment_input();
+                return Ok(());
+            }
+
+            // Add suggestion
+            if self.matches_single_key(&key, &kb.suggestion) {
+                self.enter_suggestion_input();
+                return Ok(());
+            }
+
+            // Reply
+            if self.matches_single_key(&key, &kb.reply) {
+                if self.has_comment_at_current_line() {
+                    self.enter_reply_input();
+                }
+                return Ok(());
+            }
+
+            // Tab - select next inline comment
+            if key.code == KeyCode::Tab {
+                if self.has_comment_at_current_line() {
+                    let count = self.get_comment_indices_at_current_line().len();
+                    if count > 1 && self.selected_inline_comment + 1 < count {
+                        self.selected_inline_comment += 1;
+                        self.comment_panel_scroll = self.comment_panel_offset_for(
+                            self.selected_inline_comment,
+                            panel_inner_width,
+                        );
+                    }
+                }
+                return Ok(());
+            }
+
+            // Shift-Tab - select previous inline comment
+            if key.code == KeyCode::BackTab {
+                if self.has_comment_at_current_line() {
+                    let count = self.get_comment_indices_at_current_line().len();
+                    if count > 1 && self.selected_inline_comment > 0 {
+                        self.selected_inline_comment -= 1;
+                        self.comment_panel_scroll = self.comment_panel_offset_for(
+                            self.selected_inline_comment,
+                            panel_inner_width,
+                        );
+                    }
+                }
+                return Ok(());
+            }
+
+            // Back
+            if self.matches_single_key(&key, &kb.move_left) || key.code == KeyCode::Left {
+                self.state = self.diff_view_return_state;
+                return Ok(());
+            }
+
+            // Close panel
+            if self.matches_single_key(&key, &kb.quit) || key.code == KeyCode::Esc {
+                self.comment_panel_open = false;
+                self.comment_panel_scroll = 0;
+                return Ok(());
+            }
+
             return Ok(());
         }
 
-        // pending_g_key: 2キーコマンド処理
-        if self.pending_g_key {
-            self.pending_g_key = false;
-            match key.code {
-                KeyCode::Char('d') => {
+        // Check for sequence timeout
+        self.check_sequence_timeout();
+
+        // Get KeyBinding for current event
+        let current_kb = event_to_keybinding(&key);
+
+        // Try to match two-key sequences (gd, gf, gg)
+        if let Some(kb_event) = current_kb {
+            // Check if this key continues a pending sequence
+            if !self.pending_keys.is_empty() {
+                self.push_pending_key(kb_event);
+
+                // Check for go_to_definition (gd)
+                if self.try_match_sequence(&kb.go_to_definition) == SequenceMatch::Full {
+                    self.clear_pending_keys();
                     self.open_symbol_popup(terminal).await?;
                     return Ok(());
                 }
-                KeyCode::Char('f') => {
+
+                // Check for go_to_file (gf)
+                if self.try_match_sequence(&kb.go_to_file) == SequenceMatch::Full {
+                    self.clear_pending_keys();
                     self.open_current_file_in_editor(terminal).await?;
                     return Ok(());
                 }
-                KeyCode::Char('g') => {
-                    // gg: 先頭行へジャンプ
+
+                // Check for jump_to_first (gg)
+                if self.try_match_sequence(&kb.jump_to_first) == SequenceMatch::Full {
+                    self.clear_pending_keys();
                     self.selected_line = 0;
                     self.scroll_offset = 0;
                     return Ok(());
                 }
-                _ => {} // 無効な組み合わせ → フォールスルーして通常処理
+
+                // No match - clear pending keys and fall through
+                self.clear_pending_keys();
+            } else {
+                // Check if this key could start a sequence
+                let could_start_gd = self.key_could_match_sequence(&key, &kb.go_to_definition);
+                let could_start_gf = self.key_could_match_sequence(&key, &kb.go_to_file);
+                let could_start_gg = self.key_could_match_sequence(&key, &kb.jump_to_first);
+
+                if could_start_gd || could_start_gf || could_start_gg {
+                    self.push_pending_key(kb_event);
+                    return Ok(());
+                }
             }
         }
 
-        match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => self.state = self.diff_view_return_state,
-            KeyCode::Left | KeyCode::Char('h') => self.state = self.diff_view_return_state,
-            KeyCode::Char('j') | KeyCode::Down => {
-                if self.diff_line_count > 0 {
-                    self.selected_line =
-                        (self.selected_line + 1).min(self.diff_line_count.saturating_sub(1));
-                    self.adjust_scroll(visible_lines);
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.selected_line = self.selected_line.saturating_sub(1);
+        // Single-key bindings
+
+        // Quit/back
+        if self.matches_single_key(&key, &kb.quit) || key.code == KeyCode::Esc {
+            self.state = self.diff_view_return_state;
+            return Ok(());
+        }
+
+        // Back
+        if self.matches_single_key(&key, &kb.move_left) || key.code == KeyCode::Left {
+            self.state = self.diff_view_return_state;
+            return Ok(());
+        }
+
+        // Move down
+        if self.matches_single_key(&key, &kb.move_down) || key.code == KeyCode::Down {
+            if self.diff_line_count > 0 {
+                self.selected_line =
+                    (self.selected_line + 1).min(self.diff_line_count.saturating_sub(1));
                 self.adjust_scroll(visible_lines);
             }
-            KeyCode::Char('g') => {
-                self.pending_g_key = true;
-            }
-            KeyCode::Char('G') => {
-                if self.diff_line_count > 0 {
-                    self.selected_line = self.diff_line_count.saturating_sub(1);
-                    self.adjust_scroll(visible_lines);
-                }
-            }
-            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.jump_back();
-            }
-            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if self.diff_line_count > 0 {
-                    self.selected_line =
-                        (self.selected_line + 20).min(self.diff_line_count.saturating_sub(1));
-                    self.adjust_scroll(visible_lines);
-                }
-            }
-            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.selected_line = self.selected_line.saturating_sub(20);
+            return Ok(());
+        }
+
+        // Move up
+        if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
+            self.selected_line = self.selected_line.saturating_sub(1);
+            self.adjust_scroll(visible_lines);
+            return Ok(());
+        }
+
+        // Jump to last
+        if self.matches_single_key(&key, &kb.jump_to_last) {
+            if self.diff_line_count > 0 {
+                self.selected_line = self.diff_line_count.saturating_sub(1);
                 self.adjust_scroll(visible_lines);
             }
-            KeyCode::Char('n') => self.jump_to_next_comment(),
-            KeyCode::Char('N') => self.jump_to_prev_comment(),
-            KeyCode::Enter => {
-                self.comment_panel_open = true;
-                self.comment_panel_scroll = 0;
-                self.selected_inline_comment = 0;
+            return Ok(());
+        }
+
+        // Jump back
+        if self.matches_single_key(&key, &kb.jump_back) {
+            self.jump_back();
+            return Ok(());
+        }
+
+        // Page down
+        if self.matches_single_key(&key, &kb.page_down) {
+            if self.diff_line_count > 0 {
+                self.selected_line =
+                    (self.selected_line + 20).min(self.diff_line_count.saturating_sub(1));
+                self.adjust_scroll(visible_lines);
             }
-            KeyCode::Char(c) if c == self.config.keybindings.comment => {
-                self.enter_comment_input();
-            }
-            KeyCode::Char(c) if c == self.config.keybindings.suggestion => {
-                self.enter_suggestion_input();
-            }
-            _ => {}
+            return Ok(());
+        }
+
+        // Page up
+        if self.matches_single_key(&key, &kb.page_up) {
+            self.selected_line = self.selected_line.saturating_sub(20);
+            self.adjust_scroll(visible_lines);
+            return Ok(());
+        }
+
+        // Next comment
+        if self.matches_single_key(&key, &kb.next_comment) {
+            self.jump_to_next_comment();
+            return Ok(());
+        }
+
+        // Previous comment
+        if self.matches_single_key(&key, &kb.prev_comment) {
+            self.jump_to_prev_comment();
+            return Ok(());
+        }
+
+        // Open panel
+        if self.matches_single_key(&key, &kb.open_panel) {
+            self.comment_panel_open = true;
+            self.comment_panel_scroll = 0;
+            self.selected_inline_comment = 0;
+            return Ok(());
+        }
+
+        // Add comment (without panel)
+        if self.matches_single_key(&key, &kb.comment) {
+            self.enter_comment_input();
+            return Ok(());
+        }
+
+        // Add suggestion (without panel)
+        if self.matches_single_key(&key, &kb.suggestion) {
+            self.enter_suggestion_input();
+            return Ok(());
         }
 
         Ok(())
@@ -1920,7 +2197,7 @@ impl App {
         self.scroll_offset = 0;
         self.comment_panel_open = false;
         self.comment_panel_scroll = 0;
-        self.pending_g_key = false;
+        self.clear_pending_keys();
         self.symbol_popup = None;
         self.update_diff_line_count();
         if self.review_comments.is_none() {
@@ -2747,6 +3024,104 @@ impl App {
             comment_lines: self.file_comment_lines.clone(),
             lines,
         });
+    }
+
+    // ========================================
+    // Keybinding helpers
+    // ========================================
+
+    /// Check sequence timeout and clear pending keys if expired
+    fn check_sequence_timeout(&mut self) {
+        if let Some(since) = self.pending_since {
+            if since.elapsed() > SEQUENCE_TIMEOUT {
+                self.pending_keys.clear();
+                self.pending_since = None;
+            }
+        }
+    }
+
+    /// Add a key to pending sequence
+    fn push_pending_key(&mut self, key: KeyBinding) {
+        if self.pending_keys.is_empty() {
+            self.pending_since = Some(Instant::now());
+        }
+        self.pending_keys.push(key);
+    }
+
+    /// Clear pending keys
+    fn clear_pending_keys(&mut self) {
+        self.pending_keys.clear();
+        self.pending_since = None;
+    }
+
+    /// Check if a KeyEvent matches a KeySequence (single-key sequences only)
+    fn matches_single_key(&self, event: &KeyEvent, seq: &KeySequence) -> bool {
+        if !seq.is_single() {
+            return false;
+        }
+        if let Some(first) = seq.first() {
+            first.matches(event)
+        } else {
+            false
+        }
+    }
+
+    /// Try to match pending keys against a sequence.
+    /// Returns SequenceMatch::Full if fully matched, Partial if prefix matches, None otherwise.
+    fn try_match_sequence(&self, seq: &KeySequence) -> SequenceMatch {
+        if self.pending_keys.is_empty() {
+            return SequenceMatch::None;
+        }
+
+        let pending_len = self.pending_keys.len();
+        let seq_len = seq.0.len();
+
+        if pending_len > seq_len {
+            return SequenceMatch::None;
+        }
+
+        // Check if pending keys match the prefix of the sequence
+        for (i, pending) in self.pending_keys.iter().enumerate() {
+            if *pending != seq.0[i] {
+                return SequenceMatch::None;
+            }
+        }
+
+        if pending_len == seq_len {
+            SequenceMatch::Full
+        } else {
+            SequenceMatch::Partial
+        }
+    }
+
+    /// Check if current key event starts or continues a sequence that could match the given sequence
+    fn key_could_match_sequence(&self, event: &KeyEvent, seq: &KeySequence) -> bool {
+        let Some(kb) = event_to_keybinding(event) else {
+            return false;
+        };
+
+        // If no pending keys, check if this key matches the first key of sequence
+        if self.pending_keys.is_empty() {
+            if let Some(first) = seq.first() {
+                return *first == kb;
+            }
+            return false;
+        }
+
+        // If we have pending keys, check if adding this key could complete or continue the sequence
+        let pending_len = self.pending_keys.len();
+        if pending_len >= seq.0.len() {
+            return false;
+        }
+
+        // Check if pending keys match prefix and new key matches next position
+        for (i, pending) in self.pending_keys.iter().enumerate() {
+            if *pending != seq.0[i] {
+                return false;
+            }
+        }
+
+        seq.0.get(pending_len).map(|expected| *expected == kb).unwrap_or(false)
     }
 }
 

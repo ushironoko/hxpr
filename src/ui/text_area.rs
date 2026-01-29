@@ -10,11 +10,13 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthChar;
 
+use crate::keybinding::KeySequence;
+
 /// テキストエリアのキー入力結果
 pub enum TextAreaAction {
     /// 通常の編集操作（継続）
     Continue,
-    /// Ctrl+S: 送信
+    /// Submit key pressed
     Submit,
     /// Esc: キャンセル
     Cancel,
@@ -29,6 +31,8 @@ pub struct TextArea {
     /// 最後にレンダリングされた領域の可視行数（ボーダー除く）
     /// render()で実際のレンダリング領域から更新される（interior mutability）
     visible_height: Cell<usize>,
+    /// Custom submit key binding (default: Ctrl+S)
+    submit_key: Option<KeySequence>,
 }
 
 impl Default for TextArea {
@@ -45,16 +49,49 @@ impl TextArea {
             cursor_col: 0,
             scroll_offset: 0,
             visible_height: Cell::new(1),
+            submit_key: None,
         }
+    }
+
+    /// Create a TextArea with a custom submit key binding
+    pub fn with_submit_key(submit_key: KeySequence) -> Self {
+        Self {
+            lines: vec![String::new()],
+            cursor_row: 0,
+            cursor_col: 0,
+            scroll_offset: 0,
+            visible_height: Cell::new(1),
+            submit_key: Some(submit_key),
+        }
+    }
+
+    /// Set the submit key binding
+    pub fn set_submit_key(&mut self, submit_key: KeySequence) {
+        self.submit_key = Some(submit_key);
+    }
+
+    /// Check if the key matches the submit binding
+    fn is_submit_key(&self, key: &event::KeyEvent) -> bool {
+        if let Some(ref submit_seq) = self.submit_key {
+            // Only support single-key submit bindings
+            if submit_seq.is_single() {
+                if let Some(first) = submit_seq.first() {
+                    return first.matches(key);
+                }
+            }
+        }
+        // Default: Ctrl+S
+        key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL)
     }
 
     /// キー入力を処理し、アクションを返す
     pub fn input(&mut self, key: event::KeyEvent) -> TextAreaAction {
+        // Check for submit key first
+        if self.is_submit_key(&key) {
+            return TextAreaAction::Submit;
+        }
+
         match key.code {
-            // Ctrl+S で送信（メインのキーバインド）
-            KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                return TextAreaAction::Submit;
-            }
             KeyCode::Esc => {
                 return TextAreaAction::Cancel;
             }
