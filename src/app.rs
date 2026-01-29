@@ -1165,9 +1165,10 @@ impl App {
                     RallyState::WaitingForPermission => {
                         // Send permission granted
                         self.send_rally_command(OrchestratorCommand::PermissionResponse(true));
-                        // Clear pending permission
+                        // Clear pending permission and update state to prevent duplicate sends
                         if let Some(ref mut rally_state) = self.ai_rally_state {
                             rally_state.pending_permission = None;
+                            rally_state.state = RallyState::RevieweeFix;
                             rally_state.logs.push(LogEntry::new(
                                 LogEventType::Info,
                                 "Permission granted, continuing...".to_string(),
@@ -1200,8 +1201,10 @@ impl App {
                     RallyState::WaitingForPermission => {
                         // Send permission denied
                         self.send_rally_command(OrchestratorCommand::PermissionResponse(false));
+                        // Update state to prevent duplicate sends
                         if let Some(ref mut rally_state) = self.ai_rally_state {
                             rally_state.pending_permission = None;
+                            rally_state.state = RallyState::Aborted;
                             rally_state.logs.push(LogEntry::new(
                                 LogEventType::Info,
                                 "Permission denied, aborting...".to_string(),
@@ -1211,8 +1214,10 @@ impl App {
                     RallyState::WaitingForClarification => {
                         // Send abort (skip clarification)
                         self.send_rally_command(OrchestratorCommand::Abort);
+                        // Update state to prevent duplicate sends
                         if let Some(ref mut rally_state) = self.ai_rally_state {
                             rally_state.pending_question = None;
+                            rally_state.state = RallyState::Aborted;
                             rally_state.logs.push(LogEntry::new(
                                 LogEventType::Info,
                                 "Clarification skipped, aborting...".to_string(),
