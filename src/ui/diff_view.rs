@@ -550,7 +550,7 @@ fn render_inline_comments(frame: &mut Frame, app: &App, area: ratatui::layout::R
             // Selection indicator for multiple comments
             let indicator = if has_multiple {
                 if i == app.selected_inline_comment {
-                    Span::styled("▶ ", Style::default().fg(Color::Yellow))
+                    Span::styled("> ", Style::default().fg(Color::Yellow))
                 } else {
                     Span::styled("  ", Style::default())
                 }
@@ -558,7 +558,7 @@ fn render_inline_comments(frame: &mut Frame, app: &App, area: ratatui::layout::R
                 Span::raw("")
             };
 
-            // Header: [▶] @user (line N)
+            // Header: [>] @user (line N)
             lines.push(Line::from(vec![
                 indicator,
                 Span::styled(
