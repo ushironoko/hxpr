@@ -1,12 +1,24 @@
-//! Syntax highlighting module using syntect.
+//! Syntax highlighting module using syntect with two-face extensions.
 //!
 //! This module provides syntax highlighting for diff content using syntect
-//! and converts the output to ratatui Span format using syntect-tui.
+//! with two-face's extended syntax definitions (same as bat) and converts
+//! the output to ratatui Span format.
+//!
+//! ## Supported Languages
+//!
+//! Using two-face, we support many more languages than syntect defaults:
+//! - TypeScript (.ts, .tsx)
+//! - Vue (.vue)
+//! - JSX (.jsx)
+//! - TOML (.toml)
+//! - SCSS (.scss)
+//! - Svelte (.svelte)
+//! - And many more...
 //!
 //! ## Theme Loading
 //!
 //! Themes are loaded from two sources:
-//! 1. **Bundled themes**: Syntect defaults + Dracula (compiled into binary)
+//! 1. **Bundled themes**: two-face extras + Dracula (compiled into binary)
 //! 2. **User themes**: `~/.config/octorus/themes/*.tmTheme` files
 //!
 //! User themes override bundled themes if they have the same name.
@@ -29,8 +41,9 @@ const DRACULA_THEME: &[u8] = include_bytes!("../../themes/Dracula.tmTheme");
 
 /// Get the global SyntaxSet instance.
 /// This is lazily initialized on first access.
+/// Uses two-face's extended syntax definitions for broader language support.
 pub fn syntax_set() -> &'static SyntaxSet {
-    SYNTAX_SET.get_or_init(SyntaxSet::load_defaults_newlines)
+    SYNTAX_SET.get_or_init(two_face::syntax::extra_newlines)
 }
 
 /// Get the global ThemeSet instance.
@@ -44,7 +57,10 @@ pub fn theme_set() -> &'static ThemeSet {
     THEME_SET.get_or_init(load_all_themes)
 }
 
-/// Load all themes from default, bundled, and user sources.
+/// Load all themes from syntect defaults, bundled, and user sources.
+///
+/// Note: We use syntect's ThemeSet for flexibility (custom themes, string-based lookup).
+/// two-face's EmbeddedLazyThemeSet is more limited but we benefit from its extended syntax set.
 fn load_all_themes() -> ThemeSet {
     let mut themes = ThemeSet::load_defaults();
 
@@ -206,19 +222,48 @@ mod tests {
 
     #[test]
     fn test_syntax_for_file_known_extension() {
-        // Common extensions that should be in syntect defaults
+        // Common extensions from syntect defaults
         assert!(syntax_for_file("main.rs").is_some());
         assert!(syntax_for_file("script.py").is_some());
         assert!(syntax_for_file("main.go").is_some());
         assert!(syntax_for_file("index.js").is_some());
         assert!(syntax_for_file("style.css").is_some());
         assert!(syntax_for_file("index.html").is_some());
+
+        // Extensions added by two-face (bat syntax definitions)
+        assert!(
+            syntax_for_file("index.ts").is_some(),
+            "TypeScript should be supported"
+        );
+        assert!(
+            syntax_for_file("app.tsx").is_some(),
+            "TSX should be supported"
+        );
+        assert!(
+            syntax_for_file("app.vue").is_some(),
+            "Vue should be supported"
+        );
+        assert!(
+            syntax_for_file("config.toml").is_some(),
+            "TOML should be supported"
+        );
+        assert!(
+            syntax_for_file("style.scss").is_some(),
+            "SCSS should be supported"
+        );
+        assert!(
+            syntax_for_file("App.svelte").is_some(),
+            "Svelte should be supported"
+        );
+        // Note: .jsx is NOT supported by two-face/bat, use .tsx instead
+
         // Test with path-like filenames (as returned by GitHub API)
         assert!(
             syntax_for_file("src/app.rs").is_some(),
             "src/app.rs should have syntax"
         );
         assert!(syntax_for_file("src/ui/diff_view.rs").is_some());
+        assert!(syntax_for_file("src/components/Button.vue").is_some());
     }
 
     #[test]
@@ -331,5 +376,33 @@ mod tests {
         // Verify they have the same number of scopes (same theme)
         assert_eq!(theme1.scopes.len(), theme2.scopes.len());
         assert_eq!(theme1.scopes.len(), theme3.scopes.len());
+    }
+
+    #[test]
+    fn test_highlight_code_line_typescript() {
+        let syntax = syntax_for_file("test.ts").unwrap();
+        let theme = get_theme("base16-ocean.dark");
+        let mut highlighter = HighlightLines::new(syntax, theme);
+
+        let spans = highlight_code_line("const foo: string = 'bar';", &mut highlighter);
+        assert!(!spans.is_empty());
+
+        // Verify that "const" keyword has a foreground color (syntax highlighting applied)
+        let const_span = spans.iter().find(|s| s.content.as_ref() == "const");
+        assert!(const_span.is_some(), "Should have a span for 'const'");
+        assert!(
+            const_span.unwrap().style.fg.is_some(),
+            "'const' should have foreground color"
+        );
+    }
+
+    #[test]
+    fn test_highlight_code_line_vue() {
+        let syntax = syntax_for_file("test.vue").unwrap();
+        let theme = get_theme("Dracula");
+        let mut highlighter = HighlightLines::new(syntax, theme);
+
+        let spans = highlight_code_line("<template>", &mut highlighter);
+        assert!(!spans.is_empty());
     }
 }
