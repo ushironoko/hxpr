@@ -39,7 +39,10 @@ pub fn render(frame: &mut Frame, app: &App) {
         DataState::Loaded { pr, .. } => {
             format!("PR #{}: {} by @{}", pr.number, pr.title, pr.user.login)
         }
-        _ => format!("PR #{}", app.pr_number),
+        _ => match app.pr_number {
+            Some(n) => format!("PR #{}", n),
+            None => "PR".to_string(),
+        },
     };
 
     let header =
@@ -111,8 +114,12 @@ pub fn render_loading(frame: &mut Frame, app: &App) {
         .split(frame.area());
 
     // Header
-    let header = Paragraph::new(format!("PR #{} - Loading...", app.pr_number))
-        .block(Block::default().borders(Borders::ALL).title("octorus"));
+    let header_text = match app.pr_number {
+        Some(n) => format!("PR #{} - Loading...", n),
+        None => "Loading...".to_string(),
+    };
+    let header =
+        Paragraph::new(header_text).block(Block::default().borders(Borders::ALL).title("octorus"));
     frame.render_widget(header, chunks[0]);
 
     // Loading message
@@ -144,8 +151,12 @@ pub fn render_error(frame: &mut Frame, app: &App, error_msg: &str) {
         .split(frame.area());
 
     // Header
-    let header = Paragraph::new(format!("PR #{} - Error", app.pr_number))
-        .block(Block::default().borders(Borders::ALL).title("octorus"));
+    let header_text = match app.pr_number {
+        Some(n) => format!("PR #{} - Error", n),
+        None => "Error".to_string(),
+    };
+    let header =
+        Paragraph::new(header_text).block(Block::default().borders(Borders::ALL).title("octorus"));
     frame.render_widget(header, chunks[0]);
 
     // Error message

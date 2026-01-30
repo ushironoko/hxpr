@@ -1,5 +1,69 @@
 use anyhow::{Context, Result};
 use std::process::Command;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum DetectRepoError {
+    #[error("Not a git repository. Use --repo to specify.")]
+    NotGitRepo,
+    #[error("No GitHub remote found. Use --repo to specify.")]
+    NoGitHubRemote,
+    #[error("gh CLI error: {0}")]
+    GhError(String),
+}
+
+/// Detect the repository name from the current directory using `gh repo view`
+pub async fn detect_repo() -> std::result::Result<String, DetectRepoError> {
+    let result = tokio::task::spawn_blocking(|| {
+        let output = Command::new("gh")
+            .args([
+                "repo",
+                "view",
+                "--json",
+                "nameWithOwner",
+                "-q",
+                ".nameWithOwner",
+            ])
+            .output();
+
+        match output {
+            Ok(output) => {
+                if output.status.success() {
+                    let repo = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    if repo.is_empty() {
+                        Err(DetectRepoError::NoGitHubRemote)
+                    } else {
+                        Ok(repo)
+                    }
+                } else {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    if stderr.contains("not a git repository") {
+                        Err(DetectRepoError::NotGitRepo)
+                    } else if stderr.contains("no git remotes")
+                        || stderr.contains("could not determine")
+                    {
+                        Err(DetectRepoError::NoGitHubRemote)
+                    } else {
+                        Err(DetectRepoError::GhError(stderr.trim().to_string()))
+                    }
+                }
+            }
+            Err(e) => Err(DetectRepoError::GhError(format!(
+                "Failed to execute gh CLI: {}",
+                e
+            ))),
+        }
+    })
+    .await;
+
+    match result {
+        Ok(r) => r,
+        Err(e) => Err(DetectRepoError::GhError(format!(
+            "spawn_blocking task panicked: {}",
+            e
+        ))),
+    }
+}
 
 /// Execute gh CLI command and return stdout
 /// Uses spawn_blocking to avoid blocking the tokio runtime

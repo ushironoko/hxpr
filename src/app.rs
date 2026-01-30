@@ -14,7 +14,7 @@ use crate::ai::orchestrator::{OrchestratorCommand, RallyEvent};
 use crate::ai::{Context, Orchestrator, RallyState};
 use crate::config::Config;
 use crate::github::comment::{DiscussionComment, ReviewComment};
-use crate::github::{self, ChangedFile, PullRequest};
+use crate::github::{self, ChangedFile, PrStateFilter, PullRequest, PullRequestSummary};
 use crate::keybinding::{
     event_to_keybinding, KeyBinding, KeySequence, SequenceMatch, SEQUENCE_TIMEOUT,
 };
@@ -99,6 +99,7 @@ pub enum InputMode {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AppState {
+    PullRequestList,
     FileList,
     DiffView,
     TextInput,
@@ -195,9 +196,20 @@ pub enum DataState {
 
 pub struct App {
     pub repo: String,
-    pub pr_number: u32,
+    /// 選択されたPR番号（PR一覧から選択した場合は後から設定）
+    pub pr_number: Option<u32>,
     pub data_state: DataState,
     pub state: AppState,
+    // PR list state
+    pub pr_list: Option<Vec<PullRequestSummary>>,
+    pub selected_pr: usize,
+    pub pr_list_scroll_offset: usize,
+    pub pr_list_loading: bool,
+    pub pr_list_has_more: bool,
+    pub pr_list_state_filter: PrStateFilter,
+    /// PR一覧から開始したかどうか（戻り先判定用）
+    pub started_from_pr_list: bool,
+    pr_list_receiver: Option<mpsc::Receiver<Result<github::PrListPage, String>>>,
     /// DiffView で q/Esc を押した時の戻り先
     pub diff_view_return_state: AppState,
     /// CommentPreview/SuggestionPreview の戻り先
@@ -285,9 +297,17 @@ impl App {
 
         let app = Self {
             repo: repo.to_string(),
-            pr_number,
+            pr_number: Some(pr_number),
             data_state: DataState::Loading,
             state: AppState::FileList,
+            pr_list: None,
+            selected_pr: 0,
+            pr_list_scroll_offset: 0,
+            pr_list_loading: false,
+            pr_list_has_more: false,
+            pr_list_state_filter: PrStateFilter::default(),
+            started_from_pr_list: false,
+            pr_list_receiver: None,
             diff_view_return_state: AppState::FileList,
             preview_return_state: AppState::DiffView,
             previous_state: AppState::FileList,
@@ -353,12 +373,20 @@ impl App {
 
         let app = Self {
             repo: repo.to_string(),
-            pr_number,
+            pr_number: Some(pr_number),
             data_state: DataState::Loaded {
                 pr: Box::new(pr),
                 files,
             },
             state: AppState::FileList,
+            pr_list: None,
+            selected_pr: 0,
+            pr_list_scroll_offset: 0,
+            pr_list_loading: false,
+            pr_list_has_more: false,
+            pr_list_state_filter: PrStateFilter::default(),
+            started_from_pr_list: false,
+            pr_list_receiver: None,
             diff_view_return_state: AppState::FileList,
             preview_return_state: AppState::DiffView,
             previous_state: AppState::FileList,
@@ -411,6 +439,81 @@ impl App {
         (app, tx)
     }
 
+    /// PR一覧表示モードで開始（--pr省略時）
+    pub fn new_pr_list(repo: &str, config: Config) -> Self {
+        Self {
+            repo: repo.to_string(),
+            pr_number: None,
+            data_state: DataState::Loading,
+            state: AppState::PullRequestList,
+            pr_list: None,
+            selected_pr: 0,
+            pr_list_scroll_offset: 0,
+            pr_list_loading: true,
+            pr_list_has_more: false,
+            pr_list_state_filter: PrStateFilter::default(),
+            started_from_pr_list: true,
+            pr_list_receiver: None,
+            diff_view_return_state: AppState::FileList,
+            preview_return_state: AppState::DiffView,
+            previous_state: AppState::PullRequestList,
+            selected_file: 0,
+            selected_line: 0,
+            diff_line_count: 0,
+            scroll_offset: 0,
+            input_mode: None,
+            input_text_area: TextArea::with_submit_key(config.keybindings.submit.clone()),
+            config,
+            should_quit: false,
+            review_comments: None,
+            selected_comment: 0,
+            comment_list_scroll_offset: 0,
+            comments_loading: false,
+            file_comment_positions: vec![],
+            file_comment_lines: HashSet::new(),
+            comment_panel_open: false,
+            comment_panel_scroll: 0,
+            diff_cache: None,
+            discussion_comments: None,
+            selected_discussion_comment: 0,
+            discussion_comment_list_scroll_offset: 0,
+            discussion_comments_loading: false,
+            discussion_comment_detail_mode: false,
+            discussion_comment_detail_scroll: 0,
+            comment_tab: CommentTab::default(),
+            ai_rally_state: None,
+            working_dir: None,
+            data_receiver: None,
+            retry_sender: None,
+            comment_receiver: None,
+            discussion_comment_receiver: None,
+            rally_event_receiver: None,
+            rally_abort_handle: None,
+            rally_command_sender: None,
+            start_ai_rally_on_load: false,
+            comment_submit_receiver: None,
+            comment_submitting: false,
+            submission_result: None,
+            submission_result_time: None,
+            spinner_frame: 0,
+            selected_inline_comment: 0,
+            jump_stack: Vec::new(),
+            pending_keys: SmallVec::new(),
+            pending_since: None,
+            symbol_popup: None,
+        }
+    }
+
+    /// PR一覧受信チャンネルを設定
+    pub fn set_pr_list_receiver(&mut self, rx: mpsc::Receiver<Result<github::PrListPage, String>>) {
+        self.pr_list_receiver = Some(rx);
+    }
+
+    /// データ受信チャンネルを設定
+    pub fn set_data_receiver(&mut self, rx: mpsc::Receiver<DataLoadResult>) {
+        self.data_receiver = Some(rx);
+    }
+
     pub fn set_retry_sender(&mut self, tx: mpsc::Sender<()>) {
         self.retry_sender = Some(tx);
     }
@@ -426,6 +529,7 @@ impl App {
 
         while !self.should_quit {
             self.spinner_frame = self.spinner_frame.wrapping_add(1);
+            self.poll_pr_list_updates();
             self.poll_data_updates();
             self.poll_comment_updates();
             self.poll_discussion_comment_updates();
@@ -456,6 +560,51 @@ impl App {
     /// Set flag to start AI Rally when data is loaded (used by --ai-rally CLI flag)
     pub fn set_start_ai_rally_on_load(&mut self, start: bool) {
         self.start_ai_rally_on_load = start;
+    }
+
+    /// PR番号を取得（未設定の場合はpanic）
+    /// PR一覧から選択後は必ず設定されている前提
+    pub fn pr_number(&self) -> u32 {
+        self.pr_number
+            .expect("pr_number should be set before accessing PR data")
+    }
+
+    /// PR一覧取得のポーリング
+    fn poll_pr_list_updates(&mut self) {
+        let Some(ref mut rx) = self.pr_list_receiver else {
+            return;
+        };
+
+        match rx.try_recv() {
+            Ok(Ok(page)) => {
+                if let Some(ref mut existing) = self.pr_list {
+                    // 追加ロード: 既存リストに追加
+                    existing.extend(page.items);
+                } else {
+                    // 初回ロード
+                    self.pr_list = Some(page.items);
+                }
+                self.pr_list_has_more = page.has_more;
+                self.pr_list_loading = false;
+                self.pr_list_receiver = None;
+            }
+            Ok(Err(e)) => {
+                eprintln!("Warning: Failed to fetch PR list: {}", e);
+                if self.pr_list.is_none() {
+                    self.pr_list = Some(vec![]);
+                }
+                self.pr_list_loading = false;
+                self.pr_list_receiver = None;
+            }
+            Err(mpsc::error::TryRecvError::Empty) => {}
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                if self.pr_list.is_none() {
+                    self.pr_list = Some(vec![]);
+                }
+                self.pr_list_loading = false;
+                self.pr_list_receiver = None;
+            }
+        }
     }
 
     /// バックグラウンドタスクからのデータ更新をポーリング
@@ -569,7 +718,7 @@ impl App {
                 self.submission_result = Some((true, "Submitted".to_string()));
                 self.submission_result_time = Some(Instant::now());
                 // ファイルキャッシュを破棄してコメントを再取得
-                let _ = crate::cache::invalidate_comment_cache(&self.repo, self.pr_number);
+                let _ = crate::cache::invalidate_comment_cache(&self.repo, self.pr_number());
                 self.review_comments = None;
                 self.load_review_comments();
                 self.update_file_comment_positions();
@@ -757,25 +906,29 @@ impl App {
     ) -> Result<()> {
         if event::poll(std::time::Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
-                // Error状態でのリトライ処理
-                if let DataState::Error(_) = &self.data_state {
-                    match key.code {
-                        KeyCode::Char('q') => self.should_quit = true,
-                        KeyCode::Char('r') => self.retry_load(),
-                        _ => {}
+                // PR一覧画面は独自のLoading処理があるためスキップ
+                if self.state != AppState::PullRequestList {
+                    // Error状態でのリトライ処理
+                    if let DataState::Error(_) = &self.data_state {
+                        match key.code {
+                            KeyCode::Char('q') => self.should_quit = true,
+                            KeyCode::Char('r') => self.retry_load(),
+                            _ => {}
+                        }
+                        return Ok(());
                     }
-                    return Ok(());
-                }
 
-                // Loading状態ではqのみ受け付け
-                if matches!(self.data_state, DataState::Loading) {
-                    if key.code == KeyCode::Char('q') {
-                        self.should_quit = true;
+                    // Loading状態ではqのみ受け付け
+                    if matches!(self.data_state, DataState::Loading) {
+                        if key.code == KeyCode::Char('q') {
+                            self.should_quit = true;
+                        }
+                        return Ok(());
                     }
-                    return Ok(());
                 }
 
                 match self.state {
+                    AppState::PullRequestList => self.handle_pr_list_input(key).await?,
                     AppState::FileList => self.handle_file_list_input(key, terminal).await?,
                     AppState::DiffView => self.handle_diff_view_input(key, terminal).await?,
                     AppState::TextInput => self.handle_text_input(key)?,
@@ -809,9 +962,13 @@ impl App {
     ) -> Result<()> {
         let kb = &self.config.keybindings;
 
-        // Quit
+        // Quit or back to PR list
         if self.matches_single_key(&key, &kb.quit) {
-            self.should_quit = true;
+            if self.started_from_pr_list {
+                self.back_to_pr_list();
+            } else {
+                self.should_quit = true;
+            }
             return Ok(());
         }
 
@@ -1620,7 +1777,7 @@ impl App {
 
         let context = Context {
             repo: self.repo.clone(),
-            pr_number: self.pr_number,
+            pr_number: self.pr_number(),
             pr_title: pr.title.clone(),
             pr_body: pr.body.clone(),
             diff,
@@ -1657,7 +1814,7 @@ impl App {
         // Spawn the orchestrator and store the abort handle
         let config = self.config.ai.clone();
         let repo = self.repo.clone();
-        let pr_number = self.pr_number;
+        let pr_number = self.pr_number();
 
         let handle = tokio::spawn(async move {
             let orchestrator_result =
@@ -1688,7 +1845,7 @@ impl App {
 
     fn refresh_all(&mut self) {
         // キャッシュを全削除
-        let _ = crate::cache::invalidate_all_cache(&self.repo, self.pr_number);
+        let _ = crate::cache::invalidate_all_cache(&self.repo, self.pr_number());
         // コメントデータをクリア
         self.review_comments = None;
         self.discussion_comments = None;
@@ -2054,7 +2211,7 @@ impl App {
         let commit_id = pr.head.sha.clone();
         let filename = file.filename.clone();
         let repo = self.repo.clone();
-        let pr_number = self.pr_number;
+        let pr_number = self.pr_number();
         let line_number = ctx.line_number;
 
         let (tx, rx) = mpsc::channel(1);
@@ -2093,7 +2250,7 @@ impl App {
         let filename = file.filename.clone();
         let body = format!("```suggestion\n{}\n```", suggested_code.trim_end());
         let repo = self.repo.clone();
-        let pr_number = self.pr_number;
+        let pr_number = self.pr_number();
         let line_number = ctx.line_number;
 
         let (tx, rx) = mpsc::channel(1);
@@ -2122,7 +2279,7 @@ impl App {
 
     fn submit_reply(&mut self, comment_id: u64, body: String) {
         let repo = self.repo.clone();
-        let pr_number = self.pr_number;
+        let pr_number = self.pr_number();
 
         let (tx, rx) = mpsc::channel(1);
         self.comment_submit_receiver = Some(rx);
@@ -2197,7 +2354,7 @@ impl App {
         *terminal = ui::setup_terminal()?;
 
         if let Some(body) = body {
-            github::submit_review(&self.repo, self.pr_number, action, &body).await?;
+            github::submit_review(&self.repo, self.pr_number(), action, &body).await?;
         }
         Ok(())
     }
@@ -2277,7 +2434,7 @@ impl App {
     fn load_review_comments(&mut self) {
         let cache_result = crate::cache::read_comment_cache(
             &self.repo,
-            self.pr_number,
+            self.pr_number(),
             crate::cache::DEFAULT_TTL_SECS,
         );
 
@@ -2307,7 +2464,7 @@ impl App {
             self.comment_receiver = Some(rx);
 
             let repo = self.repo.clone();
-            let pr_number = self.pr_number;
+            let pr_number = self.pr_number();
 
             tokio::spawn(async move {
                 // Fetch both review comments and reviews
@@ -2356,7 +2513,7 @@ impl App {
     fn load_discussion_comments(&mut self) {
         let cache_result = crate::cache::read_discussion_comment_cache(
             &self.repo,
-            self.pr_number,
+            self.pr_number(),
             crate::cache::DEFAULT_TTL_SECS,
         );
 
@@ -2384,7 +2541,7 @@ impl App {
             self.discussion_comment_receiver = Some(rx);
 
             let repo = self.repo.clone();
-            let pr_number = self.pr_number;
+            let pr_number = self.pr_number();
 
             tokio::spawn(async move {
                 match github::comment::fetch_discussion_comments(&repo, pr_number).await {
@@ -3140,6 +3297,208 @@ impl App {
             .get(pending_len)
             .map(|expected| *expected == kb)
             .unwrap_or(false)
+    }
+
+    /// PR一覧画面のキー入力処理
+    async fn handle_pr_list_input(&mut self, key: event::KeyEvent) -> Result<()> {
+        // Clone keybindings to avoid borrow conflicts
+        let kb = self.config.keybindings.clone();
+
+        // Quit
+        if self.matches_single_key(&key, &kb.quit) {
+            self.should_quit = true;
+            return Ok(());
+        }
+
+        // ローディング中は操作を受け付けない（quitは上で処理済み）
+        if self.pr_list_loading {
+            return Ok(());
+        }
+
+        let pr_count = self.pr_list.as_ref().map(|l| l.len()).unwrap_or(0);
+
+        // Move down (j or Down arrow)
+        if self.matches_single_key(&key, &kb.move_down) || key.code == KeyCode::Down {
+            if pr_count > 0 {
+                self.selected_pr = (self.selected_pr + 1).min(pr_count.saturating_sub(1));
+                // 無限スクロール: 残り5件で次を取得
+                if self.pr_list_has_more
+                    && !self.pr_list_loading
+                    && self.selected_pr + 5 >= pr_count
+                {
+                    self.load_more_prs();
+                }
+            }
+            return Ok(());
+        }
+
+        // Move up (k or Up arrow)
+        if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
+            self.selected_pr = self.selected_pr.saturating_sub(1);
+            return Ok(());
+        }
+
+        // gg/G シーケンス処理
+        if let Some(kb_event) = event_to_keybinding(&key) {
+            self.check_sequence_timeout();
+
+            if !self.pending_keys.is_empty() {
+                self.push_pending_key(kb_event);
+
+                // gg: 先頭へ
+                if self.try_match_sequence(&kb.jump_to_first) == SequenceMatch::Full {
+                    self.clear_pending_keys();
+                    self.selected_pr = 0;
+                    return Ok(());
+                }
+
+                // マッチしなければペンディングをクリア
+                self.clear_pending_keys();
+            } else {
+                // シーケンス開始チェック
+                if self.key_could_match_sequence(&key, &kb.jump_to_first) {
+                    self.push_pending_key(kb_event);
+                    return Ok(());
+                }
+            }
+        }
+
+        // G: 末尾へ
+        if self.matches_single_key(&key, &kb.jump_to_last) {
+            if pr_count > 0 {
+                self.selected_pr = pr_count.saturating_sub(1);
+            }
+            return Ok(());
+        }
+
+        // Enter: PR選択
+        if self.matches_single_key(&key, &kb.open_panel) {
+            if let Some(ref prs) = self.pr_list {
+                if let Some(pr) = prs.get(self.selected_pr) {
+                    self.select_pr(pr.number);
+                }
+            }
+            return Ok(());
+        }
+
+        // o: open PRのみ
+        if key.code == KeyCode::Char('o') {
+            if self.pr_list_state_filter != PrStateFilter::Open {
+                self.pr_list_state_filter = PrStateFilter::Open;
+                self.reload_pr_list();
+            }
+            return Ok(());
+        }
+
+        // c: closed PRのみ
+        if key.code == KeyCode::Char('c') {
+            if self.pr_list_state_filter != PrStateFilter::Closed {
+                self.pr_list_state_filter = PrStateFilter::Closed;
+                self.reload_pr_list();
+            }
+            return Ok(());
+        }
+
+        // a: all PRs
+        if key.code == KeyCode::Char('a') {
+            if self.pr_list_state_filter != PrStateFilter::All {
+                self.pr_list_state_filter = PrStateFilter::All;
+                self.reload_pr_list();
+            }
+            return Ok(());
+        }
+
+        // r: リフレッシュ
+        if self.matches_single_key(&key, &kb.refresh) {
+            self.reload_pr_list();
+            return Ok(());
+        }
+
+        // ?: ヘルプ
+        if self.matches_single_key(&key, &kb.help) {
+            self.previous_state = AppState::PullRequestList;
+            self.state = AppState::Help;
+            return Ok(());
+        }
+
+        Ok(())
+    }
+
+    /// PR一覧を再読み込み
+    fn reload_pr_list(&mut self) {
+        self.pr_list = None;
+        self.selected_pr = 0;
+        self.pr_list_scroll_offset = 0;
+        self.pr_list_loading = true;
+        self.pr_list_has_more = false;
+
+        let (tx, rx) = mpsc::channel(2);
+        self.pr_list_receiver = Some(rx);
+
+        let repo = self.repo.clone();
+        let state = self.pr_list_state_filter;
+
+        tokio::spawn(async move {
+            let result = github::fetch_pr_list(&repo, state, 30).await;
+            let _ = tx.send(result.map_err(|e| e.to_string())).await;
+        });
+    }
+
+    /// 追加のPRを読み込み（無限スクロール用）
+    fn load_more_prs(&mut self) {
+        if self.pr_list_loading {
+            return;
+        }
+
+        let offset = self.pr_list.as_ref().map(|l| l.len()).unwrap_or(0) as u32;
+
+        self.pr_list_loading = true;
+
+        let (tx, rx) = mpsc::channel(2);
+        self.pr_list_receiver = Some(rx);
+
+        let repo = self.repo.clone();
+        let state = self.pr_list_state_filter;
+
+        tokio::spawn(async move {
+            let result = github::fetch_pr_list_with_offset(&repo, state, offset, 30).await;
+            let _ = tx.send(result.map_err(|e| e.to_string())).await;
+        });
+    }
+
+    /// PR選択時の処理
+    fn select_pr(&mut self, pr_number: u32) {
+        self.pr_number = Some(pr_number);
+        self.state = AppState::FileList;
+        self.data_state = DataState::Loading;
+
+        // データ読み込みチャンネルを設定
+        let (tx, rx) = mpsc::channel(2);
+        self.data_receiver = Some(rx);
+
+        let repo = self.repo.clone();
+
+        tokio::spawn(async move {
+            crate::loader::fetch_pr_data(repo, pr_number, crate::loader::FetchMode::Fresh, tx)
+                .await;
+        });
+    }
+
+    /// FileListからPR一覧に戻る
+    pub fn back_to_pr_list(&mut self) {
+        if self.started_from_pr_list {
+            // PR固有の状態をリセット
+            self.pr_number = None;
+            self.data_state = DataState::Loading;
+            self.review_comments = None;
+            self.discussion_comments = None;
+            self.diff_cache = None;
+            self.selected_file = 0;
+            self.selected_line = 0;
+            self.scroll_offset = 0;
+
+            self.state = AppState::PullRequestList;
+        }
     }
 }
 

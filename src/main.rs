@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 // Use modules from the library crate
-use octorus::{app, cache, config, loader, syntax};
+use octorus::{app, cache, config, github, loader, syntax};
 
 // init is only used by the binary, not needed for benchmarks
 mod init;
@@ -23,11 +23,11 @@ struct Args {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    /// Repository name (e.g., "owner/repo")
+    /// Repository name (e.g., "owner/repo"). Auto-detected from current directory if omitted.
     #[arg(short, long)]
     repo: Option<String>,
 
-    /// Pull request number
+    /// Pull request number. Shows PR list if omitted.
     #[arg(short, long)]
     pr: Option<u32>,
 
@@ -87,13 +87,17 @@ async fn main() -> Result<()> {
         };
     }
 
-    // For main PR review mode, repo and pr are required
-    let repo = args.repo.ok_or_else(|| {
-        anyhow::anyhow!("--repo is required. Use 'or --repo owner/repo --pr 123'")
-    })?;
-    let pr = args
-        .pr
-        .ok_or_else(|| anyhow::anyhow!("--pr is required. Use 'or --repo owner/repo --pr 123'"))?;
+    // Detect or use provided repo
+    let repo = match args.repo.clone() {
+        Some(r) => r,
+        None => match github::detect_repo().await {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        },
+    };
 
     // Pre-initialize syntax highlighting in background to avoid delay on first diff view
     std::thread::spawn(|| {
@@ -103,58 +107,49 @@ async fn main() -> Result<()> {
 
     let config = config::Config::load()?;
 
+    // Check if we have a specific PR number
+    if let Some(pr) = args.pr {
+        // Existing flow: open specific PR
+        run_with_pr(&repo, pr, &config, &args).await
+    } else {
+        // New flow: show PR list
+        run_with_pr_list(&repo, config, &args).await
+    }
+}
+
+/// Run the app with a specific PR number (existing flow)
+async fn run_with_pr(repo: &str, pr: u32, config: &config::Config, args: &Args) -> Result<()> {
     // リトライ用のチャンネル
     let (retry_tx, mut retry_rx) = mpsc::channel::<()>(1);
 
     // キャッシュを同期的に読み込み（メインスレッドで即座に）
     let (mut app, tx, needs_fetch) = if args.refresh {
         // --refresh 時は全キャッシュを削除
-        let _ = cache::invalidate_all_cache(&repo, pr);
-        let (app, tx) = app::App::new_loading(&repo, pr, config);
+        let _ = cache::invalidate_all_cache(repo, pr);
+        let (app, tx) = app::App::new_loading(repo, pr, config.clone());
         (app, tx, loader::FetchMode::Fresh)
     } else {
-        match cache::read_cache(&repo, pr, args.cache_ttl) {
+        match cache::read_cache(repo, pr, args.cache_ttl) {
             Ok(cache::CacheResult::Hit(entry)) => {
                 let pr_updated_at = entry.pr_updated_at;
-                let (app, tx) = app::App::new_with_cache(&repo, pr, config, entry.pr, entry.files);
+                let (app, tx) =
+                    app::App::new_with_cache(repo, pr, config.clone(), entry.pr, entry.files);
                 (app, tx, loader::FetchMode::CheckUpdate(pr_updated_at))
             }
             Ok(cache::CacheResult::Stale(entry)) => {
-                let (app, tx) = app::App::new_with_cache(&repo, pr, config, entry.pr, entry.files);
+                let (app, tx) =
+                    app::App::new_with_cache(repo, pr, config.clone(), entry.pr, entry.files);
                 (app, tx, loader::FetchMode::Fresh)
             }
             Ok(cache::CacheResult::Miss) | Err(_) => {
-                let (app, tx) = app::App::new_loading(&repo, pr, config);
+                let (app, tx) = app::App::new_loading(repo, pr, config.clone());
                 (app, tx, loader::FetchMode::Fresh)
             }
         }
     };
 
     app.set_retry_sender(retry_tx);
-
-    // Set working directory for AI agents
-    if let Some(dir) = args.working_dir.clone() {
-        app.set_working_dir(Some(dir));
-    } else {
-        // Use current directory as default.
-        // Note: current_dir() can fail in edge cases (e.g., if the current directory
-        // has been deleted, or on some restricted environments). When --ai-rally is
-        // used without --working-dir, we need a valid directory for the AI agents.
-        match std::env::current_dir() {
-            Ok(cwd) => {
-                app.set_working_dir(Some(cwd.to_string_lossy().to_string()));
-            }
-            Err(e) => {
-                if args.ai_rally {
-                    eprintln!(
-                        "Warning: Failed to get current directory: {}. AI Rally may not work correctly without --working-dir.",
-                        e
-                    );
-                }
-                // Continue without setting working_dir; it's optional for non-AI-Rally usage
-            }
-        }
-    }
+    setup_working_dir(&mut app, args);
 
     // Set flag to start AI Rally mode when --ai-rally is passed
     if args.ai_rally {
@@ -166,7 +161,7 @@ async fn main() -> Result<()> {
     let token_clone = cancel_token.clone();
 
     // バックグラウンドでAPI取得
-    let repo_clone = repo.clone();
+    let repo_clone = repo.to_string();
     let pr_number = pr;
 
     tokio::spawn(async move {
@@ -191,10 +186,62 @@ async fn main() -> Result<()> {
     cancel_token.cancel();
 
     // 終了時にキャッシュを削除
-    let _ = cache::invalidate_all_cache(&repo, pr);
+    let _ = cache::invalidate_all_cache(repo, pr);
 
     if result.is_err() {
         restore_terminal();
     }
     result
+}
+
+/// Run the app with PR list (new flow)
+async fn run_with_pr_list(repo: &str, config: config::Config, args: &Args) -> Result<()> {
+    let mut app = app::App::new_pr_list(repo, config);
+    setup_working_dir(&mut app, args);
+
+    // Start loading PR list
+    let (tx, rx) = mpsc::channel(2);
+    app.set_pr_list_receiver(rx);
+
+    let repo_clone = repo.to_string();
+    let state_filter = app.pr_list_state_filter;
+
+    tokio::spawn(async move {
+        let result = github::fetch_pr_list(&repo_clone, state_filter, 30).await;
+        let _ = tx.send(result.map_err(|e| e.to_string())).await;
+    });
+
+    // Run the app
+    let result = app.run().await;
+
+    if result.is_err() {
+        restore_terminal();
+    }
+    result
+}
+
+/// Set up working directory for AI agents
+fn setup_working_dir(app: &mut app::App, args: &Args) {
+    if let Some(dir) = args.working_dir.clone() {
+        app.set_working_dir(Some(dir));
+    } else {
+        // Use current directory as default.
+        // Note: current_dir() can fail in edge cases (e.g., if the current directory
+        // has been deleted, or on some restricted environments). When --ai-rally is
+        // used without --working-dir, we need a valid directory for the AI agents.
+        match std::env::current_dir() {
+            Ok(cwd) => {
+                app.set_working_dir(Some(cwd.to_string_lossy().to_string()));
+            }
+            Err(e) => {
+                if args.ai_rally {
+                    eprintln!(
+                        "Warning: Failed to get current directory: {}. AI Rally may not work correctly without --working-dir.",
+                        e
+                    );
+                }
+                // Continue without setting working_dir; it's optional for non-AI-Rally usage
+            }
+        }
+    }
 }

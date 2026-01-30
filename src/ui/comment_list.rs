@@ -233,13 +233,11 @@ fn render_review_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
     let block = Block::default().borders(Borders::ALL);
     let total_items = comments.len();
 
-    let list = List::new(items)
-        .block(block)
-        .highlight_style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        );
+    let list = List::new(items).block(block).highlight_style(
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    );
     frame.render_stateful_widget(list, area, &mut list_state);
 
     // Update scroll offset from ListState for next frame
@@ -343,13 +341,11 @@ fn render_discussion_comments(frame: &mut Frame, app: &mut App, area: ratatui::l
 
     let block = Block::default().borders(Borders::ALL);
 
-    let list = List::new(items)
-        .block(block)
-        .highlight_style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        );
+    let list = List::new(items).block(block).highlight_style(
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    );
     frame.render_stateful_widget(list, area, &mut list_state);
 
     // Update scroll offset from ListState for next frame

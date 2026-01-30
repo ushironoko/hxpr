@@ -4,6 +4,7 @@ mod common;
 pub mod diff_view;
 mod file_list;
 mod help;
+mod pr_list;
 mod split_view;
 pub mod text_area;
 
@@ -52,6 +53,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 
     match app.state {
+        AppState::PullRequestList => pr_list::render(frame, app),
         AppState::FileList => file_list::render(frame, app),
         AppState::DiffView => diff_view::render(frame, app),
         AppState::TextInput => diff_view::render_text_input(frame, app),

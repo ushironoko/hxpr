@@ -75,7 +75,10 @@ fn render_file_list_pane(
         DataState::Loaded { pr, .. } => {
             format!("PR #{}: {}", pr.number, pr.title)
         }
-        _ => format!("PR #{}", app.pr_number),
+        _ => match app.pr_number {
+            Some(n) => format!("PR #{}", n),
+            None => "PR".to_string(),
+        },
     };
 
     let header = Paragraph::new(pr_info).block(
@@ -405,8 +408,7 @@ fn render_diff_body(
                 .end_symbol(Some("▼"));
 
             let clamped_position = app.scroll_offset.min(max_scroll);
-            let mut scrollbar_state =
-                ScrollbarState::new(max_scroll).position(clamped_position);
+            let mut scrollbar_state = ScrollbarState::new(max_scroll).position(clamped_position);
 
             frame.render_stateful_widget(
                 scrollbar,
