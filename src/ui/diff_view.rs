@@ -244,8 +244,9 @@ pub(crate) fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::l
                 .begin_symbol(Some("▲"))
                 .end_symbol(Some("▼"));
 
+            let clamped_position = app.scroll_offset.min(max_scroll);
             let mut scrollbar_state =
-                ScrollbarState::new(max_scroll).position(app.scroll_offset);
+                ScrollbarState::new(max_scroll).position(clamped_position);
 
             frame.render_stateful_widget(
                 scrollbar,
