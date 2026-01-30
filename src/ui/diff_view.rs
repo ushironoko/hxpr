@@ -1,10 +1,10 @@
 use std::collections::HashSet;
 
 use ratatui::{
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Margin},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
     Frame,
 };
 use syntect::easy::HighlightLines;
@@ -174,11 +174,12 @@ pub(crate) fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout:
 }
 
 pub(crate) fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let visible_height = area.height.saturating_sub(2) as usize;
+
     // Try to use cached lines if available
-    let lines: Vec<Line> = if let Some(ref cache) = app.diff_cache {
+    let mut lines: Vec<Line> = if let Some(ref cache) = app.diff_cache {
         // Calculate visible range for optimization
         // Add buffer for smooth scrolling and wrap handling
-        let visible_height = area.height.saturating_sub(2) as usize;
         let line_count = cache.lines.len();
 
         // Clamp visible_start to avoid out-of-bounds access when scroll_offset >= line_count
@@ -212,6 +213,12 @@ pub(crate) fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::l
         }
     };
 
+    // Add bottom padding for scrolling past the last line
+    let padding = visible_height / 2;
+    for _ in 0..padding {
+        lines.push(Line::from(""));
+    }
+
     // Adjust scroll offset for visible range processing
     let adjusted_scroll = if app.diff_cache.is_some() {
         let visible_start = app.scroll_offset.saturating_sub(2);
@@ -226,6 +233,30 @@ pub(crate) fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::l
         .scroll((adjusted_scroll, 0));
 
     frame.render_widget(diff_block, area);
+
+    // Render scrollbar for diff content
+    if let Some(ref cache) = app.diff_cache {
+        let total_lines = cache.lines.len();
+        let visible_height = area.height.saturating_sub(2) as usize;
+        let max_scroll = total_lines.saturating_sub(visible_height);
+        if max_scroll > 0 {
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(Some("▲"))
+                .end_symbol(Some("▼"));
+
+            let mut scrollbar_state =
+                ScrollbarState::new(max_scroll).position(app.scroll_offset);
+
+            frame.render_stateful_widget(
+                scrollbar,
+                area.inner(Margin {
+                    vertical: 1,
+                    horizontal: 0,
+                }),
+                &mut scrollbar_state,
+            );
+        }
+    }
 }
 
 fn parse_patch_to_lines(
@@ -426,18 +457,39 @@ fn render_inline_comments(frame: &mut Frame, app: &App, area: ratatui::layout::R
     }
 
     let title = "Comments (j/k/↑↓: scroll, c: comment, s: suggest, r: reply)";
+    let total_lines = lines.len();
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow))
+        .title(title);
 
     let paragraph = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Yellow))
-                .title(title),
-        )
+        .block(block)
         .wrap(Wrap { trim: true })
         .scroll((app.comment_panel_scroll, 0));
 
     frame.render_widget(paragraph, area);
+
+    // Render scrollbar if there is content
+    if total_lines > 1 {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("▲"))
+            .end_symbol(Some("▼"));
+
+        let max_scroll = total_lines.saturating_sub(1);
+        let mut scrollbar_state =
+            ScrollbarState::new(max_scroll).position(app.comment_panel_scroll as usize);
+
+        frame.render_stateful_widget(
+            scrollbar,
+            area.inner(Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
+            &mut scrollbar_state,
+        );
+    }
 }
 
 /// Render unified text input view (comment/suggestion/reply)

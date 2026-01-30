@@ -1,8 +1,11 @@
 use ratatui::{
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Margin},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{
+        Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
+        ScrollbarState, Wrap,
+    },
     Frame,
 };
 use unicode_width::UnicodeWidthChar;
@@ -227,8 +230,11 @@ fn render_review_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
         .with_offset(app.comment_list_scroll_offset)
         .with_selected(Some(app.selected_comment));
 
+    let block = Block::default().borders(Borders::ALL);
+    let total_items = comments.len();
+
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL))
+        .block(block)
         .highlight_style(
             Style::default()
                 .fg(Color::Yellow)
@@ -238,6 +244,25 @@ fn render_review_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
 
     // Update scroll offset from ListState for next frame
     app.comment_list_scroll_offset = list_state.offset();
+
+    // Render scrollbar if there are more items than visible
+    if total_items > 1 {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("▲"))
+            .end_symbol(Some("▼"));
+
+        let mut scrollbar_state =
+            ScrollbarState::new(total_items.saturating_sub(1)).position(app.selected_comment);
+
+        frame.render_stateful_widget(
+            scrollbar,
+            area.inner(Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
+            &mut scrollbar_state,
+        );
+    }
 }
 
 fn render_discussion_comments(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
@@ -316,8 +341,10 @@ fn render_discussion_comments(frame: &mut Frame, app: &mut App, area: ratatui::l
         .with_offset(app.discussion_comment_list_scroll_offset)
         .with_selected(Some(app.selected_discussion_comment));
 
+    let block = Block::default().borders(Borders::ALL);
+
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL))
+        .block(block)
         .highlight_style(
             Style::default()
                 .fg(Color::Yellow)
@@ -327,6 +354,26 @@ fn render_discussion_comments(frame: &mut Frame, app: &mut App, area: ratatui::l
 
     // Update scroll offset from ListState for next frame
     app.discussion_comment_list_scroll_offset = list_state.offset();
+
+    // Render scrollbar if there are more items than visible
+    let total_items = comments.len();
+    if total_items > 1 {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("▲"))
+            .end_symbol(Some("▼"));
+
+        let mut scrollbar_state = ScrollbarState::new(total_items.saturating_sub(1))
+            .position(app.selected_discussion_comment);
+
+        frame.render_stateful_widget(
+            scrollbar,
+            area.inner(Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
+            &mut scrollbar_state,
+        );
+    }
 }
 
 fn render_discussion_detail(frame: &mut Frame, app: &App) {

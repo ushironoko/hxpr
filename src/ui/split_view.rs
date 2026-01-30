@@ -1,8 +1,10 @@
 use ratatui::{
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Margin},
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, Paragraph, Wrap},
+    widgets::{
+        Block, Borders, List, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
+    },
     Frame,
 };
 
@@ -86,6 +88,7 @@ fn render_file_list_pane(
 
     // File list
     let files = app.files();
+    let total_files = files.len();
     let items = build_file_list_items(files, app.selected_file);
 
     let list = List::new(items)
@@ -93,10 +96,29 @@ fn render_file_list_pane(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(border_color))
-                .title(format!("Files ({})", files.len())),
+                .title(format!("Files ({})", total_files)),
         )
         .highlight_style(Style::default().bg(Color::DarkGray));
     frame.render_widget(list, chunks[1]);
+
+    // Render scrollbar if there are more files than visible
+    if total_files > 1 {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("▲"))
+            .end_symbol(Some("▼"));
+
+        let mut scrollbar_state =
+            ScrollbarState::new(total_files.saturating_sub(1)).position(app.selected_file);
+
+        frame.render_stateful_widget(
+            scrollbar,
+            chunks[1].inner(Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
+            &mut scrollbar_state,
+        );
+    }
 
     // Footer
     let footer_text = if is_focused {
@@ -262,6 +284,7 @@ fn render_diff_pane_with_comments(
     }
 
     let title = "Comments (j/k/↑↓: scroll, c: comment, s: suggest, r: reply)";
+    let total_lines = lines.len();
 
     let paragraph = Paragraph::new(lines)
         .block(
@@ -273,6 +296,26 @@ fn render_diff_pane_with_comments(
         .wrap(Wrap { trim: true })
         .scroll((app.comment_panel_scroll, 0));
     frame.render_widget(paragraph, chunks[2]);
+
+    // Render scrollbar if there is content
+    if total_lines > 1 {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("▲"))
+            .end_symbol(Some("▼"));
+
+        let max_scroll = total_lines.saturating_sub(1);
+        let mut scrollbar_state =
+            ScrollbarState::new(max_scroll).position(app.comment_panel_scroll as usize);
+
+        frame.render_stateful_widget(
+            scrollbar,
+            chunks[2].inner(Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
+            &mut scrollbar_state,
+        );
+    }
 
     // Footer
     let footer_text = "j/k/↑↓: scroll | n/N: jump | Tab: switch | r: reply | c: comment | s: suggest | →/l: fullscreen | ←/h/q: close";
@@ -350,4 +393,28 @@ fn render_diff_body(
         .scroll((adjusted_scroll, 0));
 
     frame.render_widget(diff_block, area);
+
+    // Render scrollbar for diff content
+    if let Some(ref cache) = app.diff_cache {
+        let total_lines = cache.lines.len();
+        let visible_height = area.height.saturating_sub(2) as usize;
+        let max_scroll = total_lines.saturating_sub(visible_height);
+        if max_scroll > 0 {
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(Some("▲"))
+                .end_symbol(Some("▼"));
+
+            let mut scrollbar_state =
+                ScrollbarState::new(max_scroll).position(app.scroll_offset);
+
+            frame.render_stateful_widget(
+                scrollbar,
+                area.inner(Margin {
+                    vertical: 1,
+                    horizontal: 0,
+                }),
+                &mut scrollbar_state,
+            );
+        }
+    }
 }

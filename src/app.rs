@@ -1981,6 +1981,16 @@ impl App {
         if self.selected_line >= self.scroll_offset + visible_lines {
             self.scroll_offset = self.selected_line.saturating_sub(visible_lines) + 1;
         }
+
+        // Allow additional scrolling when at the end (bottom padding)
+        // This enables showing empty space below the last line
+        let padding = visible_lines / 2;
+        let max_scroll_with_padding = self.diff_line_count.saturating_sub(1);
+        if self.selected_line >= self.diff_line_count.saturating_sub(padding) {
+            // When near the end, allow scroll_offset to go further
+            let target_scroll = self.selected_line.saturating_sub(visible_lines / 2);
+            self.scroll_offset = target_scroll.min(max_scroll_with_padding);
+        }
     }
 
     /// 統一入力ハンドラー（コメント/サジェスチョン/リプライ共通）

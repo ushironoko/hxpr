@@ -1,8 +1,10 @@
 use ratatui::{
-    layout::{Alignment, Constraint, Direction, Layout},
+    layout::{Alignment, Constraint, Direction, Layout, Margin},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{
+        Block, Borders, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    },
     Frame,
 };
 
@@ -46,16 +48,36 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     // File list
     let files = app.files();
+    let total_files = files.len();
     let items = build_file_list_items(files, app.selected_file);
 
     let list = List::new(items)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!("Changed Files ({})", files.len())),
+                .title(format!("Changed Files ({})", total_files)),
         )
         .highlight_style(Style::default().bg(Color::DarkGray));
     frame.render_widget(list, chunks[1]);
+
+    // Render scrollbar if there are more files than visible
+    if total_files > 1 {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("▲"))
+            .end_symbol(Some("▼"));
+
+        let mut scrollbar_state =
+            ScrollbarState::new(total_files.saturating_sub(1)).position(app.selected_file);
+
+        frame.render_stateful_widget(
+            scrollbar,
+            chunks[1].inner(Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
+            &mut scrollbar_state,
+        );
+    }
 
     // Rally status bar (if background rally exists)
     if has_rally {
