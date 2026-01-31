@@ -2039,11 +2039,16 @@ impl App {
 
         // Quit/back
         if self.matches_single_key(&key, &kb.quit) || key.code == KeyCode::Esc {
-            self.state = self.diff_view_return_state;
+            // If started from PR list and we're at the file list level, go back to PR list
+            if self.started_from_pr_list && self.diff_view_return_state == AppState::FileList {
+                self.back_to_pr_list();
+            } else {
+                self.state = self.diff_view_return_state;
+            }
             return Ok(());
         }
 
-        // Back
+        // Back (left arrow or h) - goes to file list, not PR list
         if self.matches_single_key(&key, &kb.move_left) || key.code == KeyCode::Left {
             self.state = self.diff_view_return_state;
             return Ok(());

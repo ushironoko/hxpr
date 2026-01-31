@@ -190,14 +190,15 @@ pub async fn fetch_pr_list_with_offset(
     let all_items: Vec<PullRequestSummary> =
         serde_json::from_str(&output).context("Failed to parse PR list response")?;
 
+    // Check if there are more items beyond what we're returning
+    let has_more = all_items.len() > (offset + limit) as usize;
+
     // Skip the offset items and take limit items
     let items: Vec<PullRequestSummary> = all_items
         .into_iter()
         .skip(offset as usize)
         .take(limit as usize)
         .collect();
-
-    let has_more = items.len() == limit as usize;
 
     Ok(PrListPage { items, has_more })
 }
