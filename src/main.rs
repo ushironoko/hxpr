@@ -199,6 +199,11 @@ async fn run_with_pr_list(repo: &str, config: config::Config, args: &Args) -> Re
     let mut app = app::App::new_pr_list(repo, config);
     setup_working_dir(&mut app, args);
 
+    // Set pending AI Rally flag if --ai-rally was passed
+    if args.ai_rally {
+        app.set_pending_ai_rally(true);
+    }
+
     // Start loading PR list
     let (tx, rx) = mpsc::channel(2);
     app.set_pr_list_receiver(rx);

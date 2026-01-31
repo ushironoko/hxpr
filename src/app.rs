@@ -265,6 +265,8 @@ pub struct App {
     rally_command_sender: Option<mpsc::Sender<OrchestratorCommand>>,
     // Flag to start AI Rally when data is loaded (set by --ai-rally CLI flag)
     start_ai_rally_on_load: bool,
+    // Pending AI Rally flag (set when --ai-rally is passed with PR list mode)
+    pending_ai_rally: bool,
     // Comment submission state
     comment_submit_receiver: Option<mpsc::Receiver<CommentSubmitResult>>,
     comment_submitting: bool,
@@ -345,6 +347,7 @@ impl App {
             rally_abort_handle: None,
             rally_command_sender: None,
             start_ai_rally_on_load: false,
+            pending_ai_rally: false,
             comment_submit_receiver: None,
             comment_submitting: false,
             submission_result: None,
@@ -424,6 +427,7 @@ impl App {
             rally_abort_handle: None,
             rally_command_sender: None,
             start_ai_rally_on_load: false,
+            pending_ai_rally: false,
             comment_submit_receiver: None,
             comment_submitting: false,
             submission_result: None,
@@ -491,6 +495,7 @@ impl App {
             rally_abort_handle: None,
             rally_command_sender: None,
             start_ai_rally_on_load: false,
+            pending_ai_rally: false,
             comment_submit_receiver: None,
             comment_submitting: false,
             submission_result: None,
@@ -560,6 +565,11 @@ impl App {
     /// Set flag to start AI Rally when data is loaded (used by --ai-rally CLI flag)
     pub fn set_start_ai_rally_on_load(&mut self, start: bool) {
         self.start_ai_rally_on_load = start;
+    }
+
+    /// Set pending AI Rally flag (for PR list mode with --ai-rally)
+    pub fn set_pending_ai_rally(&mut self, pending: bool) {
+        self.pending_ai_rally = pending;
     }
 
     /// PR番号を取得（未設定の場合はpanic）
@@ -3483,15 +3493,42 @@ impl App {
         self.state = AppState::FileList;
         self.data_state = DataState::Loading;
 
+        // Apply pending AI Rally flag
+        if self.pending_ai_rally {
+            self.start_ai_rally_on_load = true;
+        }
+
         // データ読み込みチャンネルを設定
         let (tx, rx) = mpsc::channel(2);
         self.data_receiver = Some(rx);
 
+        // リトライ用のチャンネルを設定
+        let (retry_tx, mut retry_rx) = mpsc::channel::<()>(1);
+        self.retry_sender = Some(retry_tx);
+
         let repo = self.repo.clone();
 
         tokio::spawn(async move {
-            crate::loader::fetch_pr_data(repo, pr_number, crate::loader::FetchMode::Fresh, tx)
+            // Initial fetch
+            crate::loader::fetch_pr_data(
+                repo.clone(),
+                pr_number,
+                crate::loader::FetchMode::Fresh,
+                tx.clone(),
+            )
+            .await;
+
+            // Retry loop
+            while retry_rx.recv().await.is_some() {
+                let tx_retry = tx.clone();
+                crate::loader::fetch_pr_data(
+                    repo.clone(),
+                    pr_number,
+                    crate::loader::FetchMode::Fresh,
+                    tx_retry,
+                )
                 .await;
+            }
         });
     }
 
