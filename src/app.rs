@@ -170,6 +170,32 @@ pub struct AiRallyState {
     pub last_visible_log_height: usize,
 }
 
+impl AiRallyState {
+    /// Push a new log entry, auto-following to the bottom if the selection is at the tail.
+    /// This keeps auto-scroll active when the user is watching the latest logs.
+    pub fn push_log(&mut self, entry: LogEntry) {
+        let was_at_tail = self.is_selection_at_tail();
+        self.logs.push(entry);
+
+        if was_at_tail {
+            // Keep selection at the new tail and maintain auto-scroll
+            self.selected_log_index = Some(self.logs.len().saturating_sub(1));
+            self.log_scroll_offset = 0; // 0 means auto-scroll to bottom
+        }
+    }
+
+    /// Check if the current selection is at the tail (last log) or unset
+    fn is_selection_at_tail(&self) -> bool {
+        match self.selected_log_index {
+            None => true, // No selection = follow tail
+            Some(idx) => {
+                // At tail if selected index is the last log (or beyond)
+                idx >= self.logs.len().saturating_sub(1)
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ReviewAction {
     Approve,
@@ -774,31 +800,31 @@ impl App {
                             }
                             RallyEvent::IterationStarted(i) => {
                                 rally_state.iteration = *i;
-                                rally_state.logs.push(LogEntry::new(
+                                rally_state.push_log(LogEntry::new(
                                     LogEventType::Info,
                                     format!("Starting iteration {}", i),
                                 ));
                             }
                             RallyEvent::Log(msg) => {
                                 rally_state
-                                    .logs
-                                    .push(LogEntry::new(LogEventType::Info, msg.clone()));
+                                    .push_log(LogEntry::new(LogEventType::Info, msg.clone()));
                             }
                             RallyEvent::AgentThinking(content) => {
                                 // Store full content; truncation happens at display time
-                                rally_state
-                                    .logs
-                                    .push(LogEntry::new(LogEventType::Thinking, content.clone()));
+                                rally_state.push_log(LogEntry::new(
+                                    LogEventType::Thinking,
+                                    content.clone(),
+                                ));
                             }
                             RallyEvent::AgentToolUse(tool_name, input) => {
-                                rally_state.logs.push(LogEntry::new(
+                                rally_state.push_log(LogEntry::new(
                                     LogEventType::ToolUse,
                                     format!("{}: {}", tool_name, input),
                                 ));
                             }
                             RallyEvent::AgentToolResult(tool_name, result) => {
                                 // Store full content; truncation happens at display time
-                                rally_state.logs.push(LogEntry::new(
+                                rally_state.push_log(LogEntry::new(
                                     LogEventType::ToolResult,
                                     format!("{}: {}", tool_name, result),
                                 ));
@@ -806,29 +832,26 @@ impl App {
                             RallyEvent::AgentText(text) => {
                                 // Store full content; truncation happens at display time
                                 rally_state
-                                    .logs
-                                    .push(LogEntry::new(LogEventType::Text, text.clone()));
+                                    .push_log(LogEntry::new(LogEventType::Text, text.clone()));
                             }
                             RallyEvent::ReviewCompleted(_) => {
-                                rally_state.logs.push(LogEntry::new(
+                                rally_state.push_log(LogEntry::new(
                                     LogEventType::Review,
                                     "Review completed".to_string(),
                                 ));
                             }
                             RallyEvent::FixCompleted(fix) => {
-                                rally_state.logs.push(LogEntry::new(
+                                rally_state.push_log(LogEntry::new(
                                     LogEventType::Fix,
                                     format!("Fix completed: {}", fix.summary),
                                 ));
                             }
                             RallyEvent::Error(e) => {
-                                rally_state
-                                    .logs
-                                    .push(LogEntry::new(LogEventType::Error, e.clone()));
+                                rally_state.push_log(LogEntry::new(LogEventType::Error, e.clone()));
                             }
                             RallyEvent::ClarificationNeeded(question) => {
                                 rally_state.pending_question = Some(question.clone());
-                                rally_state.logs.push(LogEntry::new(
+                                rally_state.push_log(LogEntry::new(
                                     LogEventType::Info,
                                     format!("Clarification needed: {}", question),
                                 ));
@@ -838,7 +861,7 @@ impl App {
                                     action: action.clone(),
                                     reason: reason.clone(),
                                 });
-                                rally_state.logs.push(LogEntry::new(
+                                rally_state.push_log(LogEntry::new(
                                     LogEventType::Info,
                                     format!("Permission needed: {} - {}", action, reason),
                                 ));
@@ -854,7 +877,7 @@ impl App {
                     if let Some(ref mut rally_state) = self.ai_rally_state {
                         if rally_state.state.is_active() {
                             rally_state.state = RallyState::Error;
-                            rally_state.logs.push(LogEntry::new(
+                            rally_state.push_log(LogEntry::new(
                                 LogEventType::Error,
                                 "Rally process terminated unexpectedly".to_string(),
                             ));
@@ -1501,7 +1524,7 @@ impl App {
                         if let Some(ref mut rally_state) = self.ai_rally_state {
                             rally_state.pending_permission = None;
                             rally_state.state = RallyState::RevieweeFix;
-                            rally_state.logs.push(LogEntry::new(
+                            rally_state.push_log(LogEntry::new(
                                 LogEventType::Info,
                                 "Permission granted, continuing...".to_string(),
                             ));
@@ -1537,7 +1560,7 @@ impl App {
                         if let Some(ref mut rally_state) = self.ai_rally_state {
                             rally_state.pending_permission = None;
                             rally_state.state = RallyState::Aborted;
-                            rally_state.logs.push(LogEntry::new(
+                            rally_state.push_log(LogEntry::new(
                                 LogEventType::Info,
                                 "Permission denied, aborting...".to_string(),
                             ));
@@ -1550,7 +1573,7 @@ impl App {
                         if let Some(ref mut rally_state) = self.ai_rally_state {
                             rally_state.pending_question = None;
                             rally_state.state = RallyState::Aborted;
-                            rally_state.logs.push(LogEntry::new(
+                            rally_state.push_log(LogEntry::new(
                                 LogEventType::Info,
                                 "Clarification skipped, aborting...".to_string(),
                             ));
@@ -1717,7 +1740,7 @@ impl App {
                 // Send clarification response
                 self.send_rally_command(OrchestratorCommand::ClarificationResponse(text.clone()));
                 if let Some(ref mut rally_state) = self.ai_rally_state {
-                    rally_state.logs.push(LogEntry::new(
+                    rally_state.push_log(LogEntry::new(
                         LogEventType::Info,
                         format!("Clarification provided: {}", text),
                     ));
@@ -1727,7 +1750,7 @@ impl App {
                 // User cancelled (empty answer)
                 self.send_rally_command(OrchestratorCommand::Abort);
                 if let Some(ref mut rally_state) = self.ai_rally_state {
-                    rally_state.logs.push(LogEntry::new(
+                    rally_state.push_log(LogEntry::new(
                         LogEventType::Info,
                         "Clarification cancelled by user".to_string(),
                     ));
