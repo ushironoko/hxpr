@@ -15,7 +15,7 @@ use std::collections::HashSet;
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 
 use common::{generate_comment_lines, generate_diff_patch};
 use octorus::{build_diff_cache, render_cached_lines};
@@ -92,16 +92,16 @@ fn bench_selected_line_rendering(c: &mut Criterion) {
     for line_count in [100, 500, 1000] {
         let patch = generate_diff_patch(line_count);
         let empty_comments: HashSet<usize> = HashSet::new();
-        let cached_lines =
-            build_diff_cache(&patch, "test.rs", "base16-ocean.dark", &empty_comments);
+        let cache = build_diff_cache(&patch, "test.rs", "base16-ocean.dark", &empty_comments);
 
-        // Benchmark current approach: clone each span and add REVERSED
+        // Benchmark current approach: resolve and clone each span, add REVERSED
         group.bench_with_input(
             BenchmarkId::new("span_clone", line_count),
-            &cached_lines,
-            |b, cached_lines| {
+            &cache,
+            |b, cache| {
                 b.iter(|| {
-                    let lines: Vec<Line> = cached_lines
+                    let lines: Vec<Line> = cache
+                        .lines
                         .iter()
                         .enumerate()
                         .map(|(i, cached)| {
@@ -111,15 +111,25 @@ fn bench_selected_line_rendering(c: &mut Criterion) {
                                     .spans
                                     .iter()
                                     .map(|span| {
-                                        ratatui::text::Span::styled(
-                                            span.content.clone(),
+                                        Span::styled(
+                                            cache.resolve(span.content).to_string(),
                                             span.style.add_modifier(Modifier::REVERSED),
                                         )
                                     })
                                     .collect();
                                 Line::from(spans)
                             } else {
-                                Line::from(cached.spans.clone())
+                                let spans: Vec<_> = cached
+                                    .spans
+                                    .iter()
+                                    .map(|span| {
+                                        Span::styled(
+                                            cache.resolve(span.content).to_string(),
+                                            span.style,
+                                        )
+                                    })
+                                    .collect();
+                                Line::from(spans)
                             }
                         })
                         .collect();
@@ -131,11 +141,15 @@ fn bench_selected_line_rendering(c: &mut Criterion) {
         // Benchmark zero-clone approach: calls the actual production function
         group.bench_with_input(
             BenchmarkId::new("borrowed_spans", line_count),
-            &cached_lines,
-            |b, cached_lines| {
+            &cache,
+            |b, cache| {
                 b.iter(|| {
                     let selected = line_count / 2;
-                    black_box(render_cached_lines(black_box(cached_lines), 0, selected))
+                    black_box(render_cached_lines(
+                        black_box(cache),
+                        0..cache.lines.len(),
+                        selected,
+                    ))
                 });
             },
         );
@@ -153,8 +167,7 @@ fn bench_visible_range_processing(c: &mut Criterion) {
     for total_lines in [1000, 5000] {
         let patch = generate_diff_patch(total_lines);
         let empty_comments: HashSet<usize> = HashSet::new();
-        let cached_lines =
-            build_diff_cache(&patch, "test.rs", "base16-ocean.dark", &empty_comments);
+        let cache = build_diff_cache(&patch, "test.rs", "base16-ocean.dark", &empty_comments);
 
         let visible_height = 50_usize;
         let scroll_offset = total_lines / 2; // Scroll to middle
@@ -162,19 +175,30 @@ fn bench_visible_range_processing(c: &mut Criterion) {
         // Process all lines (current approach)
         group.bench_with_input(
             BenchmarkId::new("all_lines", total_lines),
-            &cached_lines,
-            |b, cached_lines| {
+            &cache,
+            |b, cache| {
                 b.iter(|| {
-                    let lines: Vec<Line> = cached_lines
+                    let lines: Vec<Line> = cache
+                        .lines
                         .iter()
                         .enumerate()
                         .map(|(i, cached)| {
                             let is_selected = i == scroll_offset;
+                            let spans: Vec<_> = cached
+                                .spans
+                                .iter()
+                                .map(|span| {
+                                    Span::styled(
+                                        cache.resolve(span.content).to_string(),
+                                        span.style,
+                                    )
+                                })
+                                .collect();
                             if is_selected {
-                                Line::from(cached.spans.clone())
+                                Line::from(spans)
                                     .style(Style::default().add_modifier(Modifier::REVERSED))
                             } else {
-                                Line::from(cached.spans.clone())
+                                Line::from(spans)
                             }
                         })
                         .collect();
@@ -186,15 +210,15 @@ fn bench_visible_range_processing(c: &mut Criterion) {
         // Process only visible range with borrowed spans: calls the actual production function
         group.bench_with_input(
             BenchmarkId::new("visible_borrowed", total_lines),
-            &cached_lines,
-            |b, cached_lines| {
+            &cache,
+            |b, cache| {
                 b.iter(|| {
                     let visible_start = scroll_offset.saturating_sub(2);
-                    let visible_end = (scroll_offset + visible_height + 5).min(cached_lines.len());
+                    let visible_end = (scroll_offset + visible_height + 5).min(cache.lines.len());
 
                     black_box(render_cached_lines(
-                        black_box(&cached_lines[visible_start..visible_end]),
-                        visible_start,
+                        black_box(cache),
+                        visible_start..visible_end,
                         scroll_offset,
                     ))
                 });
@@ -220,24 +244,34 @@ fn bench_archive_selected_line(c: &mut Criterion) {
     for line_count in [100, 500, 1000] {
         let patch = generate_diff_patch(line_count);
         let empty_comments: HashSet<usize> = HashSet::new();
-        let cached_lines =
-            build_diff_cache(&patch, "test.rs", "base16-ocean.dark", &empty_comments);
+        let cache = build_diff_cache(&patch, "test.rs", "base16-ocean.dark", &empty_comments);
 
         group.bench_with_input(
             BenchmarkId::new("line_style", line_count),
-            &cached_lines,
-            |b, cached_lines| {
+            &cache,
+            |b, cache| {
                 b.iter(|| {
-                    let lines: Vec<Line> = cached_lines
+                    let lines: Vec<Line> = cache
+                        .lines
                         .iter()
                         .enumerate()
                         .map(|(i, cached)| {
                             let is_selected = i == line_count / 2;
+                            let spans: Vec<_> = cached
+                                .spans
+                                .iter()
+                                .map(|span| {
+                                    Span::styled(
+                                        cache.resolve(span.content).to_string(),
+                                        span.style,
+                                    )
+                                })
+                                .collect();
                             if is_selected {
-                                Line::from(cached.spans.clone())
+                                Line::from(spans)
                                     .style(Style::default().add_modifier(Modifier::REVERSED))
                             } else {
-                                Line::from(cached.spans.clone())
+                                Line::from(spans)
                             }
                         })
                         .collect();
@@ -261,31 +295,40 @@ fn bench_archive_visible_range(c: &mut Criterion) {
     for total_lines in [1000, 5000] {
         let patch = generate_diff_patch(total_lines);
         let empty_comments: HashSet<usize> = HashSet::new();
-        let cached_lines =
-            build_diff_cache(&patch, "test.rs", "base16-ocean.dark", &empty_comments);
+        let cache = build_diff_cache(&patch, "test.rs", "base16-ocean.dark", &empty_comments);
 
         let visible_height = 50_usize;
         let scroll_offset = total_lines / 2;
 
         group.bench_with_input(
             BenchmarkId::new("visible_only", total_lines),
-            &cached_lines,
-            |b, cached_lines| {
+            &cache,
+            |b, cache| {
                 b.iter(|| {
                     let visible_start = scroll_offset.saturating_sub(2);
-                    let visible_end = (scroll_offset + visible_height + 5).min(cached_lines.len());
+                    let visible_end = (scroll_offset + visible_height + 5).min(cache.lines.len());
 
-                    let lines: Vec<Line> = cached_lines[visible_start..visible_end]
+                    let lines: Vec<Line> = cache.lines[visible_start..visible_end]
                         .iter()
                         .enumerate()
                         .map(|(rel_idx, cached)| {
                             let abs_idx = visible_start + rel_idx;
                             let is_selected = abs_idx == scroll_offset;
+                            let spans: Vec<_> = cached
+                                .spans
+                                .iter()
+                                .map(|span| {
+                                    Span::styled(
+                                        cache.resolve(span.content).to_string(),
+                                        span.style,
+                                    )
+                                })
+                                .collect();
                             if is_selected {
-                                Line::from(cached.spans.clone())
+                                Line::from(spans)
                                     .style(Style::default().add_modifier(Modifier::REVERSED))
                             } else {
-                                Line::from(cached.spans.clone())
+                                Line::from(spans)
                             }
                         })
                         .collect();

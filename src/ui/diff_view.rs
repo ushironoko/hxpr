@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use lasso::Rodeo;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Margin},
     style::{Color, Modifier, Style},
@@ -10,16 +11,180 @@ use ratatui::{
 use syntect::easy::HighlightLines;
 
 use super::common::render_rally_status_bar;
-use crate::app::{App, CachedDiffLine, InputMode, LineInputContext};
+use crate::app::{
+    hash_string, App, CachedDiffLine, DiffCache, InputMode, InternedSpan, LineInputContext,
+};
 use crate::diff::{classify_line, LineType};
-use crate::syntax::{get_theme, highlight_code_line, syntax_for_file};
+use crate::syntax::{
+    get_theme, highlight_code_line, highlight_line_with_tree, syntax_for_file, Highlighter,
+    ParserPool,
+};
 
-/// Build cached diff lines with syntax highlighting (called from App::ensure_diff_cache)
+/// Build DiffCache with syntax highlighting and string interning.
+///
+/// Uses tree-sitter for supported languages (Rust, TypeScript, JavaScript, Go, Python)
+/// and falls back to syntect for other languages.
+///
+/// Returns a complete DiffCache with file_index set to 0 (caller should update).
 pub fn build_diff_cache(
     patch: &str,
     filename: &str,
     theme_name: &str,
     comment_lines: &HashSet<usize>,
+) -> DiffCache {
+    let mut interner = Rodeo::default();
+    let mut parser_pool = ParserPool::new();
+    let mut highlighter = Highlighter::for_file(filename, theme_name, &mut parser_pool);
+
+    // Try to build a combined source for CST highlighting
+    // For CST, we need to parse the entire content at once
+    let combined_source = build_combined_source_for_highlight(patch);
+    let cst_result = highlighter.parse_source(&combined_source);
+
+    let lines: Vec<CachedDiffLine> = if let Some(ref result) = cst_result {
+        // CST path: use tree-sitter with full AST context
+        build_lines_with_cst(
+            patch,
+            comment_lines,
+            &combined_source,
+            result,
+            &mut interner,
+        )
+    } else {
+        // Syntect fallback path
+        build_lines_with_syntect(patch, filename, theme_name, comment_lines, &mut interner)
+    };
+
+    DiffCache {
+        file_index: 0, // Caller should update this
+        patch_hash: hash_string(patch),
+        comment_lines: comment_lines.clone(),
+        lines,
+        interner,
+    }
+}
+
+/// Build combined source for CST highlighting by extracting code content from diff.
+///
+/// This strips diff markers (+/-/ ) and hunk headers to create pure source code
+/// that tree-sitter can parse correctly.
+fn build_combined_source_for_highlight(patch: &str) -> String {
+    let mut source = String::new();
+    for line in patch.lines() {
+        let (line_type, content) = classify_line(line);
+        match line_type {
+            // Include added, removed, and context lines in the source
+            LineType::Added | LineType::Removed | LineType::Context => {
+                source.push_str(content);
+                source.push('\n');
+            }
+            // Skip headers and meta lines
+            LineType::Header | LineType::Meta => {}
+        }
+    }
+    source
+}
+
+/// Build cached lines using CST highlighting.
+fn build_lines_with_cst(
+    patch: &str,
+    comment_lines: &HashSet<usize>,
+    combined_source: &str,
+    cst_result: &crate::syntax::CstParseResult,
+    interner: &mut Rodeo,
+) -> Vec<CachedDiffLine> {
+    let mut source_byte_offset = 0;
+    let mut source_lines = combined_source.lines().peekable();
+
+    patch
+        .lines()
+        .enumerate()
+        .map(|(i, line)| {
+            let has_comment = comment_lines.contains(&i);
+            let (line_type, content) = classify_line(line);
+
+            let spans = match line_type {
+                LineType::Header => {
+                    vec![InternedSpan {
+                        content: interner.get_or_intern(line),
+                        style: Style::default().fg(Color::Cyan),
+                    }]
+                }
+                LineType::Meta => {
+                    vec![InternedSpan {
+                        content: interner.get_or_intern(line),
+                        style: Style::default().fg(Color::Yellow),
+                    }]
+                }
+                LineType::Added | LineType::Removed | LineType::Context => {
+                    // Get the corresponding source line
+                    let source_line = source_lines.next().unwrap_or("");
+                    let line_start = source_byte_offset;
+                    let line_end = source_byte_offset + source_line.len();
+                    source_byte_offset = line_end + 1; // +1 for newline
+
+                    let marker_style = match line_type {
+                        LineType::Added => Style::default().fg(Color::Green),
+                        LineType::Removed => Style::default().fg(Color::Red),
+                        _ => Style::default(),
+                    };
+
+                    let marker = match line_type {
+                        LineType::Added => "+",
+                        LineType::Removed => "-",
+                        LineType::Context => " ",
+                        _ => "",
+                    };
+
+                    let mut spans = vec![InternedSpan {
+                        content: interner.get_or_intern(marker),
+                        style: marker_style,
+                    }];
+
+                    // Highlight the content using CST
+                    let code_spans = highlight_line_with_tree(
+                        combined_source,
+                        content,
+                        line_start,
+                        line_end,
+                        &cst_result.tree,
+                        &cst_result.query,
+                        &cst_result.capture_names,
+                        interner,
+                    );
+                    spans.extend(code_spans);
+                    spans
+                }
+            };
+
+            let mut result_spans = spans;
+
+            // Add comment indicator at the beginning if this line has comments
+            if has_comment {
+                let marker = interner.get_or_intern("● ");
+                result_spans.insert(
+                    0,
+                    InternedSpan {
+                        content: marker,
+                        style: Style::default().fg(Color::Yellow),
+                    },
+                );
+            }
+
+            CachedDiffLine {
+                spans: result_spans,
+            }
+        })
+        .collect()
+}
+
+/// Build cached lines using syntect highlighting (fallback).
+fn build_lines_with_syntect(
+    patch: &str,
+    filename: &str,
+    theme_name: &str,
+    comment_lines: &HashSet<usize>,
+    interner: &mut Rodeo,
 ) -> Vec<CachedDiffLine> {
     let syntax = syntax_for_file(filename);
     let theme = get_theme(theme_name);
@@ -32,11 +197,18 @@ pub fn build_diff_cache(
             let has_comment = comment_lines.contains(&i);
             let (line_type, content) = classify_line(line);
 
-            let mut spans = build_line_spans(line_type, line, content, &mut highlighter);
+            let mut spans = build_line_spans(line_type, line, content, &mut highlighter, interner);
 
             // Add comment indicator at the beginning if this line has comments
             if has_comment {
-                spans.insert(0, Span::styled("● ", Style::default().fg(Color::Yellow)));
+                let marker = interner.get_or_intern("● ");
+                spans.insert(
+                    0,
+                    InternedSpan {
+                        content: marker,
+                        style: Style::default().fg(Color::Yellow),
+                    },
+                );
             }
 
             CachedDiffLine { spans }
@@ -46,28 +218,27 @@ pub fn build_diff_cache(
 
 /// Convert cached diff lines to renderable [`Line`]s using zero-copy borrowing.
 ///
-/// Borrows span content from the cache (`Cow::Borrowed`) instead of cloning,
-/// avoiding heap allocations entirely.
+/// Resolves interned strings from the DiffCache's interner, avoiding heap
+/// allocations entirely.
 ///
-/// * `cached_lines` – slice of cached lines to render (may be a sub-range).
-/// * `start_index` – absolute index of the first element in `cached_lines`,
-///   used to correctly identify the selected line.
+/// * `cache` – the DiffCache containing both lines and the interner.
+/// * `range` – the range of lines to render (may be a sub-range).
 /// * `selected_line` – absolute index of the currently selected line.
 pub fn render_cached_lines<'a>(
-    cached_lines: &'a [CachedDiffLine],
-    start_index: usize,
+    cache: &'a DiffCache,
+    range: std::ops::Range<usize>,
     selected_line: usize,
 ) -> Vec<Line<'a>> {
-    cached_lines
+    cache.lines[range.clone()]
         .iter()
         .enumerate()
         .map(|(rel_idx, cached)| {
-            let abs_idx = start_index + rel_idx;
+            let abs_idx = range.start + rel_idx;
             let is_selected = abs_idx == selected_line;
             let spans: Vec<Span<'_>> = cached
                 .spans
                 .iter()
-                .map(|s| Span::styled(s.content.as_ref(), s.style))
+                .map(|s| Span::styled(cache.resolve(s.content), s.style))
                 .collect();
             if is_selected {
                 Line::from(spans).style(Style::default().add_modifier(Modifier::REVERSED))
@@ -187,12 +358,8 @@ pub(crate) fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::l
         let visible_end = (app.scroll_offset + visible_height + 5).min(line_count);
 
         // Only process visible lines (with buffer) for performance
-        // When visible_start >= visible_end, this produces an empty slice (safe)
-        render_cached_lines(
-            &cache.lines[visible_start..visible_end],
-            visible_start,
-            app.selected_line,
-        )
+        // When visible_start >= visible_end, this produces an empty range (safe)
+        render_cached_lines(cache, visible_start..visible_end, app.selected_line)
     } else {
         // Fallback: parse without cache (should rarely happen)
         let file = app.files().get(app.selected_file);
@@ -266,31 +433,28 @@ fn parse_patch_to_lines(
     theme_name: &str,
     comment_lines: &HashSet<usize>,
 ) -> Vec<Line<'static>> {
-    let syntax = syntax_for_file(filename);
-    let theme = get_theme(theme_name);
-    let mut highlighter = syntax.map(|s| HighlightLines::new(s, theme));
+    // Build DiffCache and then convert to Lines
+    // This ensures consistent behavior with cached path
+    let cache = build_diff_cache(patch, filename, theme_name, comment_lines);
 
-    patch
-        .lines()
+    cache
+        .lines
+        .iter()
         .enumerate()
-        .map(|(i, line)| {
+        .map(|(i, cached)| {
             let is_selected = i == selected_line;
-            let has_comment = comment_lines.contains(&i);
-            let (line_type, content) = classify_line(line);
-
-            let mut spans = build_line_spans(line_type, line, content, &mut highlighter);
-
-            // Add comment indicator at the beginning if this line has comments
-            if has_comment {
-                spans.insert(0, Span::styled("● ", Style::default().fg(Color::Yellow)));
-            }
-
-            if is_selected {
-                for span in &mut spans {
-                    span.style = span.style.add_modifier(Modifier::REVERSED);
-                }
-            }
-
+            let spans: Vec<Span<'static>> = cached
+                .spans
+                .iter()
+                .map(|s| {
+                    let text = cache.resolve(s.content).to_string();
+                    let mut style = s.style;
+                    if is_selected {
+                        style = style.add_modifier(Modifier::REVERSED);
+                    }
+                    Span::styled(text, style)
+                })
+                .collect();
             Line::from(spans)
         })
         .collect()
@@ -301,33 +465,43 @@ fn build_line_spans(
     original_line: &str,
     content: &str,
     highlighter: &mut Option<HighlightLines<'_>>,
-) -> Vec<Span<'static>> {
+    interner: &mut Rodeo,
+) -> Vec<InternedSpan> {
     match line_type {
         LineType::Header => {
-            vec![Span::styled(
-                original_line.to_string(),
-                Style::default().fg(Color::Cyan),
-            )]
+            vec![InternedSpan {
+                content: interner.get_or_intern(original_line),
+                style: Style::default().fg(Color::Cyan),
+            }]
         }
         LineType::Meta => {
-            vec![Span::styled(
-                original_line.to_string(),
-                Style::default().fg(Color::Yellow),
-            )]
+            vec![InternedSpan {
+                content: interner.get_or_intern(original_line),
+                style: Style::default().fg(Color::Yellow),
+            }]
         }
         LineType::Added => {
-            let marker = Span::styled("+", Style::default().fg(Color::Green));
-            let code_spans = highlight_or_fallback(content, highlighter, Color::Green);
+            let marker = InternedSpan {
+                content: interner.get_or_intern("+"),
+                style: Style::default().fg(Color::Green),
+            };
+            let code_spans = highlight_or_fallback(content, highlighter, Color::Green, interner);
             std::iter::once(marker).chain(code_spans).collect()
         }
         LineType::Removed => {
-            let marker = Span::styled("-", Style::default().fg(Color::Red));
-            let code_spans = highlight_or_fallback(content, highlighter, Color::Red);
+            let marker = InternedSpan {
+                content: interner.get_or_intern("-"),
+                style: Style::default().fg(Color::Red),
+            };
+            let code_spans = highlight_or_fallback(content, highlighter, Color::Red, interner);
             std::iter::once(marker).chain(code_spans).collect()
         }
         LineType::Context => {
-            let marker = Span::styled(" ", Style::default());
-            let code_spans = highlight_or_fallback(content, highlighter, Color::Reset);
+            let marker = InternedSpan {
+                content: interner.get_or_intern(" "),
+                style: Style::default(),
+            };
+            let code_spans = highlight_or_fallback(content, highlighter, Color::Reset, interner);
             std::iter::once(marker).chain(code_spans).collect()
         }
     }
@@ -337,21 +511,25 @@ fn highlight_or_fallback(
     content: &str,
     highlighter: &mut Option<HighlightLines<'_>>,
     fallback_color: Color,
-) -> Vec<Span<'static>> {
+    interner: &mut Rodeo,
+) -> Vec<InternedSpan> {
     match highlighter {
         Some(h) => {
-            let spans = highlight_code_line(content, h);
+            let spans = highlight_code_line(content, h, interner);
             if spans.is_empty() {
                 // Empty content, return empty span
-                vec![Span::raw(content.to_string())]
+                vec![InternedSpan {
+                    content: interner.get_or_intern(content),
+                    style: Style::default(),
+                }]
             } else {
                 spans
             }
         }
-        None => vec![Span::styled(
-            content.to_string(),
-            Style::default().fg(fallback_color),
-        )],
+        None => vec![InternedSpan {
+            content: interner.get_or_intern(content),
+            style: Style::default().fg(fallback_color),
+        }],
     }
 }
 

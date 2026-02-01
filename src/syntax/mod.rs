@@ -1,16 +1,23 @@
-//! Syntax highlighting module using syntect with two-face extensions.
+//! Syntax highlighting module using tree-sitter and syntect.
 //!
-//! This module provides syntax highlighting for diff content using syntect
-//! with two-face's extended syntax definitions (same as bat) and converts
-//! the output to ratatui Span format.
+//! This module provides syntax highlighting for diff content using:
+//! - **tree-sitter**: For supported languages (Rust, TypeScript, JavaScript, Go, Python)
+//! - **syntect**: As a fallback for other languages (Vue, YAML, Markdown, etc.)
 //!
-//! ## Supported Languages
+//! ## Supported Languages (tree-sitter)
 //!
-//! Using two-face, we support many more languages than syntect defaults:
+//! - Rust (.rs)
 //! - TypeScript (.ts, .tsx)
+//! - JavaScript (.js, .jsx)
+//! - Go (.go)
+//! - Python (.py)
+//!
+//! ## Fallback Languages (syntect via two-face)
+//!
 //! - Vue (.vue)
-//! - JSX (.jsx)
+//! - YAML (.yaml, .yml)
 //! - TOML (.toml)
+//! - Markdown (.md)
 //! - SCSS (.scss)
 //! - Svelte (.svelte)
 //! - And many more...
@@ -23,15 +30,25 @@
 //!
 //! User themes override bundled themes if they have the same name.
 
+pub mod highlighter;
+pub mod parser_pool;
+pub mod themes;
+
+pub use highlighter::{highlight_line_with_tree, CstParseResult, Highlighter};
+pub use parser_pool::ParserPool;
+
 use std::io::Cursor;
 use std::sync::OnceLock;
 
+use lasso::Rodeo;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
 use xdg::BaseDirectories;
+
+use crate::app::InternedSpan;
 
 static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
 static THEME_SET: OnceLock<ThemeSet> = OnceLock::new();
@@ -146,24 +163,55 @@ pub fn get_theme(name: &str) -> &'static syntect::highlighting::Theme {
         .expect("syntect default themes should never be empty")
 }
 
-/// Highlight a code line and return a vector of owned Spans.
+/// Highlight a code line and return a vector of InternedSpans.
 ///
 /// # Arguments
 /// * `code` - The code line to highlight
 /// * `highlighter` - A mutable reference to the HighlightLines instance
+/// * `interner` - A mutable reference to the string interner
 ///
 /// # Returns
-/// A vector of `Span<'static>` with syntax highlighting applied.
+/// A vector of `InternedSpan` with syntax highlighting applied.
 /// If highlighting fails, returns plain text with no styling.
-pub fn highlight_code_line(code: &str, highlighter: &mut HighlightLines<'_>) -> Vec<Span<'static>> {
+pub fn highlight_code_line(
+    code: &str,
+    highlighter: &mut HighlightLines<'_>,
+    interner: &mut Rodeo,
+) -> Vec<InternedSpan> {
     match highlighter.highlight_line(code, syntax_set()) {
         Ok(ranges) => ranges
             .into_iter()
             .map(|(style, text)| {
-                // Convert syntect style to ratatui style, owning the string
-                // We directly convert instead of using into_span to ensure 'static lifetime
-                Span::styled(text.to_string(), convert_syntect_style(&style))
+                // Intern the text to avoid allocations for duplicate tokens
+                InternedSpan {
+                    content: interner.get_or_intern(text),
+                    style: convert_syntect_style(&style),
+                }
             })
+            .collect(),
+        Err(_e) => {
+            #[cfg(debug_assertions)]
+            eprintln!("Highlight error: {_e:?}");
+            vec![InternedSpan {
+                content: interner.get_or_intern(code),
+                style: Style::default(),
+            }]
+        }
+    }
+}
+
+/// Highlight a code line and return a vector of owned Spans (legacy API).
+///
+/// This function is kept for backward compatibility with tests.
+/// For production code, prefer `highlight_code_line` with interner.
+pub fn highlight_code_line_legacy(
+    code: &str,
+    highlighter: &mut HighlightLines<'_>,
+) -> Vec<Span<'static>> {
+    match highlighter.highlight_line(code, syntax_set()) {
+        Ok(ranges) => ranges
+            .into_iter()
+            .map(|(style, text)| Span::styled(text.to_string(), convert_syntect_style(&style)))
             .collect(),
         Err(_e) => {
             #[cfg(debug_assertions)]
@@ -178,7 +226,7 @@ pub fn highlight_code_line(code: &str, highlighter: &mut HighlightLines<'_>) -> 
 /// Note: Background color is intentionally NOT applied. Syntect themes define
 /// a background color for the entire editor, but in a TUI diff viewer, we want
 /// to preserve the terminal's background color for better visual consistency.
-fn convert_syntect_style(style: &syntect::highlighting::Style) -> Style {
+pub fn convert_syntect_style(style: &syntect::highlighting::Style) -> Style {
     let mut ratatui_style = Style::default();
 
     // Convert foreground color
@@ -297,7 +345,7 @@ mod tests {
         let theme = get_theme("base16-ocean.dark");
         let mut highlighter = HighlightLines::new(syntax, theme);
 
-        let spans = highlight_code_line("let app = Self {", &mut highlighter);
+        let spans = highlight_code_line_legacy("let app = Self {", &mut highlighter);
         assert!(!spans.is_empty());
 
         // Verify that "let" keyword has a foreground color (syntax highlighting applied)
@@ -319,7 +367,7 @@ mod tests {
         let theme = get_theme("base16-ocean.dark");
         let mut highlighter = HighlightLines::new(syntax, theme);
 
-        let spans = highlight_code_line("", &mut highlighter);
+        let spans = highlight_code_line_legacy("", &mut highlighter);
         // Empty line should produce empty or single empty span
         assert!(spans.is_empty() || (spans.len() == 1 && spans[0].content.is_empty()));
     }
@@ -349,7 +397,7 @@ mod tests {
         let theme = get_theme("Dracula");
         let mut highlighter = HighlightLines::new(syntax, theme);
 
-        let spans = highlight_code_line("fn main() {", &mut highlighter);
+        let spans = highlight_code_line_legacy("fn main() {", &mut highlighter);
         assert!(!spans.is_empty());
 
         // fn keyword should be highlighted
@@ -384,7 +432,7 @@ mod tests {
         let theme = get_theme("base16-ocean.dark");
         let mut highlighter = HighlightLines::new(syntax, theme);
 
-        let spans = highlight_code_line("const foo: string = 'bar';", &mut highlighter);
+        let spans = highlight_code_line_legacy("const foo: string = 'bar';", &mut highlighter);
         assert!(!spans.is_empty());
 
         // Verify that "const" keyword has a foreground color (syntax highlighting applied)
@@ -402,7 +450,53 @@ mod tests {
         let theme = get_theme("Dracula");
         let mut highlighter = HighlightLines::new(syntax, theme);
 
-        let spans = highlight_code_line("<template>", &mut highlighter);
+        let spans = highlight_code_line_legacy("<template>", &mut highlighter);
         assert!(!spans.is_empty());
+    }
+
+    #[test]
+    fn test_highlight_code_line_with_interner() {
+        let syntax = syntax_for_file("test.rs").unwrap();
+        let theme = get_theme("base16-ocean.dark");
+        let mut highlighter = HighlightLines::new(syntax, theme);
+        let mut interner = Rodeo::default();
+
+        let spans = highlight_code_line("let app = Self {", &mut highlighter, &mut interner);
+        assert!(!spans.is_empty());
+
+        // Verify that the interner contains the expected tokens
+        for span in &spans {
+            let text = interner.resolve(&span.content);
+            assert!(!text.is_empty() || spans.len() == 1);
+        }
+    }
+
+    #[test]
+    fn test_interner_deduplication() {
+        let syntax = syntax_for_file("test.rs").unwrap();
+        let theme = get_theme("base16-ocean.dark");
+        let mut highlighter = HighlightLines::new(syntax, theme);
+        let mut interner = Rodeo::default();
+
+        // Highlight two lines with the same keyword
+        let spans1 = highlight_code_line("let x = 1;", &mut highlighter, &mut interner);
+        let spans2 = highlight_code_line("let y = 2;", &mut highlighter, &mut interner);
+
+        // Find "let" in both spans - they should have the same Spur
+        let let_spur1 = spans1
+            .iter()
+            .find(|s| interner.resolve(&s.content) == "let")
+            .map(|s| s.content);
+        let let_spur2 = spans2
+            .iter()
+            .find(|s| interner.resolve(&s.content) == "let")
+            .map(|s| s.content);
+
+        assert!(let_spur1.is_some(), "First line should contain 'let'");
+        assert!(let_spur2.is_some(), "Second line should contain 'let'");
+        assert_eq!(
+            let_spur1, let_spur2,
+            "Both 'let' tokens should have the same Spur (interned)"
+        );
     }
 }

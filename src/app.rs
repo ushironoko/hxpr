@@ -4,7 +4,8 @@ use std::hash::{Hash, Hasher};
 
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
-use ratatui::{backend::CrosstermBackend, text::Span, Terminal};
+use lasso::{Rodeo, Spur};
+use ratatui::{backend::CrosstermBackend, style::Style, Terminal};
 use smallvec::SmallVec;
 use std::io::Stdout;
 use tokio::sync::mpsc;
@@ -49,11 +50,23 @@ pub struct SymbolPopupState {
     pub selected: usize,
 }
 
+/// インターン済みの Span（アロケーション削減）
+///
+/// 文字列をインターナーに格納し、4バイトの Spur で参照することで
+/// 重複トークンのアロケーションを削減する。
+#[derive(Clone)]
+pub struct InternedSpan {
+    /// インターン済み文字列への参照（4 bytes）
+    pub content: Spur,
+    /// スタイル情報（8 bytes）
+    pub style: Style,
+}
+
 /// Diff行のキャッシュ（シンタックスハイライト済み）
 #[derive(Clone)]
 pub struct CachedDiffLine {
     /// 基本の Span（REVERSED なし）
-    pub spans: Vec<Span<'static>>,
+    pub spans: Vec<InternedSpan>,
 }
 
 /// Diff表示のキャッシュ
@@ -66,10 +79,21 @@ pub struct DiffCache {
     pub comment_lines: HashSet<usize>,
     /// パース済みの行データ
     pub lines: Vec<CachedDiffLine>,
+    /// 文字列インターナー（キャッシュ内で共有）
+    pub interner: Rodeo,
+}
+
+impl DiffCache {
+    /// Spur を文字列参照に解決する
+    ///
+    /// ライフタイムは DiffCache に依存するため、ゼロコピーでレンダリング可能。
+    pub fn resolve(&self, spur: Spur) -> &str {
+        self.interner.resolve(&spur)
+    }
 }
 
 /// 文字列のハッシュを計算
-fn hash_string(s: &str) -> u64 {
+pub fn hash_string(s: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     s.hash(&mut hasher);
     hasher.finish()
@@ -3203,19 +3227,15 @@ impl App {
         };
         let filename = file.filename.clone();
 
-        let lines = crate::ui::diff_view::build_diff_cache(
+        let mut cache = crate::ui::diff_view::build_diff_cache(
             &patch,
             &filename,
             &self.config.diff.theme,
             &self.file_comment_lines,
         );
+        cache.file_index = file_index;
 
-        self.diff_cache = Some(DiffCache {
-            file_index,
-            patch_hash: hash_string(&patch),
-            comment_lines: self.file_comment_lines.clone(),
-            lines,
-        });
+        self.diff_cache = Some(cache);
     }
 
     // ========================================

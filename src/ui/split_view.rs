@@ -363,11 +363,7 @@ fn render_diff_body(
         let visible_start = app.scroll_offset.saturating_sub(2).min(line_count);
         let visible_end = (app.scroll_offset + visible_height + 5).min(line_count);
 
-        diff_view::render_cached_lines(
-            &cache.lines[visible_start..visible_end],
-            visible_start,
-            app.selected_line,
-        )
+        diff_view::render_cached_lines(cache, visible_start..visible_end, app.selected_line)
     } else {
         let file = app.files().get(app.selected_file);
         match file {
