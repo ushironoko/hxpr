@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use lasso::Rodeo;
 use ratatui::style::Style;
 use syntect::easy::HighlightLines;
+use std::sync::OnceLock;
 use tree_sitter::{Language, Parser, Query, QueryCursor, StreamingIterator, Tree};
 
 use crate::app::InternedSpan;
@@ -357,10 +358,31 @@ fn highlight_with_syntect(
     }
 }
 
+/// Combined TypeScript highlights query (JavaScript base + TypeScript-specific).
+///
+/// TypeScript's HIGHLIGHTS_QUERY only contains TypeScript-specific patterns
+/// (abstract, declare, enum, etc.) and expects to inherit JavaScript patterns.
+/// We combine them here for complete highlighting.
+static TYPESCRIPT_COMBINED_QUERY: OnceLock<String> = OnceLock::new();
+
+fn get_typescript_combined_query() -> &'static str {
+    TYPESCRIPT_COMBINED_QUERY.get_or_init(|| {
+        format!(
+            "{}\n{}",
+            tree_sitter_javascript::HIGHLIGHT_QUERY,
+            tree_sitter_typescript::HIGHLIGHTS_QUERY
+        )
+    })
+}
+
 /// Get the language and query source for a file extension.
 ///
 /// Uses the `HIGHLIGHTS_QUERY` constants exported by each tree-sitter crate,
 /// which are the official highlight queries maintained by the grammar authors.
+///
+/// Note: TypeScript and TSX use a combined query that includes JavaScript
+/// patterns, since tree-sitter-typescript's query only contains TS-specific
+/// additions.
 fn get_language_and_query(ext: &str) -> Option<(Language, &'static str)> {
     match ext {
         "rs" => Some((
@@ -369,11 +391,11 @@ fn get_language_and_query(ext: &str) -> Option<(Language, &'static str)> {
         )),
         "ts" => Some((
             tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-            tree_sitter_typescript::HIGHLIGHTS_QUERY,
+            get_typescript_combined_query(),
         )),
         "tsx" => Some((
             tree_sitter_typescript::LANGUAGE_TSX.into(),
-            tree_sitter_typescript::HIGHLIGHTS_QUERY,
+            get_typescript_combined_query(),
         )),
         "js" | "jsx" => Some((
             tree_sitter_javascript::LANGUAGE.into(),
@@ -592,5 +614,60 @@ mod tests {
                 panic!("Expected Rgb color for 'use' keyword, got {:?}", other);
             }
         }
+    }
+
+    #[test]
+    fn test_typescript_function_highlighting() {
+        use crate::syntax::get_theme;
+        use crate::syntax::themes::ThemeStyleCache;
+
+        let mut pool = ParserPool::new();
+        let mut highlighter = Highlighter::for_file("test.ts", "Dracula", &mut pool);
+
+        // Arrow function assignment - common pattern in Vue/React
+        let source = "const onClickPageName = () => {\n  const rootDom = store.tree\n}";
+
+        let result = highlighter
+            .parse_source(source)
+            .expect("Should parse TypeScript source");
+
+        let theme = get_theme("Dracula");
+        let style_cache = ThemeStyleCache::new(theme);
+
+        let line_highlights = collect_line_highlights(
+            source,
+            &result.tree,
+            &result.query,
+            &result.capture_names,
+            &style_cache,
+        );
+
+        let mut interner = Rodeo::default();
+        let line = "const onClickPageName = () => {";
+        let captures = line_highlights.get(0);
+        let spans = apply_line_highlights(line, captures, &mut interner);
+
+        // "const" should be highlighted as keyword
+        let const_span = spans
+            .iter()
+            .find(|s| interner.resolve(&s.content) == "const");
+        assert!(const_span.is_some(), "Should have 'const' span");
+        assert!(
+            const_span.unwrap().style.fg.is_some(),
+            "'const' should have foreground color"
+        );
+
+        // "onClickPageName" should be highlighted as function
+        let func_span = spans
+            .iter()
+            .find(|s| interner.resolve(&s.content) == "onClickPageName");
+        assert!(
+            func_span.is_some(),
+            "Should have 'onClickPageName' span (function name)"
+        );
+        assert!(
+            func_span.unwrap().style.fg.is_some(),
+            "'onClickPageName' should have foreground color (function)"
+        );
     }
 }
