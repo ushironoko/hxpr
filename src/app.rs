@@ -20,6 +20,7 @@ use crate::keybinding::{
     event_to_keybinding, KeyBinding, KeySequence, SequenceMatch, SEQUENCE_TIMEOUT,
 };
 use crate::loader::{CommentSubmitResult, DataLoadResult};
+use crate::syntax::ParserPool;
 use crate::ui;
 use crate::ui::text_area::{TextArea, TextAreaAction};
 use std::time::Instant;
@@ -265,6 +266,8 @@ pub struct App {
     pub comment_panel_scroll: u16,
     // Cached diff lines (syntax highlighted)
     pub diff_cache: Option<DiffCache>,
+    // Parser pool for tree-sitter parser reuse across files
+    parser_pool: ParserPool,
     // Discussion comments (PR conversation)
     pub discussion_comments: Option<Vec<DiscussionComment>>,
     pub selected_discussion_comment: usize,
@@ -354,6 +357,7 @@ impl App {
             comment_panel_open: false,
             comment_panel_scroll: 0,
             diff_cache: None,
+            parser_pool: ParserPool::new(),
             discussion_comments: None,
             selected_discussion_comment: 0,
             discussion_comment_list_scroll_offset: 0,
@@ -434,6 +438,7 @@ impl App {
             comment_panel_open: false,
             comment_panel_scroll: 0,
             diff_cache: None,
+            parser_pool: ParserPool::new(),
             discussion_comments: None,
             selected_discussion_comment: 0,
             discussion_comment_list_scroll_offset: 0,
@@ -502,6 +507,7 @@ impl App {
             comment_panel_open: false,
             comment_panel_scroll: 0,
             diff_cache: None,
+            parser_pool: ParserPool::new(),
             discussion_comments: None,
             selected_discussion_comment: 0,
             discussion_comment_list_scroll_offset: 0,
@@ -3232,6 +3238,7 @@ impl App {
             &filename,
             &self.config.diff.theme,
             &self.file_comment_lines,
+            &mut self.parser_pool,
         );
         cache.file_index = file_index;
 

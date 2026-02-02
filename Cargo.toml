@@ -34,6 +34,8 @@ chrono = "0.4.43"
 thiserror = "2.0.18"
 smallvec = "1.15.0"
 lasso = "0.7.3"
+# compile-time perfect hash map for capture-to-scope mapping
+phf = { version = "0.13.1", features = ["macros"] }
 # tree-sitter for CST-based syntax highlighting
 tree-sitter = "0.26.3"
 tree-sitter-rust = "0.24.0"

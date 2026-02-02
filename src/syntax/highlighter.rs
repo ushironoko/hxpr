@@ -3,6 +3,8 @@
 //! Tree-sitter is used for supported languages (Rust, TypeScript, JavaScript, Go, Python).
 //! Syntect is used as a fallback for other languages (Vue, YAML, Markdown, etc.).
 
+use std::collections::HashMap;
+
 use lasso::Rodeo;
 use ratatui::style::Style;
 use syntect::easy::HighlightLines;
@@ -11,7 +13,7 @@ use tree_sitter::{Language, Parser, Query, QueryCursor, StreamingIterator, Tree}
 use crate::app::InternedSpan;
 
 use super::parser_pool::ParserPool;
-use super::themes::style_for_capture;
+use super::themes::ThemeStyleCache;
 use super::{convert_syntect_style, get_theme, syntax_for_file, syntax_set};
 
 /// Unified highlighter that can use either tree-sitter or syntect.
@@ -22,11 +24,39 @@ pub enum Highlighter<'a> {
         language: Language,
         query_source: &'static str,
         capture_names: Vec<String>,
+        /// Pre-computed style cache from the theme.
+        style_cache: ThemeStyleCache,
     },
     /// Syntect regex-based highlighter for fallback.
     Syntect(HighlightLines<'a>),
     /// No highlighting available.
     None,
+}
+
+/// A single highlight capture with byte range and style.
+#[derive(Clone)]
+pub struct LineCapture {
+    /// Start byte offset within the line (relative to line start)
+    pub local_start: usize,
+    /// End byte offset within the line (relative to line start)
+    pub local_end: usize,
+    /// Style for this capture
+    pub style: Style,
+}
+
+/// Pre-computed highlights grouped by source line index.
+///
+/// This allows O(1) lookup of highlights per line, avoiding repeated tree traversal.
+pub struct LineHighlights {
+    /// Map from source line index to captures in that line
+    captures_by_line: HashMap<usize, Vec<LineCapture>>,
+}
+
+impl LineHighlights {
+    /// Get captures for a specific line index.
+    pub fn get(&self, line_index: usize) -> Option<&[LineCapture]> {
+        self.captures_by_line.get(&line_index).map(|v| v.as_slice())
+    }
 }
 
 /// Parsed tree-sitter result with query.
@@ -57,11 +87,15 @@ impl<'a> Highlighter<'a> {
                         .iter()
                         .map(|s| s.to_string())
                         .collect();
+                    // Create style cache from theme for O(1) lookups
+                    let theme = get_theme(theme_name);
+                    let style_cache = ThemeStyleCache::new(theme);
                     return Highlighter::Cst {
                         parser,
                         language,
                         query_source,
                         capture_names,
+                        style_cache,
                     };
                 }
             }
@@ -87,6 +121,7 @@ impl<'a> Highlighter<'a> {
                 language,
                 query_source,
                 capture_names,
+                style_cache: _,
             } => {
                 let tree = parser.parse(source, None)?;
                 // Create a fresh query for the result
@@ -97,6 +132,16 @@ impl<'a> Highlighter<'a> {
                     capture_names: capture_names.clone(),
                 })
             }
+            _ => None,
+        }
+    }
+
+    /// Get a reference to the style cache for CST highlighting.
+    ///
+    /// Returns `None` for Syntect or None variants.
+    pub fn style_cache(&self) -> Option<&ThemeStyleCache> {
+        match self {
+            Highlighter::Cst { style_cache, .. } => Some(style_cache),
             _ => None,
         }
     }
@@ -125,75 +170,139 @@ impl<'a> Highlighter<'a> {
     }
 }
 
-/// Highlight a line using CST tree.
+/// Collect all highlights from the tree in a single pass.
+///
+/// This runs the query once over the entire tree and groups captures by line,
+/// avoiding the O(N * tree_size) cost of querying per-line.
 ///
 /// # Arguments
 /// * `source` - The complete source code
-/// * `line` - The line content
-/// * `line_start_byte` - Byte offset where this line starts in the source
-/// * `line_end_byte` - Byte offset where this line ends in the source
 /// * `tree` - The parsed tree
 /// * `query` - The highlight query
 /// * `capture_names` - The capture names from the query
-/// * `interner` - String interner for deduplication
-pub fn highlight_line_with_tree(
+/// * `style_cache` - Pre-computed style cache from the theme
+///
+/// # Returns
+/// A `LineHighlights` struct with captures grouped by source line index.
+pub fn collect_line_highlights(
     source: &str,
-    line: &str,
-    line_start_byte: usize,
-    line_end_byte: usize,
     tree: &Tree,
     query: &Query,
     capture_names: &[String],
-    interner: &mut Rodeo,
-) -> Vec<InternedSpan> {
+    style_cache: &ThemeStyleCache,
+) -> LineHighlights {
     let mut cursor = QueryCursor::new();
-    cursor.set_byte_range(line_start_byte..line_end_byte);
+    let mut captures_by_line: HashMap<usize, Vec<LineCapture>> = HashMap::new();
 
-    let mut highlights: Vec<(usize, usize, Style)> = Vec::new();
+    // Pre-compute line byte offsets for fast line lookup
+    let line_offsets: Vec<usize> =
+        std::iter::once(0)
+            .chain(source.bytes().enumerate().filter_map(|(i, b)| {
+                if b == b'\n' {
+                    Some(i + 1)
+                } else {
+                    None
+                }
+            }))
+            .collect();
 
-    // Collect all captures in this line using matches
+    // Run query once over the entire tree
     let mut matches = cursor.matches(query, tree.root_node(), source.as_bytes());
     while let Some(mat) = matches.next() {
         for capture in mat.captures {
             let node = capture.node;
-            let start = node.start_byte();
-            let end = node.end_byte();
+            let start_byte = node.start_byte();
+            let end_byte = node.end_byte();
 
-            // Clamp to line boundaries
-            let local_start = start.saturating_sub(line_start_byte);
-            let local_end = end.saturating_sub(line_start_byte).min(line.len());
+            // Find which line(s) this capture spans
+            let start_line = line_offsets
+                .binary_search(&start_byte)
+                .unwrap_or_else(|i| i.saturating_sub(1));
 
-            if local_start < local_end {
-                let capture_name = &capture_names[capture.index as usize];
-                let style = style_for_capture(capture_name);
-                highlights.push((local_start, local_end, style));
+            let end_line = line_offsets
+                .binary_search(&end_byte)
+                .unwrap_or_else(|i| i.saturating_sub(1));
+
+            let capture_name = &capture_names[capture.index as usize];
+            let style = style_cache.get(capture_name);
+
+            // Add capture to each line it spans
+            for line_idx in start_line..=end_line {
+                let line_start = line_offsets.get(line_idx).copied().unwrap_or(0);
+                let line_end = line_offsets
+                    .get(line_idx + 1)
+                    .map(|&off| off.saturating_sub(1))
+                    .unwrap_or(source.len());
+
+                // Clamp capture to line boundaries
+                let local_start = start_byte.saturating_sub(line_start);
+                let local_end = end_byte
+                    .saturating_sub(line_start)
+                    .min(line_end - line_start);
+
+                if local_start < local_end {
+                    captures_by_line
+                        .entry(line_idx)
+                        .or_default()
+                        .push(LineCapture {
+                            local_start,
+                            local_end,
+                            style,
+                        });
+                }
             }
         }
     }
 
-    // Sort by start position
-    highlights.sort_by_key(|(start, _, _)| *start);
+    // Sort captures within each line by start position
+    for captures in captures_by_line.values_mut() {
+        captures.sort_by_key(|c| c.local_start);
+    }
 
-    // Build spans from highlights
+    LineHighlights { captures_by_line }
+}
+
+/// Apply pre-computed highlights to a line, producing InternedSpans.
+///
+/// # Arguments
+/// * `line` - The line content
+/// * `captures` - Pre-computed captures for this line (from `collect_line_highlights`)
+/// * `interner` - String interner for deduplication
+pub fn apply_line_highlights(
+    line: &str,
+    captures: Option<&[LineCapture]>,
+    interner: &mut Rodeo,
+) -> Vec<InternedSpan> {
+    let captures = match captures {
+        Some(c) if !c.is_empty() => c,
+        _ => {
+            // No highlights, return plain text
+            return vec![InternedSpan {
+                content: interner.get_or_intern(line),
+                style: Style::default(),
+            }];
+        }
+    };
+
     let mut spans = Vec::new();
     let mut last_end = 0;
 
-    for (start, end, style) in highlights {
+    for capture in captures {
         // Add unstyled text before this highlight
-        if start > last_end {
+        if capture.local_start > last_end {
             spans.push(InternedSpan {
-                content: interner.get_or_intern(&line[last_end..start]),
+                content: interner.get_or_intern(&line[last_end..capture.local_start]),
                 style: Style::default(),
             });
         }
 
         // Add highlighted text
-        if start < end && end <= line.len() {
+        if capture.local_start < capture.local_end && capture.local_end <= line.len() {
             spans.push(InternedSpan {
-                content: interner.get_or_intern(&line[start..end]),
-                style,
+                content: interner.get_or_intern(&line[capture.local_start..capture.local_end]),
+                style: capture.style,
             });
-            last_end = end;
+            last_end = capture.local_end;
         }
     }
 
@@ -314,24 +423,29 @@ mod tests {
 
     #[test]
     fn test_cst_parse_and_highlight() {
+        use crate::syntax::get_theme;
+
         let mut pool = ParserPool::new();
         let mut highlighter = Highlighter::for_file("test.rs", "base16-ocean.dark", &mut pool);
 
         let source = "fn main() {\n    let x = 42;\n}";
 
         if let Some(result) = highlighter.parse_source(source) {
-            let mut interner = Rodeo::default();
-            let line = "fn main() {";
-            let spans = highlight_line_with_tree(
+            // Create style cache from theme for testing
+            let theme = get_theme("base16-ocean.dark");
+            let style_cache = ThemeStyleCache::new(theme);
+            let line_highlights = collect_line_highlights(
                 source,
-                line,
-                0,
-                line.len(),
                 &result.tree,
                 &result.query,
                 &result.capture_names,
-                &mut interner,
+                &style_cache,
             );
+
+            let mut interner = Rodeo::default();
+            let line = "fn main() {";
+            let captures = line_highlights.get(0);
+            let spans = apply_line_highlights(line, captures, &mut interner);
 
             // Should have multiple spans with different styles
             assert!(!spans.is_empty());

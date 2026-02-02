@@ -34,8 +34,11 @@ pub mod highlighter;
 pub mod parser_pool;
 pub mod themes;
 
-pub use highlighter::{highlight_line_with_tree, CstParseResult, Highlighter};
+pub use highlighter::{
+    apply_line_highlights, collect_line_highlights, CstParseResult, Highlighter, LineHighlights,
+};
 pub use parser_pool::ParserPool;
+pub use themes::ThemeStyleCache;
 
 use std::io::Cursor;
 use std::sync::OnceLock;

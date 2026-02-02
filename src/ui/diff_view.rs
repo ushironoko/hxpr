@@ -16,8 +16,8 @@ use crate::app::{
 };
 use crate::diff::{classify_line, LineType};
 use crate::syntax::{
-    get_theme, highlight_code_line, highlight_line_with_tree, syntax_for_file, Highlighter,
-    ParserPool,
+    apply_line_highlights, collect_line_highlights, get_theme, highlight_code_line,
+    syntax_for_file, Highlighter, ParserPool,
 };
 
 /// Build DiffCache with syntax highlighting and string interning.
@@ -25,33 +25,64 @@ use crate::syntax::{
 /// Uses tree-sitter for supported languages (Rust, TypeScript, JavaScript, Go, Python)
 /// and falls back to syntect for other languages.
 ///
+/// # Arguments
+/// * `patch` - The diff patch content
+/// * `filename` - The filename for syntax detection
+/// * `theme_name` - The theme name for syntect fallback
+/// * `comment_lines` - Set of line indices that have comments
+/// * `parser_pool` - Shared parser pool for tree-sitter parser reuse
+///
 /// Returns a complete DiffCache with file_index set to 0 (caller should update).
 pub fn build_diff_cache(
     patch: &str,
     filename: &str,
     theme_name: &str,
     comment_lines: &HashSet<usize>,
+    parser_pool: &mut ParserPool,
 ) -> DiffCache {
     let mut interner = Rodeo::default();
-    let mut parser_pool = ParserPool::new();
-    let mut highlighter = Highlighter::for_file(filename, theme_name, &mut parser_pool);
+    let mut highlighter = Highlighter::for_file(filename, theme_name, parser_pool);
 
     // Try to build a combined source for CST highlighting
     // For CST, we need to parse the entire content at once
-    let combined_source = build_combined_source_for_highlight(patch);
+    // Only includes post-change lines (added + context) to ensure valid syntax
+    let (combined_source, line_mapping) = build_combined_source_for_highlight(patch);
     let cst_result = highlighter.parse_source(&combined_source);
 
-    let lines: Vec<CachedDiffLine> = if let Some(ref result) = cst_result {
+    // Check if the tree has too many parse errors (indicates invalid syntax)
+    // If so, fall back to syntect for more graceful degradation
+    let use_cst = cst_result.as_ref().is_some_and(|result| {
+        let error_count = count_error_nodes(&result.tree);
+        // Allow up to 5% error nodes or 3 absolute errors, whichever is larger
+        let total_nodes = result.tree.root_node().descendant_count();
+        let threshold = (total_nodes / 20).max(3);
+        error_count <= threshold
+    });
+
+    let lines: Vec<CachedDiffLine> = if use_cst {
+        let result = cst_result.as_ref().unwrap();
+        // Get the style cache from the highlighter (guaranteed to exist for CST)
+        let style_cache = highlighter
+            .style_cache()
+            .expect("CST highlighter should have style_cache");
         // CST path: use tree-sitter with full AST context
+        // Collect all highlights in a single pass (avoiding per-line tree traversal)
+        let line_highlights = collect_line_highlights(
+            &combined_source,
+            &result.tree,
+            &result.query,
+            &result.capture_names,
+            style_cache,
+        );
         build_lines_with_cst(
             patch,
             comment_lines,
-            &combined_source,
-            result,
+            &line_highlights,
+            &line_mapping,
             &mut interner,
         )
     } else {
-        // Syntect fallback path
+        // Syntect fallback path (either no CST support or parse errors detected)
         build_lines_with_syntect(patch, filename, theme_name, comment_lines, &mut interner)
     };
 
@@ -64,37 +95,87 @@ pub fn build_diff_cache(
     }
 }
 
+/// Count ERROR nodes in the tree to detect parse failures.
+fn count_error_nodes(tree: &tree_sitter::Tree) -> usize {
+    let mut count = 0;
+    let mut cursor = tree.walk();
+
+    loop {
+        let node = cursor.node();
+        if node.is_error() || node.is_missing() {
+            count += 1;
+        }
+
+        // Traverse the tree
+        if cursor.goto_first_child() {
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() {
+                return count;
+            }
+        }
+    }
+}
+
 /// Build combined source for CST highlighting by extracting code content from diff.
 ///
 /// This strips diff markers (+/-/ ) and hunk headers to create pure source code
 /// that tree-sitter can parse correctly.
-fn build_combined_source_for_highlight(patch: &str) -> String {
+///
+/// **IMPORTANT**: Only includes added lines and context lines (post-change version).
+/// Removed lines are excluded to avoid creating syntactically invalid code,
+/// especially for indentation-sensitive languages like Python.
+///
+/// Returns both the source string and a mapping from source line index to diff line info
+/// for accurate highlight application.
+fn build_combined_source_for_highlight(patch: &str) -> (String, Vec<(usize, LineType)>) {
     let mut source = String::new();
-    for line in patch.lines() {
+    // Maps source line index -> (diff line index, line type)
+    let mut line_mapping: Vec<(usize, LineType)> = Vec::new();
+
+    for (diff_line_idx, line) in patch.lines().enumerate() {
         let (line_type, content) = classify_line(line);
         match line_type {
-            // Include added, removed, and context lines in the source
-            LineType::Added | LineType::Removed | LineType::Context => {
+            // Only include added and context lines (post-change version)
+            // This ensures the source is syntactically valid for tree-sitter
+            LineType::Added | LineType::Context => {
+                line_mapping.push((diff_line_idx, line_type));
                 source.push_str(content);
                 source.push('\n');
             }
+            // Skip removed lines to maintain valid syntax (especially for Python)
             // Skip headers and meta lines
-            LineType::Header | LineType::Meta => {}
+            LineType::Removed | LineType::Header | LineType::Meta => {}
         }
     }
-    source
+    (source, line_mapping)
 }
 
 /// Build cached lines using CST highlighting.
+///
+/// Uses pre-computed line highlights to avoid per-line tree traversal.
+///
+/// # Arguments
+/// * `patch` - The original diff patch
+/// * `comment_lines` - Set of line indices with comments
+/// * `line_highlights` - Pre-computed highlights from tree-sitter (indexed by source line)
+/// * `line_mapping` - Mapping from source line index to (diff line index, line type)
+/// * `interner` - String interner for deduplication
 fn build_lines_with_cst(
     patch: &str,
     comment_lines: &HashSet<usize>,
-    combined_source: &str,
-    cst_result: &crate::syntax::CstParseResult,
+    line_highlights: &crate::syntax::LineHighlights,
+    line_mapping: &[(usize, LineType)],
     interner: &mut Rodeo,
 ) -> Vec<CachedDiffLine> {
-    let mut source_byte_offset = 0;
-    let mut source_lines = combined_source.lines().peekable();
+    // Build a reverse mapping: diff_line_index -> source_line_index
+    // Only Added and Context lines are in the source (Removed lines are excluded)
+    let mut diff_to_source: std::collections::HashMap<usize, usize> =
+        std::collections::HashMap::new();
+    for (source_idx, (diff_idx, _)) in line_mapping.iter().enumerate() {
+        diff_to_source.insert(*diff_idx, source_idx);
+    }
 
     patch
         .lines()
@@ -116,22 +197,17 @@ fn build_lines_with_cst(
                         style: Style::default().fg(Color::Yellow),
                     }]
                 }
-                LineType::Added | LineType::Removed | LineType::Context => {
-                    // Get the corresponding source line
-                    let source_line = source_lines.next().unwrap_or("");
-                    let line_start = source_byte_offset;
-                    let line_end = source_byte_offset + source_line.len();
-                    source_byte_offset = line_end + 1; // +1 for newline
+                LineType::Added | LineType::Context => {
+                    // These lines are in the CST source, look up their highlights
+                    let source_line_index = diff_to_source.get(&i).copied();
 
                     let marker_style = match line_type {
                         LineType::Added => Style::default().fg(Color::Green),
-                        LineType::Removed => Style::default().fg(Color::Red),
                         _ => Style::default(),
                     };
 
                     let marker = match line_type {
                         LineType::Added => "+",
-                        LineType::Removed => "-",
                         LineType::Context => " ",
                         _ => "",
                     };
@@ -141,19 +217,24 @@ fn build_lines_with_cst(
                         style: marker_style,
                     }];
 
-                    // Highlight the content using CST
-                    let code_spans = highlight_line_with_tree(
-                        combined_source,
-                        content,
-                        line_start,
-                        line_end,
-                        &cst_result.tree,
-                        &cst_result.query,
-                        &cst_result.capture_names,
-                        interner,
-                    );
+                    // Apply pre-computed highlights for this line (O(1) lookup)
+                    let captures = source_line_index.and_then(|idx| line_highlights.get(idx));
+                    let code_spans = apply_line_highlights(content, captures, interner);
                     spans.extend(code_spans);
                     spans
+                }
+                LineType::Removed => {
+                    // Removed lines are NOT in the CST source (to preserve valid syntax)
+                    // Fall back to plain styling with red color
+                    let marker = InternedSpan {
+                        content: interner.get_or_intern("-"),
+                        style: Style::default().fg(Color::Red),
+                    };
+                    let code = InternedSpan {
+                        content: interner.get_or_intern(content),
+                        style: Style::default().fg(Color::Red),
+                    };
+                    vec![marker, code]
                 }
             };
 
@@ -229,11 +310,18 @@ pub fn render_cached_lines<'a>(
     range: std::ops::Range<usize>,
     selected_line: usize,
 ) -> Vec<Line<'a>> {
-    cache.lines[range.clone()]
+    // Clamp range to valid bounds to prevent out-of-bounds panic
+    let len = cache.lines.len();
+    let safe_start = range.start.min(len);
+    let safe_end = range.end.min(len);
+    // Handle case where start > end after clamping (produces empty slice)
+    let safe_range = safe_start..safe_start.max(safe_end);
+
+    cache.lines[safe_range.clone()]
         .iter()
         .enumerate()
         .map(|(rel_idx, cached)| {
-            let abs_idx = range.start + rel_idx;
+            let abs_idx = safe_range.start + rel_idx;
             let is_selected = abs_idx == selected_line;
             let spans: Vec<Span<'_>> = cached
                 .spans
@@ -426,6 +514,17 @@ pub(crate) fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::l
     }
 }
 
+/// Fallback function to render patch lines when cache is not available.
+///
+/// This function is called from `render_diff_content` when `app.diff_cache` is None,
+/// which should rarely happen in normal operation since `App::ensure_diff_cache()`
+/// is called before rendering.
+///
+/// NOTE: Creates a temporary ParserPool instead of reusing App's pool. This is acceptable
+/// because this fallback path is rarely executed - the main code path uses
+/// `App::ensure_diff_cache()` which properly reuses the shared parser pool.
+/// Hoisting a shared pool here would require passing &mut App through the render
+/// chain, which conflicts with the immutable borrow pattern in render functions.
 fn parse_patch_to_lines(
     patch: &str,
     selected_line: usize,
@@ -435,7 +534,9 @@ fn parse_patch_to_lines(
 ) -> Vec<Line<'static>> {
     // Build DiffCache and then convert to Lines
     // This ensures consistent behavior with cached path
-    let cache = build_diff_cache(patch, filename, theme_name, comment_lines);
+    // Creates a temporary ParserPool - this is acceptable for this rarely-used fallback path
+    let mut parser_pool = ParserPool::new();
+    let cache = build_diff_cache(patch, filename, theme_name, comment_lines, &mut parser_pool);
 
     cache
         .lines
