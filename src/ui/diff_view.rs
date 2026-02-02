@@ -954,3 +954,50 @@ fn render_reply_input_area(frame: &mut Frame, app: &App, area: ratatui::layout::
     app.input_text_area
         .render_with_title(frame, area, &title, "Type your reply here...");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_diff_cache_with_dracula_theme() {
+        use ratatui::style::Color;
+
+        let patch = r#"@@ -1,5 +1,6 @@
+ use std::collections::HashMap;
+
+ fn main() {
++    let x = 42;
+     println!("Hello");
+ }"#;
+
+        let mut parser_pool = ParserPool::new();
+        let comment_lines = HashSet::new();
+        let cache = build_diff_cache(patch, "test.rs", "Dracula", &comment_lines, &mut parser_pool);
+
+        // Line 1 is " use std::collections::HashMap;" (Context line)
+        // Find the "use" keyword span
+        let line1 = &cache.lines[1]; // Skip the @@ header
+        let use_span = line1
+            .spans
+            .iter()
+            .find(|s| cache.resolve(s.content) == "use");
+        assert!(use_span.is_some(), "Should have 'use' span in line 1");
+
+        let use_style = use_span.unwrap().style;
+
+        // Dracula pink is Rgb(255, 121, 198)
+        match use_style.fg {
+            Some(Color::Rgb(255, 121, 198)) => {}
+            Some(Color::Rgb(r, g, b)) => {
+                panic!(
+                    "'use' has wrong color. Expected Rgb(255, 121, 198), got Rgb({}, {}, {})",
+                    r, g, b
+                );
+            }
+            other => {
+                panic!("Expected Rgb color for 'use' keyword, got {:?}", other);
+            }
+        }
+    }
+}

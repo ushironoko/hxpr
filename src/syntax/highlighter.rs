@@ -532,4 +532,56 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_use_keyword_with_dracula_theme() {
+        use crate::syntax::get_theme;
+        use crate::syntax::themes::ThemeStyleCache;
+        use ratatui::style::Color;
+
+        let mut pool = ParserPool::new();
+        let mut highlighter = Highlighter::for_file("test.rs", "Dracula", &mut pool);
+
+        let source = "use std::collections::HashMap;\n\nfn main() {}";
+
+        let result = highlighter
+            .parse_source(source)
+            .expect("Should parse Rust source");
+
+        let theme = get_theme("Dracula");
+        let style_cache = ThemeStyleCache::new(theme);
+
+        let line_highlights = collect_line_highlights(
+            source,
+            &result.tree,
+            &result.query,
+            &result.capture_names,
+            &style_cache,
+        );
+
+        let mut interner = Rodeo::default();
+        let line = "use std::collections::HashMap;";
+        let captures = line_highlights.get(0);
+        let spans = apply_line_highlights(line, captures, &mut interner);
+
+        // "use" should have Dracula pink color (keyword)
+        let use_span = spans
+            .iter()
+            .find(|s| interner.resolve(&s.content) == "use");
+        assert!(use_span.is_some(), "Should have 'use' span");
+
+        let use_style = use_span.unwrap().style;
+        match use_style.fg {
+            Some(Color::Rgb(255, 121, 198)) => {}
+            Some(Color::Rgb(r, g, b)) => {
+                panic!(
+                    "'use' has wrong color. Expected Rgb(255, 121, 198), got Rgb({}, {}, {})",
+                    r, g, b
+                );
+            }
+            other => {
+                panic!("Expected Rgb color for 'use' keyword, got {:?}", other);
+            }
+        }
+    }
 }
