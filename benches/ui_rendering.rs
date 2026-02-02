@@ -18,7 +18,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use common::{generate_comment_lines, generate_diff_patch};
-use octorus::{build_diff_cache, render_cached_lines};
+use octorus::{build_diff_cache, render_cached_lines, ParserPool};
 
 /// Benchmark diff cache building with syntax highlighting.
 ///
@@ -35,14 +35,19 @@ fn bench_build_diff_cache(c: &mut Criterion) {
             BenchmarkId::from_parameter(line_count),
             &(patch, comment_lines),
             |b, (patch, comments)| {
-                b.iter(|| {
-                    black_box(build_diff_cache(
-                        black_box(patch),
-                        black_box("test.rs"),
-                        black_box("base16-ocean.dark"),
-                        black_box(comments),
-                    ))
-                });
+                b.iter_batched(
+                    ParserPool::new,
+                    |mut parser_pool| {
+                        black_box(build_diff_cache(
+                            black_box(patch),
+                            black_box("test.rs"),
+                            black_box("base16-ocean.dark"),
+                            black_box(comments),
+                            black_box(&mut parser_pool),
+                        ))
+                    },
+                    criterion::BatchSize::SmallInput,
+                );
             },
         );
     }
@@ -66,15 +71,20 @@ fn bench_build_diff_cache_no_highlight(c: &mut Criterion) {
             BenchmarkId::from_parameter(line_count),
             &(patch, comment_lines),
             |b, (patch, comments)| {
-                b.iter(|| {
-                    // Use an unknown extension to skip syntax highlighting
-                    black_box(build_diff_cache(
-                        black_box(patch),
-                        black_box("file.unknown_ext"),
-                        black_box("base16-ocean.dark"),
-                        black_box(comments),
-                    ))
-                });
+                b.iter_batched(
+                    ParserPool::new,
+                    |mut parser_pool| {
+                        // Use an unknown extension to skip syntax highlighting
+                        black_box(build_diff_cache(
+                            black_box(patch),
+                            black_box("file.unknown_ext"),
+                            black_box("base16-ocean.dark"),
+                            black_box(comments),
+                            black_box(&mut parser_pool),
+                        ))
+                    },
+                    criterion::BatchSize::SmallInput,
+                );
             },
         );
     }
@@ -92,7 +102,8 @@ fn bench_selected_line_rendering(c: &mut Criterion) {
     for line_count in [100, 500, 1000] {
         let patch = generate_diff_patch(line_count);
         let empty_comments: HashSet<usize> = HashSet::new();
-        let cache = build_diff_cache(&patch, "test.rs", "base16-ocean.dark", &empty_comments);
+        let mut parser_pool = ParserPool::new();
+        let cache = build_diff_cache(&patch, "test.rs", "base16-ocean.dark", &empty_comments, &mut parser_pool);
 
         // Benchmark current approach: resolve and clone each span, add REVERSED
         group.bench_with_input(
@@ -167,7 +178,8 @@ fn bench_visible_range_processing(c: &mut Criterion) {
     for total_lines in [1000, 5000] {
         let patch = generate_diff_patch(total_lines);
         let empty_comments: HashSet<usize> = HashSet::new();
-        let cache = build_diff_cache(&patch, "test.rs", "base16-ocean.dark", &empty_comments);
+        let mut parser_pool = ParserPool::new();
+        let cache = build_diff_cache(&patch, "test.rs", "base16-ocean.dark", &empty_comments, &mut parser_pool);
 
         let visible_height = 50_usize;
         let scroll_offset = total_lines / 2; // Scroll to middle
@@ -244,7 +256,8 @@ fn bench_archive_selected_line(c: &mut Criterion) {
     for line_count in [100, 500, 1000] {
         let patch = generate_diff_patch(line_count);
         let empty_comments: HashSet<usize> = HashSet::new();
-        let cache = build_diff_cache(&patch, "test.rs", "base16-ocean.dark", &empty_comments);
+        let mut parser_pool = ParserPool::new();
+        let cache = build_diff_cache(&patch, "test.rs", "base16-ocean.dark", &empty_comments, &mut parser_pool);
 
         group.bench_with_input(
             BenchmarkId::new("line_style", line_count),
@@ -295,7 +308,8 @@ fn bench_archive_visible_range(c: &mut Criterion) {
     for total_lines in [1000, 5000] {
         let patch = generate_diff_patch(total_lines);
         let empty_comments: HashSet<usize> = HashSet::new();
-        let cache = build_diff_cache(&patch, "test.rs", "base16-ocean.dark", &empty_comments);
+        let mut parser_pool = ParserPool::new();
+        let cache = build_diff_cache(&patch, "test.rs", "base16-ocean.dark", &empty_comments, &mut parser_pool);
 
         let visible_height = 50_usize;
         let scroll_offset = total_lines / 2;
