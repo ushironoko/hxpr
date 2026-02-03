@@ -102,7 +102,9 @@ pub enum OrchestratorCommand {
     ClarificationResponse(String),
     /// User granted or denied permission
     PermissionResponse(bool),
-    /// User requested abort
+    /// User chose to skip clarification (continue with best judgment)
+    SkipClarification,
+    /// User requested abort (stop the rally entirely)
     Abort,
 }
 
@@ -385,7 +387,7 @@ impl Orchestrator {
                                 }
                                 // Continue to next iteration
                             }
-                            Some(OrchestratorCommand::Abort) => {
+                            Some(OrchestratorCommand::SkipClarification) => {
                                 // Clarification skipped - continue with best judgment
                                 self.send_event(RallyEvent::Log(format!(
                                     "Clarification skipped for: {}. Continuing with best judgment...",
@@ -396,6 +398,24 @@ impl Orchestrator {
                                 let prompt = build_clarification_skipped_prompt(question);
                                 match self.reviewee_adapter.continue_reviewee(&prompt).await {
                                     Ok(output) => {
+                                        // Write history entry for the follow-up fix
+                                        if let Err(e) = write_history_entry(
+                                            &self.repo,
+                                            self.pr_number,
+                                            iteration,
+                                            &HistoryEntryType::Fix(output.clone()),
+                                        ) {
+                                            warn!("Failed to write follow-up fix history: {}", e);
+                                        }
+
+                                        // Post fix comment to PR
+                                        if let Err(e) = self.post_fix_comment(&output).await {
+                                            warn!(
+                                                "Failed to post follow-up fix comment to PR: {}",
+                                                e
+                                            );
+                                        }
+
                                         self.send_event(RallyEvent::FixCompleted(output.clone()))
                                             .await;
                                         self.last_fix = Some(output);
@@ -415,11 +435,11 @@ impl Orchestrator {
                                 self.send_event(RallyEvent::StateChanged(RallyState::RevieweeFix))
                                     .await;
                                 let _ = write_session(&self.session);
-                                // Continue loop (removed return)
+                                // Continue loop
                             }
-                            None => {
-                                // Channel closed - this is a true abort
-                                let reason = "Command channel closed".to_string();
+                            Some(OrchestratorCommand::Abort) | None => {
+                                // True abort - user cancelled or channel closed
+                                let reason = "Clarification cancelled by user".to_string();
                                 self.session.update_state(RallyState::Aborted);
                                 let _ = write_session(&self.session);
                                 self.send_event(RallyEvent::Log(reason.clone())).await;
@@ -486,6 +506,24 @@ impl Orchestrator {
                                         build_permission_denied_prompt(&perm.action, &perm.reason);
                                     match self.reviewee_adapter.continue_reviewee(&prompt).await {
                                         Ok(output) => {
+                                            // Write history entry for the follow-up fix
+                                            if let Err(e) = write_history_entry(
+                                                &self.repo,
+                                                self.pr_number,
+                                                iteration,
+                                                &HistoryEntryType::Fix(output.clone()),
+                                            ) {
+                                                warn!(
+                                                    "Failed to write follow-up fix history: {}",
+                                                    e
+                                                );
+                                            }
+
+                                            // Post fix comment to PR
+                                            if let Err(e) = self.post_fix_comment(&output).await {
+                                                warn!("Failed to post follow-up fix comment to PR: {}", e);
+                                            }
+
                                             self.send_event(RallyEvent::FixCompleted(
                                                 output.clone(),
                                             ))
@@ -510,7 +548,7 @@ impl Orchestrator {
                                     ))
                                     .await;
                                     let _ = write_session(&self.session);
-                                    // Continue loop (removed return)
+                                    // Continue loop
                                 }
                             }
                             Some(OrchestratorCommand::Abort) | None => {
@@ -522,7 +560,8 @@ impl Orchestrator {
                                     .await;
                                 return Ok(RallyResult::Aborted { iteration, reason });
                             }
-                            Some(OrchestratorCommand::ClarificationResponse(_)) => {
+                            Some(OrchestratorCommand::ClarificationResponse(_))
+                            | Some(OrchestratorCommand::SkipClarification) => {
                                 // Ignore invalid command
                                 let reason = format!("Permission needed: {}", perm.action);
                                 self.session.update_state(RallyState::Aborted);
@@ -994,6 +1033,10 @@ mod tests {
             _ => panic!("Expected PermissionResponse"),
         }
 
+        // Test SkipClarification
+        let cmd = OrchestratorCommand::SkipClarification;
+        assert!(matches!(cmd, OrchestratorCommand::SkipClarification));
+
         // Test Abort
         let cmd = OrchestratorCommand::Abort;
         assert!(matches!(cmd, OrchestratorCommand::Abort));
@@ -1052,6 +1095,18 @@ mod tests {
             }
             _ => panic!("Expected PermissionResponse"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_command_channel_skip_clarification() {
+        let (tx, mut rx) = mpsc::channel::<OrchestratorCommand>(1);
+
+        tx.send(OrchestratorCommand::SkipClarification)
+            .await
+            .unwrap();
+
+        let cmd = rx.recv().await.unwrap();
+        assert!(matches!(cmd, OrchestratorCommand::SkipClarification));
     }
 
     #[tokio::test]

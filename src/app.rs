@@ -1697,8 +1697,8 @@ impl App {
                         }
                     }
                     RallyState::WaitingForClarification => {
-                        // Send abort (skip clarification)
-                        self.send_rally_command(OrchestratorCommand::Abort);
+                        // Send skip clarification (continue with best judgment)
+                        self.send_rally_command(OrchestratorCommand::SkipClarification);
                         // Clear pending question - state change is delegated to Orchestrator's StateChanged event
                         if let Some(ref mut rally_state) = self.ai_rally_state {
                             rally_state.pending_question = None;
