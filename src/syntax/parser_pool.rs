@@ -3,15 +3,18 @@
 //! Parsers are relatively heavy objects (~200KB each), so we maintain a pool
 //! to reuse them across multiple files rather than creating new ones for each file.
 
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
-use tree_sitter::{Language, Parser};
+use tree_sitter::Parser;
+
+use crate::language::SupportedLanguage;
 
 /// Pool of tree-sitter parsers, one per language.
 ///
 /// Parsers are lazily created on first use and reused for subsequent parses.
 /// This avoids the overhead of creating a new parser for each file.
 pub struct ParserPool {
-    parsers: HashMap<&'static str, Parser>,
+    parsers: HashMap<SupportedLanguage, Parser>,
 }
 
 impl Default for ParserPool {
@@ -32,47 +35,24 @@ impl ParserPool {
     ///
     /// Returns `None` if the extension is not supported by tree-sitter.
     pub fn get_or_create(&mut self, ext: &str) -> Option<&mut Parser> {
-        // Map extension to a static key for the HashMap
-        let key = match ext {
-            "rs" => "rs",
-            "ts" => "ts",
-            "tsx" => "tsx",
-            "js" => "js",
-            "jsx" => "jsx",
-            "go" => "go",
-            "py" => "py",
-            _ => return None,
-        };
+        let lang = SupportedLanguage::from_extension(ext)?;
 
         // If parser doesn't exist, create it
-        if !self.parsers.contains_key(key) {
-            let language = get_language(key)?;
+        if let Entry::Vacant(e) = self.parsers.entry(lang) {
+            let ts_language = lang.ts_language();
             let mut parser = Parser::new();
-            if parser.set_language(&language).is_err() {
+            if parser.set_language(&ts_language).is_err() {
                 return None;
             }
-            self.parsers.insert(key, parser);
+            e.insert(parser);
         }
 
-        self.parsers.get_mut(key)
+        self.parsers.get_mut(&lang)
     }
 
     /// Check if tree-sitter supports the given file extension.
     pub fn supports_extension(ext: &str) -> bool {
-        matches!(ext, "rs" | "ts" | "tsx" | "js" | "jsx" | "go" | "py")
-    }
-}
-
-/// Get the tree-sitter Language for a file extension.
-fn get_language(ext: &str) -> Option<Language> {
-    match ext {
-        "rs" => Some(tree_sitter_rust::LANGUAGE.into()),
-        "ts" => Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
-        "tsx" => Some(tree_sitter_typescript::LANGUAGE_TSX.into()),
-        "js" | "jsx" => Some(tree_sitter_javascript::LANGUAGE.into()),
-        "go" => Some(tree_sitter_go::LANGUAGE.into()),
-        "py" => Some(tree_sitter_python::LANGUAGE.into()),
-        _ => None,
+        SupportedLanguage::is_supported(ext)
     }
 }
 

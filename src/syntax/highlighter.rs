@@ -7,11 +7,11 @@ use std::collections::HashMap;
 
 use lasso::Rodeo;
 use ratatui::style::Style;
-use std::sync::OnceLock;
 use syntect::easy::HighlightLines;
 use tree_sitter::{Language, Parser, Query, QueryCursor, StreamingIterator, Tree};
 
 use crate::app::InternedSpan;
+use crate::language::SupportedLanguage;
 
 use super::parser_pool::ParserPool;
 use super::themes::ThemeStyleCache;
@@ -79,8 +79,10 @@ impl<'a> Highlighter<'a> {
             .unwrap_or("");
 
         // Try tree-sitter first
-        if let Some(parser) = parser_pool.get_or_create(ext) {
-            if let Some((language, query_source)) = get_language_and_query(ext) {
+        if let Some(lang) = SupportedLanguage::from_extension(ext) {
+            if let Some(parser) = parser_pool.get_or_create(ext) {
+                let language = lang.ts_language();
+                let query_source = lang.highlights_query();
                 // Pre-create query to get capture names
                 if let Ok(query) = Query::new(&language, query_source) {
                     let capture_names = query
@@ -355,61 +357,6 @@ fn highlight_with_syntect(
                 style: Style::default(),
             }]
         }
-    }
-}
-
-/// Combined TypeScript highlights query (JavaScript base + TypeScript-specific).
-///
-/// TypeScript's HIGHLIGHTS_QUERY only contains TypeScript-specific patterns
-/// (abstract, declare, enum, etc.) and expects to inherit JavaScript patterns.
-/// We combine them here for complete highlighting.
-static TYPESCRIPT_COMBINED_QUERY: OnceLock<String> = OnceLock::new();
-
-fn get_typescript_combined_query() -> &'static str {
-    TYPESCRIPT_COMBINED_QUERY.get_or_init(|| {
-        format!(
-            "{}\n{}",
-            tree_sitter_javascript::HIGHLIGHT_QUERY,
-            tree_sitter_typescript::HIGHLIGHTS_QUERY
-        )
-    })
-}
-
-/// Get the language and query source for a file extension.
-///
-/// Uses the `HIGHLIGHTS_QUERY` constants exported by each tree-sitter crate,
-/// which are the official highlight queries maintained by the grammar authors.
-///
-/// Note: TypeScript and TSX use a combined query that includes JavaScript
-/// patterns, since tree-sitter-typescript's query only contains TS-specific
-/// additions.
-fn get_language_and_query(ext: &str) -> Option<(Language, &'static str)> {
-    match ext {
-        "rs" => Some((
-            tree_sitter_rust::LANGUAGE.into(),
-            tree_sitter_rust::HIGHLIGHTS_QUERY,
-        )),
-        "ts" => Some((
-            tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-            get_typescript_combined_query(),
-        )),
-        "tsx" => Some((
-            tree_sitter_typescript::LANGUAGE_TSX.into(),
-            get_typescript_combined_query(),
-        )),
-        "js" | "jsx" => Some((
-            tree_sitter_javascript::LANGUAGE.into(),
-            tree_sitter_javascript::HIGHLIGHT_QUERY,
-        )),
-        "go" => Some((
-            tree_sitter_go::LANGUAGE.into(),
-            tree_sitter_go::HIGHLIGHTS_QUERY,
-        )),
-        "py" => Some((
-            tree_sitter_python::LANGUAGE.into(),
-            tree_sitter_python::HIGHLIGHTS_QUERY,
-        )),
-        _ => None,
     }
 }
 

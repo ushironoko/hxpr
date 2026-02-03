@@ -4,58 +4,43 @@
 //! and searching for definitions within diff patches and repositories.
 
 use std::path::Path;
+use std::sync::OnceLock;
 
 use anyhow::Result;
 use tokio::process::Command;
 
 use crate::diff::{classify_line, LineType};
 use crate::github::ChangedFile;
-
-/// Definition keyword prefixes for multi-language support.
-///
-/// Each entry is a keyword (including trailing space) that precedes a symbol name
-/// in a definition context.
-const DEFINITION_PREFIXES: &[&str] = &[
-    // Rust
-    "fn ",
-    "pub fn ",
-    "pub(crate) fn ",
-    "pub(super) fn ",
-    "struct ",
-    "pub struct ",
-    "enum ",
-    "pub enum ",
-    "trait ",
-    "pub trait ",
-    "type ",
-    "pub type ",
-    "const ",
-    "pub const ",
-    "static ",
-    "pub static ",
-    "mod ",
-    "pub mod ",
-    "impl ",
-    "impl<",
-    // TypeScript / JavaScript
-    "function ",
-    "export function ",
-    "class ",
-    "interface ",
-    "export class ",
-    "export interface ",
-    "export type ",
-    "export enum ",
-    "export const ",
-    // Python
-    "def ",
-    // Go
-    "func ",
-    "var ",
-];
+use crate::language::SupportedLanguage;
 
 /// Grep pattern for definition search across repository.
-const GREP_DEFINITION_PATTERN: &str = r"(fn |pub fn |pub\(crate\) fn |pub\(super\) fn |struct |pub struct |enum |pub enum |trait |pub trait |type |pub type |const |pub const |static |pub static |mod |pub mod |impl |impl<|function |export function |class |interface |export class |export interface |export type |export enum |export const |def |func |var )";
+///
+/// Dynamically generated from `SupportedLanguage::all_definition_prefixes()`.
+fn grep_definition_pattern() -> &'static str {
+    static PATTERN: OnceLock<String> = OnceLock::new();
+    PATTERN.get_or_init(|| {
+        let prefixes = SupportedLanguage::all_definition_prefixes();
+        let escaped: Vec<String> = prefixes
+            .iter()
+            .map(|p| {
+                // Escape regex special characters
+                p.chars()
+                    .map(|c| match c {
+                        '(' | ')' | '<' | '>' | '[' | ']' | '{' | '}' | '|' | '\\' | '.' | '*'
+                        | '+' | '?' | '^' | '$' => {
+                            let mut s = String::with_capacity(2);
+                            s.push('\\');
+                            s.push(c);
+                            s
+                        }
+                        _ => c.to_string(),
+                    })
+                    .collect::<String>()
+            })
+            .collect();
+        format!("({})", escaped.join("|"))
+    })
+}
 
 /// Directories excluded from grep search.
 const EXCLUDED_DIRS: &[&str] = &[
@@ -155,28 +140,7 @@ pub fn extract_all_identifiers(content: &str) -> Vec<(String, usize, usize)> {
 
 /// Common keywords that should be excluded from symbol popup candidates.
 fn is_common_keyword(word: &str) -> bool {
-    matches!(
-        word,
-        // Rust
-        "fn" | "pub" | "let" | "mut" | "const" | "static" | "struct" | "enum"
-        | "trait" | "impl" | "mod" | "use" | "crate" | "self" | "super"
-        | "where" | "for" | "in" | "if" | "else" | "match" | "return"
-        | "break" | "continue" | "loop" | "while" | "as" | "ref" | "move"
-        | "async" | "await" | "dyn" | "type" | "true" | "false" | "Some"
-        | "None" | "Ok" | "Err" | "Self"
-        // TypeScript / JavaScript
-        | "function" | "class" | "interface" | "export" | "import" | "from"
-        | "default" | "var" | "new" | "this" | "typeof" | "instanceof"
-        | "void" | "null" | "undefined" | "try" | "catch" | "throw"
-        | "finally" | "yield" | "delete" | "switch" | "case"
-        // Python
-        | "def" | "pass" | "raise" | "with"
-        | "lambda" | "global" | "nonlocal" | "assert" | "del" | "not"
-        | "and" | "or" | "is" | "elif" | "except"
-        // Go
-        | "func" | "package" | "defer" | "go" | "select" | "chan"
-        | "fallthrough" | "range" | "map"
-    )
+    SupportedLanguage::all_keywords().contains(&word)
 }
 
 /// Check if a line imports the given symbol via `use` (Rust) or `import` (JS/TS/Python).
@@ -265,7 +229,7 @@ pub fn is_import_line(content: &str, symbol: &str) -> bool {
 pub fn is_definition_line(content: &str, symbol: &str) -> bool {
     let trimmed = content.trim_start();
 
-    for prefix in DEFINITION_PREFIXES {
+    for prefix in SupportedLanguage::all_definition_prefixes() {
         if let Some(rest) = trimmed.strip_prefix(prefix) {
             // Check if rest starts with the symbol
             if let Some(after_symbol) = rest.strip_prefix(symbol) {
@@ -371,7 +335,11 @@ pub async fn find_definition_in_repo(
     symbol: &str,
     repo_root: &Path,
 ) -> Result<Option<(String, usize)>> {
-    let pattern = format!("{}{}", GREP_DEFINITION_PATTERN, regex_escape(symbol, true));
+    let pattern = format!(
+        "{}{}",
+        grep_definition_pattern(),
+        regex_escape(symbol, true)
+    );
 
     let mut cmd = Command::new("grep");
     cmd.arg("-rnE").arg(&pattern);
