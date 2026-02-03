@@ -50,11 +50,17 @@ cp target/release/or ~/.local/bin/
 ## 使い方
 
 ```bash
-# 現在のリポジトリの PR 一覧を開く（git remote から自動検出）
+# 1. 設定ファイルを初期化（AI Rally を使う場合は推奨）
+or init
+
+# 2. 現在のリポジトリの PR 一覧を開く（git remote から自動検出）
 or
 
-# 特定の PR を開く
+# 3. 特定の PR を開く
 or --repo owner/repo --pr 123
+
+# 4. AI Rally を直接開始
+or --pr 123 --ai-rally
 ```
 
 ### オプション

@@ -50,11 +50,17 @@ cp target/release/or ~/.local/bin/
 ## Usage
 
 ```bash
-# Open PR list for current repository (auto-detected from git remote)
+# 1. Initialize config (recommended for AI Rally)
+or init
+
+# 2. Open PR list for current repository (auto-detected from git remote)
 or
 
-# Open specific PR
+# 3. Open specific PR
 or --repo owner/repo --pr 123
+
+# 4. Start AI Rally directly on a PR
+or --pr 123 --ai-rally
 ```
 
 ### Options
