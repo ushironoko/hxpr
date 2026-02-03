@@ -1686,26 +1686,27 @@ impl App {
                     RallyState::WaitingForPermission => {
                         // Send permission denied
                         self.send_rally_command(OrchestratorCommand::PermissionResponse(false));
-                        // Update state to prevent duplicate sends
+                        // Clear pending permission - state change is delegated to Orchestrator's StateChanged event
                         if let Some(ref mut rally_state) = self.ai_rally_state {
                             rally_state.pending_permission = None;
-                            rally_state.state = RallyState::Aborted;
+                            // Do NOT change rally_state.state here - let Orchestrator's StateChanged event handle it
                             rally_state.push_log(LogEntry::new(
                                 LogEventType::Info,
-                                "Permission denied, aborting...".to_string(),
+                                "Permission denied, continuing without it...".to_string(),
                             ));
                         }
                     }
                     RallyState::WaitingForClarification => {
                         // Send abort (skip clarification)
                         self.send_rally_command(OrchestratorCommand::Abort);
-                        // Update state to prevent duplicate sends
+                        // Clear pending question - state change is delegated to Orchestrator's StateChanged event
                         if let Some(ref mut rally_state) = self.ai_rally_state {
                             rally_state.pending_question = None;
-                            rally_state.state = RallyState::Aborted;
+                            // Do NOT change rally_state.state here - let Orchestrator's StateChanged event handle it
                             rally_state.push_log(LogEntry::new(
                                 LogEventType::Info,
-                                "Clarification skipped, aborting...".to_string(),
+                                "Clarification skipped, continuing with best judgment..."
+                                    .to_string(),
                             ));
                         }
                     }

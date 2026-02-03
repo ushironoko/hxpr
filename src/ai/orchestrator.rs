@@ -15,7 +15,10 @@ use super::adapter::{
 };
 use super::adapters::create_adapter;
 use super::prompt_loader::PromptLoader;
-use super::prompts::{build_clarification_prompt, build_permission_granted_prompt};
+use super::prompts::{
+    build_clarification_prompt, build_clarification_skipped_prompt, build_permission_denied_prompt,
+    build_permission_granted_prompt,
+};
 use super::session::{write_history_entry, write_session, HistoryEntryType, RallySession};
 
 /// Bot suffixes to identify bot users
@@ -382,8 +385,41 @@ impl Orchestrator {
                                 }
                                 // Continue to next iteration
                             }
-                            Some(OrchestratorCommand::Abort) | None => {
-                                let reason = format!("Clarification aborted: {}", question);
+                            Some(OrchestratorCommand::Abort) => {
+                                // Clarification skipped - continue with best judgment
+                                self.send_event(RallyEvent::Log(format!(
+                                    "Clarification skipped for: {}. Continuing with best judgment...",
+                                    question
+                                )))
+                                .await;
+
+                                let prompt = build_clarification_skipped_prompt(question);
+                                match self.reviewee_adapter.continue_reviewee(&prompt).await {
+                                    Ok(output) => {
+                                        self.send_event(RallyEvent::FixCompleted(output.clone()))
+                                            .await;
+                                        self.last_fix = Some(output);
+                                    }
+                                    Err(e) => {
+                                        self.last_fix = None;
+                                        self.send_event(RallyEvent::Log(format!(
+                                            "Error continuing after clarification skip: {}. Proceeding to re-review.",
+                                            e
+                                        )))
+                                        .await;
+                                    }
+                                }
+
+                                // Notify TUI of state change
+                                self.session.update_state(RallyState::RevieweeFix);
+                                self.send_event(RallyEvent::StateChanged(RallyState::RevieweeFix))
+                                    .await;
+                                let _ = write_session(&self.session);
+                                // Continue loop (removed return)
+                            }
+                            None => {
+                                // Channel closed - this is a true abort
+                                let reason = "Command channel closed".to_string();
                                 self.session.update_state(RallyState::Aborted);
                                 let _ = write_session(&self.session);
                                 self.send_event(RallyEvent::Log(reason.clone())).await;
@@ -439,14 +475,42 @@ impl Orchestrator {
                                     }
                                     // Continue to next iteration
                                 } else {
-                                    // Permission denied
-                                    let reason = format!("Permission denied: {}", perm.action);
-                                    self.session.update_state(RallyState::Aborted);
+                                    // Permission denied - continue without this permission
+                                    self.send_event(RallyEvent::Log(format!(
+                                        "Permission denied for: {}. Continuing without it...",
+                                        perm.action
+                                    )))
+                                    .await;
+
+                                    let prompt =
+                                        build_permission_denied_prompt(&perm.action, &perm.reason);
+                                    match self.reviewee_adapter.continue_reviewee(&prompt).await {
+                                        Ok(output) => {
+                                            self.send_event(RallyEvent::FixCompleted(
+                                                output.clone(),
+                                            ))
+                                            .await;
+                                            self.last_fix = Some(output);
+                                        }
+                                        Err(e) => {
+                                            // Clear last_fix to prevent referencing stale value
+                                            self.last_fix = None;
+                                            self.send_event(RallyEvent::Log(format!(
+                                                "Error continuing after permission denial: {}. Proceeding to re-review.",
+                                                e
+                                            )))
+                                            .await;
+                                        }
+                                    }
+
+                                    // Notify TUI of state change
+                                    self.session.update_state(RallyState::RevieweeFix);
+                                    self.send_event(RallyEvent::StateChanged(
+                                        RallyState::RevieweeFix,
+                                    ))
+                                    .await;
                                     let _ = write_session(&self.session);
-                                    self.send_event(RallyEvent::Log(reason.clone())).await;
-                                    self.send_event(RallyEvent::StateChanged(RallyState::Aborted))
-                                        .await;
-                                    return Ok(RallyResult::Aborted { iteration, reason });
+                                    // Continue loop (removed return)
                                 }
                             }
                             Some(OrchestratorCommand::Abort) | None => {
