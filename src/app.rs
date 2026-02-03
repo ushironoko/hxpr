@@ -1464,6 +1464,18 @@ impl App {
                     self.state = AppState::FileList;
                     return Ok(());
                 }
+
+                // Add comment (without panel)
+                if self.matches_single_key(&key, &kb.comment) {
+                    self.enter_comment_input();
+                    return Ok(());
+                }
+
+                // Add suggestion (without panel)
+                if self.matches_single_key(&key, &kb.suggestion) {
+                    self.enter_suggestion_input();
+                    return Ok(());
+                }
             }
             DiffViewVariant::Fullscreen => {
                 // Quit/back
