@@ -105,6 +105,106 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     frame.render_widget(footer, chunks[footer_chunk_idx]);
 }
 
+/// Generic comment list renderer.
+///
+/// Renders a list of comments with a loading/empty state, scrollbar, and stateful selection.
+///
+/// - `comments`: The list of comments to render (if loaded).
+/// - `loading`: Whether comments are currently loading.
+/// - `selected_index`: The index of the selected comment.
+/// - `scroll_offset`: Mutable reference to the scroll offset (updated after render).
+/// - `label`: Label for the comment type (e.g., "review comments", "discussion comments").
+/// - `format_item`: Closure to format each comment into a `ListItem`.
+#[allow(clippy::too_many_arguments)]
+fn render_comment_list_generic<T, F>(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    comments: Option<&[T]>,
+    loading: bool,
+    selected_index: usize,
+    scroll_offset: &mut usize,
+    label: &str,
+    format_item: F,
+) where
+    F: Fn(&T, usize, bool, usize) -> ListItem<'static>,
+{
+    // Loading state
+    if loading && comments.is_none() {
+        let loading_msg = Paragraph::new(format!("Loading {}...", label))
+            .style(Style::default().fg(Color::Yellow))
+            .block(Block::default().borders(Borders::ALL));
+        frame.render_widget(loading_msg, area);
+        return;
+    }
+
+    // No data state
+    let Some(items_data) = comments else {
+        let empty = Paragraph::new(format!("No {}", label))
+            .style(Style::default().fg(Color::DarkGray))
+            .block(Block::default().borders(Borders::ALL));
+        frame.render_widget(empty, area);
+        return;
+    };
+
+    // Empty state
+    if items_data.is_empty() {
+        let empty = Paragraph::new(format!("No {} found", label))
+            .style(Style::default().fg(Color::DarkGray))
+            .block(Block::default().borders(Borders::ALL));
+        frame.render_widget(empty, area);
+        return;
+    }
+
+    let available_width = area.width.saturating_sub(4) as usize;
+    let body_width = available_width.saturating_sub(4);
+
+    let items: Vec<ListItem> = items_data
+        .iter()
+        .enumerate()
+        .map(|(i, item)| {
+            let is_selected = i == selected_index;
+            format_item(item, i, is_selected, body_width)
+        })
+        .collect();
+
+    // Use ListState for stateful rendering with automatic scroll management
+    let mut list_state = ListState::default()
+        .with_offset(*scroll_offset)
+        .with_selected(Some(selected_index));
+
+    let block = Block::default().borders(Borders::ALL);
+    let total_items = items_data.len();
+
+    let list = List::new(items).block(block).highlight_style(
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    );
+    frame.render_stateful_widget(list, area, &mut list_state);
+
+    // Update scroll offset from ListState for next frame
+    *scroll_offset = list_state.offset();
+
+    // Render scrollbar if there are more items than visible
+    if total_items > 1 {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("▲"))
+            .end_symbol(Some("▼"));
+
+        let mut scrollbar_state =
+            ScrollbarState::new(total_items.saturating_sub(1)).position(selected_index);
+
+        frame.render_stateful_widget(
+            scrollbar,
+            area.inner(Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
+            &mut scrollbar_state,
+        );
+    }
+}
+
 fn render_tab_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let review_count = app.review_comments.as_ref().map(|c| c.len()).unwrap_or(0);
     let discussion_count = app
@@ -164,40 +264,18 @@ fn render_tab_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
 }
 
 fn render_review_comments(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
-    if app.comments_loading && app.review_comments.is_none() {
-        let loading = Paragraph::new("Loading review comments...")
-            .style(Style::default().fg(Color::Yellow))
-            .block(Block::default().borders(Borders::ALL));
-        frame.render_widget(loading, area);
-        return;
-    }
+    use crate::github::comment::ReviewComment;
 
-    let Some(ref comments) = app.review_comments else {
-        let empty = Paragraph::new("No review comments")
-            .style(Style::default().fg(Color::DarkGray))
-            .block(Block::default().borders(Borders::ALL));
-        frame.render_widget(empty, area);
-        return;
-    };
-
-    if comments.is_empty() {
-        let empty = Paragraph::new("No review comments found")
-            .style(Style::default().fg(Color::DarkGray))
-            .block(Block::default().borders(Borders::ALL));
-        frame.render_widget(empty, area);
-        return;
-    }
-
-    let available_width = area.width.saturating_sub(4) as usize;
-    let body_width = available_width.saturating_sub(4);
-
-    let items: Vec<ListItem> = comments
-        .iter()
-        .enumerate()
-        .map(|(i, comment)| {
-            let is_selected = i == app.selected_comment;
+    render_comment_list_generic(
+        frame,
+        area,
+        app.review_comments.as_deref(),
+        app.comments_loading,
+        app.selected_comment,
+        &mut app.comment_list_scroll_offset,
+        "review comments",
+        |comment: &ReviewComment, _i: usize, is_selected: bool, body_width: usize| {
             let prefix = if is_selected { "> " } else { "  " };
-
             let line_info = comment.line.map(|l| format!(":{}", l)).unwrap_or_default();
             let header_line = Line::from(vec![
                 Span::raw(prefix),
@@ -222,80 +300,22 @@ fn render_review_comments(frame: &mut Frame, app: &mut App, area: ratatui::layou
             lines.push(Line::from(""));
 
             ListItem::new(lines)
-        })
-        .collect();
-
-    // Use ListState for stateful rendering with automatic scroll management
-    let mut list_state = ListState::default()
-        .with_offset(app.comment_list_scroll_offset)
-        .with_selected(Some(app.selected_comment));
-
-    let block = Block::default().borders(Borders::ALL);
-    let total_items = comments.len();
-
-    let list = List::new(items).block(block).highlight_style(
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD),
+        },
     );
-    frame.render_stateful_widget(list, area, &mut list_state);
-
-    // Update scroll offset from ListState for next frame
-    app.comment_list_scroll_offset = list_state.offset();
-
-    // Render scrollbar if there are more items than visible
-    if total_items > 1 {
-        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-            .begin_symbol(Some("▲"))
-            .end_symbol(Some("▼"));
-
-        let mut scrollbar_state =
-            ScrollbarState::new(total_items.saturating_sub(1)).position(app.selected_comment);
-
-        frame.render_stateful_widget(
-            scrollbar,
-            area.inner(Margin {
-                vertical: 1,
-                horizontal: 0,
-            }),
-            &mut scrollbar_state,
-        );
-    }
 }
 
 fn render_discussion_comments(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
-    if app.discussion_comments_loading && app.discussion_comments.is_none() {
-        let loading = Paragraph::new("Loading discussion comments...")
-            .style(Style::default().fg(Color::Yellow))
-            .block(Block::default().borders(Borders::ALL));
-        frame.render_widget(loading, area);
-        return;
-    }
+    use crate::github::comment::DiscussionComment;
 
-    let Some(ref comments) = app.discussion_comments else {
-        let empty = Paragraph::new("No discussion comments")
-            .style(Style::default().fg(Color::DarkGray))
-            .block(Block::default().borders(Borders::ALL));
-        frame.render_widget(empty, area);
-        return;
-    };
-
-    if comments.is_empty() {
-        let empty = Paragraph::new("No discussion comments found")
-            .style(Style::default().fg(Color::DarkGray))
-            .block(Block::default().borders(Borders::ALL));
-        frame.render_widget(empty, area);
-        return;
-    }
-
-    let available_width = area.width.saturating_sub(4) as usize;
-    let body_width = available_width.saturating_sub(4);
-
-    let items: Vec<ListItem> = comments
-        .iter()
-        .enumerate()
-        .map(|(i, comment)| {
-            let is_selected = i == app.selected_discussion_comment;
+    render_comment_list_generic(
+        frame,
+        area,
+        app.discussion_comments.as_deref(),
+        app.discussion_comments_loading,
+        app.selected_discussion_comment,
+        &mut app.discussion_comment_list_scroll_offset,
+        "discussion comments",
+        |comment: &DiscussionComment, _i: usize, is_selected: bool, body_width: usize| {
             let prefix = if is_selected { "> " } else { "  " };
 
             // Format created_at to a shorter form (just the date part)
@@ -331,45 +351,8 @@ fn render_discussion_comments(frame: &mut Frame, app: &mut App, area: ratatui::l
             lines.push(Line::from(""));
 
             ListItem::new(lines)
-        })
-        .collect();
-
-    // Use ListState for stateful rendering with automatic scroll management
-    let mut list_state = ListState::default()
-        .with_offset(app.discussion_comment_list_scroll_offset)
-        .with_selected(Some(app.selected_discussion_comment));
-
-    let block = Block::default().borders(Borders::ALL);
-
-    let list = List::new(items).block(block).highlight_style(
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD),
+        },
     );
-    frame.render_stateful_widget(list, area, &mut list_state);
-
-    // Update scroll offset from ListState for next frame
-    app.discussion_comment_list_scroll_offset = list_state.offset();
-
-    // Render scrollbar if there are more items than visible
-    let total_items = comments.len();
-    if total_items > 1 {
-        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-            .begin_symbol(Some("▲"))
-            .end_symbol(Some("▼"));
-
-        let mut scrollbar_state = ScrollbarState::new(total_items.saturating_sub(1))
-            .position(app.selected_discussion_comment);
-
-        frame.render_stateful_widget(
-            scrollbar,
-            area.inner(Margin {
-                vertical: 1,
-                horizontal: 0,
-            }),
-            &mut scrollbar_state,
-        );
-    }
 }
 
 fn render_discussion_detail(frame: &mut Frame, app: &App) {

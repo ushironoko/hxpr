@@ -1,5 +1,6 @@
 mod claude;
 mod codex;
+mod common;
 
 pub use claude::ClaudeAdapter;
 pub use codex::CodexAdapter;

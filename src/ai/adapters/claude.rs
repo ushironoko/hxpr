@@ -592,42 +592,7 @@ struct ClaudeResponse {
     duration_ms: Option<u64>,
 }
 
-/// Raw reviewer output from Claude
-#[derive(Debug, Deserialize)]
-struct RawReviewerOutput {
-    action: String,
-    summary: String,
-    comments: Vec<RawReviewComment>,
-    blocking_issues: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawReviewComment {
-    path: String,
-    line: u32,
-    body: String,
-    severity: String,
-}
-
-/// Raw reviewee output from Claude
-#[derive(Debug, Deserialize)]
-struct RawRevieweeOutput {
-    status: String,
-    summary: String,
-    files_modified: Vec<String>,
-    #[serde(default)]
-    question: Option<String>,
-    #[serde(default)]
-    permission_request: Option<RawPermissionRequest>,
-    #[serde(default)]
-    error_details: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawPermissionRequest {
-    action: String,
-    reason: String,
-}
+use super::common::{RawRevieweeOutput, RawReviewerOutput};
 
 fn parse_reviewer_output(response: &ClaudeResponse) -> Result<ReviewerOutput> {
     let result = response

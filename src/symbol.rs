@@ -371,7 +371,7 @@ pub async fn find_definition_in_repo(
     symbol: &str,
     repo_root: &Path,
 ) -> Result<Option<(String, usize)>> {
-    let pattern = format!("{}{}", GREP_DEFINITION_PATTERN, regex_escape(symbol));
+    let pattern = format!("{}{}", GREP_DEFINITION_PATTERN, regex_escape(symbol, true));
 
     let mut cmd = Command::new("grep");
     cmd.arg("-rnE").arg(&pattern);
@@ -405,7 +405,7 @@ pub async fn find_definition_in_repo(
     // Fall back to import/use statement search
     let import_pattern = format!(
         r"(use .*\b{sym}\b|import .*\b{sym}\b|from .* import .*\b{sym}\b)",
-        sym = regex_escape_word(symbol)
+        sym = regex_escape(symbol, false)
     );
 
     let mut cmd = Command::new("grep");
@@ -441,9 +441,12 @@ pub async fn find_definition_in_repo(
 }
 
 /// Simple regex escape for symbol names (alphanumeric + underscore).
-/// Appends a non-ident-char assertion for word boundary after symbol.
-fn regex_escape(s: &str) -> String {
-    let mut escaped = String::with_capacity(s.len());
+///
+/// - `add_word_boundary`: if true, appends `[^a-zA-Z0-9_]` assertion for word boundary after symbol.
+///   Set to false when the pattern already has its own boundary logic (e.g., `\b`).
+fn regex_escape(s: &str, add_word_boundary: bool) -> String {
+    let extra_cap = if add_word_boundary { 16 } else { 0 };
+    let mut escaped = String::with_capacity(s.len() + extra_cap);
     for c in s.chars() {
         if is_ident_char(c) {
             escaped.push(c);
@@ -452,22 +455,8 @@ fn regex_escape(s: &str) -> String {
             escaped.push(c);
         }
     }
-    // Add word boundary after symbol
-    escaped.push_str("[^a-zA-Z0-9_]");
-    escaped
-}
-
-/// Regex escape for symbol names without trailing boundary assertion.
-/// Used in patterns that already have their own boundary logic (e.g., `\b`).
-fn regex_escape_word(s: &str) -> String {
-    let mut escaped = String::with_capacity(s.len());
-    for c in s.chars() {
-        if is_ident_char(c) {
-            escaped.push(c);
-        } else {
-            escaped.push('\\');
-            escaped.push(c);
-        }
+    if add_word_boundary {
+        escaped.push_str("[^a-zA-Z0-9_]");
     }
     escaped
 }
