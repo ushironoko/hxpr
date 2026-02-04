@@ -174,11 +174,7 @@ mod tests {
         assert!(pool.get_or_create("lhs").is_some());
     }
 
-    #[test]
-    fn test_parser_pool_svelte() {
-        let mut pool = ParserPool::new();
-        assert!(pool.get_or_create("svelte").is_some());
-    }
+    // Svelte falls back to syntect (tree-sitter-svelte-ng requires injection)
 
     #[test]
     fn test_parser_pool_unsupported() {
@@ -205,8 +201,9 @@ mod tests {
         assert!(ParserPool::supports_extension("php"));
         assert!(ParserPool::supports_extension("swift"));
         assert!(ParserPool::supports_extension("hs"));
-        assert!(ParserPool::supports_extension("svelte"));
 
+        // Svelte falls back to syntect (tree-sitter-svelte-ng requires injection)
+        assert!(!ParserPool::supports_extension("svelte"));
         assert!(!ParserPool::supports_extension("vue"));
         assert!(!ParserPool::supports_extension("yaml"));
         assert!(!ParserPool::supports_extension("md"));

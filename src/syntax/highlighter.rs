@@ -3,9 +3,9 @@
 //! Tree-sitter is used for supported languages:
 //! - Rust, TypeScript/TSX, JavaScript/JSX, Go, Python (original)
 //! - Ruby, Zig, C, C++, Java, C# (added)
-//! - Lua, Bash/Shell, PHP, Swift, Haskell, Svelte (Phase 1)
+//! - Lua, Bash/Shell, PHP, Swift, Haskell (Phase 1)
 //!
-//! Syntect is used as a fallback for other languages (Vue, YAML, Markdown, etc.).
+//! Syntect is used as a fallback for other languages (Vue, Svelte, YAML, Markdown, etc.).
 
 use std::collections::HashMap;
 

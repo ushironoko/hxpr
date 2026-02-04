@@ -35,7 +35,8 @@ pub enum SupportedLanguage {
     Swift,
     // Kotlin is excluded: highlights.scm uses #lua-match? which is not tree-sitter compatible
     Haskell,
-    Svelte,
+    // Svelte is excluded: tree-sitter-svelte-ng requires injection for <script>/<style> content
+    // which octorus doesn't support. Svelte falls back to syntect which provides better highlighting.
 }
 
 /// Combined TypeScript highlights query (JavaScript base + TypeScript-specific).
@@ -123,7 +124,7 @@ impl SupportedLanguage {
             "php" => Some(Self::Php),
             "swift" => Some(Self::Swift),
             "hs" | "lhs" => Some(Self::Haskell),
-            "svelte" => Some(Self::Svelte),
+            // Svelte falls back to syntect (better highlighting without injection)
             _ => None,
         }
     }
@@ -154,7 +155,6 @@ impl SupportedLanguage {
             Self::Php => tree_sitter_php::LANGUAGE_PHP.into(),
             Self::Swift => tree_sitter_swift::LANGUAGE.into(),
             Self::Haskell => tree_sitter_haskell::LANGUAGE.into(),
-            Self::Svelte => tree_sitter_svelte_ng::LANGUAGE.into(),
         }
     }
 
@@ -196,7 +196,6 @@ impl SupportedLanguage {
             Self::Php => tree_sitter_php::HIGHLIGHTS_QUERY,
             Self::Swift => tree_sitter_swift::HIGHLIGHTS_QUERY,
             Self::Haskell => tree_sitter_haskell::HIGHLIGHTS_QUERY,
-            Self::Svelte => tree_sitter_svelte_ng::HIGHLIGHTS_QUERY,
         }
     }
 
@@ -309,7 +308,6 @@ impl SupportedLanguage {
                 "let ",
             ],
             Self::Haskell => &["data ", "newtype ", "type ", "class ", "instance "],
-            Self::Svelte => &["function ", "const ", "let ", "export function "],
         }
     }
 
@@ -941,28 +939,6 @@ impl SupportedLanguage {
                 "True",
                 "False",
             ],
-            Self::Svelte => &[
-                // Svelte uses JavaScript keywords plus some template syntax
-                "function",
-                "class",
-                "export",
-                "import",
-                "from",
-                "const",
-                "let",
-                "var",
-                "if",
-                "else",
-                "for",
-                "while",
-                "return",
-                "true",
-                "false",
-                "null",
-                "undefined",
-                "async",
-                "await",
-            ],
         }
     }
 
@@ -1002,7 +978,6 @@ impl SupportedLanguage {
             Self::Php,
             Self::Swift,
             Self::Haskell,
-            Self::Svelte,
         ]
         .into_iter()
     }
@@ -1145,10 +1120,8 @@ mod tests {
             SupportedLanguage::from_extension("lhs"),
             Some(SupportedLanguage::Haskell)
         );
-        assert_eq!(
-            SupportedLanguage::from_extension("svelte"),
-            Some(SupportedLanguage::Svelte)
-        );
+        // Svelte falls back to syntect (better highlighting without injection)
+        assert_eq!(SupportedLanguage::from_extension("svelte"), None);
     }
 
     #[test]
@@ -1186,8 +1159,9 @@ mod tests {
         assert!(SupportedLanguage::is_supported("php"));
         assert!(SupportedLanguage::is_supported("swift"));
         assert!(SupportedLanguage::is_supported("hs"));
-        assert!(SupportedLanguage::is_supported("svelte"));
 
+        // Svelte falls back to syntect (tree-sitter-svelte-ng requires injection)
+        assert!(!SupportedLanguage::is_supported("svelte"));
         assert!(!SupportedLanguage::is_supported("vue"));
         assert!(!SupportedLanguage::is_supported("mbt"));
         assert!(!SupportedLanguage::is_supported("yaml"));
@@ -1359,7 +1333,7 @@ mod tests {
     #[test]
     fn test_all_iterator() {
         let langs: Vec<_> = SupportedLanguage::all().collect();
-        assert_eq!(langs.len(), 19);
+        assert_eq!(langs.len(), 18);
         assert!(langs.contains(&SupportedLanguage::Rust));
         assert!(langs.contains(&SupportedLanguage::TypeScript));
         assert!(langs.contains(&SupportedLanguage::TypeScriptReact));
