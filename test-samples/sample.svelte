@@ -46,6 +46,11 @@
     let isProcessing = false;
     let error: string | null = null;
 
+    // Reactive state (declare with let before reactive assignment)
+    let hasCode = false;
+    let canHighlight = false;
+    let themeClass = '';
+
     // Reactive statements
     $: hasCode = codeInput.trim().length > 0;
     $: canHighlight = hasCode && $selectedLanguage !== null && !isProcessing;

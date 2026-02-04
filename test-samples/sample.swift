@@ -3,10 +3,11 @@
 
 import Foundation
 
-// Protocol definition
+// Protocol definition with associated type for generic HighlightCapture
 protocol Highlightable {
+    associatedtype CaptureType: Highlightable
     var scopeName: String { get }
-    func highlight(in range: Range<Int>) -> [HighlightCapture]
+    func highlight(in range: Range<Int>) -> [HighlightCapture<CaptureType>]
 }
 
 // Enum with associated values
