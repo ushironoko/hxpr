@@ -1,6 +1,6 @@
 [package]
 name = "octorus"
-version = "0.2.7"
+version = "0.2.8"
 edition = "2021"
 authors = ["ushironoko"]
 description = "A TUI tool for GitHub PR review, designed for Helix editor users"
