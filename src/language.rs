@@ -41,6 +41,8 @@ pub enum SupportedLanguage {
     MoonBit,
     // Phase 3: Svelte (with injection support)
     Svelte,
+    // Phase 3: CSS (for injection support in Svelte/Vue)
+    Css,
 }
 
 /// Combined TypeScript highlights query (JavaScript base + TypeScript-specific).
@@ -147,6 +149,8 @@ impl SupportedLanguage {
             "mbt" => Some(Self::MoonBit),
             // Phase 3: Svelte
             "svelte" => Some(Self::Svelte),
+            // Phase 3: CSS (for injection support)
+            "css" => Some(Self::Css),
             _ => None,
         }
     }
@@ -181,6 +185,8 @@ impl SupportedLanguage {
             Self::MoonBit => tree_sitter_moonbit::LANGUAGE.into(),
             // Phase 3: Svelte
             Self::Svelte => tree_sitter_svelte_ng::LANGUAGE.into(),
+            // Phase 3: CSS (for injection support)
+            Self::Css => tree_sitter_css::LANGUAGE.into(),
         }
     }
 
@@ -226,6 +232,8 @@ impl SupportedLanguage {
             Self::MoonBit => tree_sitter_moonbit::HIGHLIGHTS_QUERY,
             // Phase 3: Svelte (combined with HTML)
             Self::Svelte => SVELTE_COMBINED_QUERY.as_str(),
+            // Phase 3: CSS (for injection support)
+            Self::Css => tree_sitter_css::HIGHLIGHTS_QUERY,
         }
     }
 
@@ -361,6 +369,8 @@ impl SupportedLanguage {
                 "export const ",
                 "export let ",
             ],
+            // Phase 3: CSS (for injection support)
+            Self::Css => &[],
         }
     }
 
@@ -1053,6 +1063,12 @@ impl SupportedLanguage {
                 "null",
                 "undefined",
             ],
+            // Phase 3: CSS (for injection support)
+            Self::Css => &[
+                "important", "inherit", "initial", "unset", "none", "auto", "block", "inline",
+                "flex", "grid", "absolute", "relative", "fixed", "sticky", "static", "hidden",
+                "visible", "solid", "dotted", "dashed", "transparent", "currentColor",
+            ],
         }
     }
 
@@ -1096,6 +1112,8 @@ impl SupportedLanguage {
             Self::MoonBit,
             // Phase 3: Svelte
             Self::Svelte,
+            // Phase 3: CSS (for injection)
+            Self::Css,
         ]
         .into_iter()
     }
@@ -1365,6 +1383,10 @@ mod tests {
     #[test]
     fn test_definition_prefixes_not_empty() {
         for lang in SupportedLanguage::all() {
+            // CSS is injection-only and has no definition prefixes
+            if lang == SupportedLanguage::Css {
+                continue;
+            }
             let prefixes = lang.definition_prefixes();
             assert!(
                 !prefixes.is_empty(),
@@ -1458,7 +1480,7 @@ mod tests {
     #[test]
     fn test_all_iterator() {
         let langs: Vec<_> = SupportedLanguage::all().collect();
-        assert_eq!(langs.len(), 20);
+        assert_eq!(langs.len(), 21);
         assert!(langs.contains(&SupportedLanguage::Rust));
         assert!(langs.contains(&SupportedLanguage::TypeScript));
         assert!(langs.contains(&SupportedLanguage::TypeScriptReact));
