@@ -31,11 +31,13 @@
 //! User themes override bundled themes if they have the same name.
 
 pub mod highlighter;
+pub mod injection;
 pub mod parser_pool;
 pub mod themes;
 
 pub use highlighter::{
-    apply_line_highlights, collect_line_highlights, CstParseResult, Highlighter, LineHighlights,
+    apply_line_highlights, collect_line_highlights, collect_line_highlights_with_injections,
+    CstParseResult, Highlighter, LineHighlights,
 };
 pub use parser_pool::ParserPool;
 pub use themes::ThemeStyleCache;

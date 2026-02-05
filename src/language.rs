@@ -39,6 +39,10 @@ pub enum SupportedLanguage {
     // which octorus doesn't support. Svelte falls back to syntect which provides better highlighting.
     // Phase 2: MoonBit (path dependency)
     MoonBit,
+    // Phase 3: Svelte (with injection support)
+    Svelte,
+    // Phase 3: CSS (for injection support in Svelte/Vue)
+    Css,
 }
 
 /// Combined TypeScript highlights query (JavaScript base + TypeScript-specific).
@@ -64,6 +68,21 @@ static CPP_COMBINED_QUERY: LazyLock<String> = LazyLock::new(|| {
         tree_sitter_c::HIGHLIGHT_QUERY,
         tree_sitter_cpp::HIGHLIGHT_QUERY
     )
+});
+
+/// Combined Svelte highlights query (HTML base + Svelte-specific).
+///
+/// Svelte's HIGHLIGHTS_QUERY uses `; inherits: html` which requires combining
+/// with HTML patterns for complete highlighting.
+static SVELTE_COMBINED_QUERY: LazyLock<String> = LazyLock::new(|| {
+    // Filter out "; inherits:" lines from Svelte query
+    let svelte_query: String = tree_sitter_svelte_ng::HIGHLIGHTS_QUERY
+        .lines()
+        .filter(|line| !line.trim().starts_with("; inherits:"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!("{}\n{}", tree_sitter_html::HIGHLIGHTS_QUERY, svelte_query)
 });
 
 /// C# highlights query (bundled as tree-sitter-c-sharp doesn't export it).
@@ -128,7 +147,10 @@ impl SupportedLanguage {
             "hs" | "lhs" => Some(Self::Haskell),
             // Phase 2: MoonBit
             "mbt" => Some(Self::MoonBit),
-            // Svelte falls back to syntect (better highlighting without injection)
+            // Phase 3: Svelte
+            "svelte" => Some(Self::Svelte),
+            // Phase 3: CSS (for injection support)
+            "css" => Some(Self::Css),
             _ => None,
         }
     }
@@ -136,6 +158,35 @@ impl SupportedLanguage {
     /// Check if the given file extension is supported.
     pub fn is_supported(ext: &str) -> bool {
         Self::from_extension(ext).is_some()
+    }
+
+    /// Get the default file extension for this language.
+    ///
+    /// This is used to look up the parser from the parser pool.
+    pub fn default_extension(&self) -> &'static str {
+        match self {
+            Self::Rust => "rs",
+            Self::TypeScript => "ts",
+            Self::TypeScriptReact => "tsx",
+            Self::JavaScript => "js",
+            Self::JavaScriptReact => "jsx",
+            Self::Go => "go",
+            Self::Python => "py",
+            Self::Ruby => "rb",
+            Self::Zig => "zig",
+            Self::C => "c",
+            Self::Cpp => "cpp",
+            Self::Java => "java",
+            Self::CSharp => "cs",
+            Self::Lua => "lua",
+            Self::Bash => "sh",
+            Self::Php => "php",
+            Self::Swift => "swift",
+            Self::Haskell => "hs",
+            Self::MoonBit => "mbt",
+            Self::Svelte => "svelte",
+            Self::Css => "css",
+        }
     }
 
     /// Get the tree-sitter Language for this language.
@@ -161,6 +212,10 @@ impl SupportedLanguage {
             Self::Haskell => tree_sitter_haskell::LANGUAGE.into(),
             // Phase 2: MoonBit
             Self::MoonBit => tree_sitter_moonbit::LANGUAGE.into(),
+            // Phase 3: Svelte
+            Self::Svelte => tree_sitter_svelte_ng::LANGUAGE.into(),
+            // Phase 3: CSS (for injection support)
+            Self::Css => tree_sitter_css::LANGUAGE.into(),
         }
     }
 
@@ -204,6 +259,10 @@ impl SupportedLanguage {
             Self::Haskell => tree_sitter_haskell::HIGHLIGHTS_QUERY,
             // Phase 2: MoonBit
             Self::MoonBit => tree_sitter_moonbit::HIGHLIGHTS_QUERY,
+            // Phase 3: Svelte (combined with HTML)
+            Self::Svelte => SVELTE_COMBINED_QUERY.as_str(),
+            // Phase 3: CSS (for injection support)
+            Self::Css => tree_sitter_css::HIGHLIGHTS_QUERY,
         }
     }
 
@@ -331,6 +390,16 @@ impl SupportedLanguage {
                 "pub trait ",
                 "let ",
             ],
+            // Phase 3: Svelte (uses JS/TS for script, so similar to JS)
+            Self::Svelte => &[
+                "function ",
+                "export function ",
+                "class ",
+                "export const ",
+                "export let ",
+            ],
+            // Phase 3: CSS (for injection support)
+            Self::Css => &[],
         }
     }
 
@@ -736,62 +805,15 @@ impl SupportedLanguage {
             ],
             // Phase 1: Additional languages
             Self::Lua => &[
-                "and",
-                "break",
-                "do",
-                "else",
-                "elseif",
-                "end",
-                "false",
-                "for",
-                "function",
-                "goto",
-                "if",
-                "in",
-                "local",
-                "nil",
-                "not",
-                "or",
-                "repeat",
-                "return",
-                "then",
-                "true",
-                "until",
-                "while",
+                "and", "break", "do", "else", "elseif", "end", "false", "for", "function", "goto",
+                "if", "in", "local", "nil", "not", "or", "repeat", "return", "then", "true",
+                "until", "while",
             ],
             Self::Bash => &[
-                "if",
-                "then",
-                "else",
-                "elif",
-                "fi",
-                "case",
-                "esac",
-                "for",
-                "while",
-                "until",
-                "do",
-                "done",
-                "in",
-                "function",
-                "select",
-                "time",
-                "coproc",
-                "local",
-                "return",
-                "exit",
-                "break",
-                "continue",
-                "declare",
-                "typeset",
-                "export",
-                "readonly",
-                "unset",
-                "shift",
-                "source",
-                "alias",
-                "true",
-                "false",
+                "if", "then", "else", "elif", "fi", "case", "esac", "for", "while", "until", "do",
+                "done", "in", "function", "select", "time", "coproc", "local", "return", "exit",
+                "break", "continue", "declare", "typeset", "export", "readonly", "unset", "shift",
+                "source", "alias", "true", "false",
             ],
             Self::Php => &[
                 "abstract",
@@ -964,40 +986,59 @@ impl SupportedLanguage {
             ],
             // Phase 2: MoonBit
             Self::MoonBit => &[
-                "fn",
-                "pub",
-                "priv",
+                "fn", "pub", "priv", "let", "mut", "const", "struct", "enum", "type", "trait",
+                "impl", "derive", "test", "if", "else", "match", "for", "while", "loop", "break",
+                "continue", "return", "try", "catch", "throw", "raise", "true", "false", "not",
+                "and", "or", "self", "Self", "init",
+            ],
+            // Phase 3: Svelte (uses JS/TS keywords + Svelte-specific)
+            Self::Svelte => &[
+                "export",
                 "let",
-                "mut",
                 "const",
-                "struct",
-                "enum",
-                "type",
-                "trait",
-                "impl",
-                "derive",
-                "test",
+                "function",
+                "class",
                 "if",
                 "else",
-                "match",
-                "for",
-                "while",
-                "loop",
-                "break",
-                "continue",
-                "return",
-                "try",
+                "each",
+                "await",
+                "then",
                 "catch",
-                "throw",
-                "raise",
+                "as",
+                "key",
+                "html",
+                "debug",
+                "snippet",
+                "render",
                 "true",
                 "false",
-                "not",
-                "and",
-                "or",
-                "self",
-                "Self",
-                "init",
+                "null",
+                "undefined",
+            ],
+            // Phase 3: CSS (for injection support)
+            Self::Css => &[
+                "important",
+                "inherit",
+                "initial",
+                "unset",
+                "none",
+                "auto",
+                "block",
+                "inline",
+                "flex",
+                "grid",
+                "absolute",
+                "relative",
+                "fixed",
+                "sticky",
+                "static",
+                "hidden",
+                "visible",
+                "solid",
+                "dotted",
+                "dashed",
+                "transparent",
+                "currentColor",
             ],
         }
     }
@@ -1040,6 +1081,10 @@ impl SupportedLanguage {
             Self::Haskell,
             // Phase 2: MoonBit
             Self::MoonBit,
+            // Phase 3: Svelte
+            Self::Svelte,
+            // Phase 3: CSS (for injection)
+            Self::Css,
         ]
         .into_iter()
     }
@@ -1182,8 +1227,11 @@ mod tests {
             SupportedLanguage::from_extension("lhs"),
             Some(SupportedLanguage::Haskell)
         );
-        // Svelte falls back to syntect (better highlighting without injection)
-        assert_eq!(SupportedLanguage::from_extension("svelte"), None);
+        // Phase 3: Svelte is now supported with tree-sitter
+        assert_eq!(
+            SupportedLanguage::from_extension("svelte"),
+            Some(SupportedLanguage::Svelte)
+        );
     }
 
     #[test]
@@ -1222,11 +1270,14 @@ mod tests {
         assert!(SupportedLanguage::is_supported("swift"));
         assert!(SupportedLanguage::is_supported("hs"));
 
-        // Svelte falls back to syntect (tree-sitter-svelte-ng requires injection)
-        assert!(!SupportedLanguage::is_supported("svelte"));
+        // Phase 3: Svelte is now supported
+        assert!(SupportedLanguage::is_supported("svelte"));
+        // Vue is not yet supported (requires similar injection support)
         assert!(!SupportedLanguage::is_supported("vue"));
         // Phase 2: MoonBit is now supported
         assert!(SupportedLanguage::is_supported("mbt"));
+        // Phase 3: Svelte is now supported
+        assert!(SupportedLanguage::is_supported("svelte"));
         assert!(!SupportedLanguage::is_supported("yaml"));
         assert!(!SupportedLanguage::is_supported("md"));
     }
@@ -1303,6 +1354,10 @@ mod tests {
     #[test]
     fn test_definition_prefixes_not_empty() {
         for lang in SupportedLanguage::all() {
+            // CSS is injection-only and has no definition prefixes
+            if lang == SupportedLanguage::Css {
+                continue;
+            }
             let prefixes = lang.definition_prefixes();
             assert!(
                 !prefixes.is_empty(),
@@ -1387,16 +1442,13 @@ mod tests {
             keywords.contains(&"namespace"),
             "Should contain C++/C# 'namespace'"
         );
-        assert!(
-            keywords.contains(&"trait"),
-            "Should contain Rust 'trait'"
-        );
+        assert!(keywords.contains(&"trait"), "Should contain Rust 'trait'");
     }
 
     #[test]
     fn test_all_iterator() {
         let langs: Vec<_> = SupportedLanguage::all().collect();
-        assert_eq!(langs.len(), 19);
+        assert_eq!(langs.len(), 21);
         assert!(langs.contains(&SupportedLanguage::Rust));
         assert!(langs.contains(&SupportedLanguage::TypeScript));
         assert!(langs.contains(&SupportedLanguage::TypeScriptReact));

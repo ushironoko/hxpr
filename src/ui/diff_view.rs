@@ -16,8 +16,8 @@ use crate::app::{
 };
 use crate::diff::{classify_line, LineType};
 use crate::syntax::{
-    apply_line_highlights, collect_line_highlights, get_theme, highlight_code_line,
-    syntax_for_file, Highlighter, ParserPool,
+    apply_line_highlights, collect_line_highlights, collect_line_highlights_with_injections,
+    get_theme, highlight_code_line, syntax_for_file, Highlighter, ParserPool,
 };
 
 /// Build DiffCache with syntax highlighting and string interning.
@@ -41,13 +41,23 @@ pub fn build_diff_cache(
     parser_pool: &mut ParserPool,
 ) -> DiffCache {
     let mut interner = Rodeo::default();
-    let mut highlighter = Highlighter::for_file(filename, theme_name, parser_pool);
 
     // Try to build a combined source for CST highlighting
     // For CST, we need to parse the entire content at once
     // Only includes post-change lines (added + context) to ensure valid syntax
     let (combined_source, line_mapping) = build_combined_source_for_highlight(patch);
-    let cst_result = highlighter.parse_source(&combined_source);
+
+    // Get file extension for injection support check
+    let ext = std::path::Path::new(filename)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+
+    // Create highlighter (does not borrow parser_pool)
+    let highlighter = Highlighter::for_file(filename, theme_name);
+
+    // Parse source (borrows parser_pool only for this call)
+    let cst_result = highlighter.parse_source(&combined_source, parser_pool);
 
     // Check if tree-sitter parsing succeeded
     // Note: We no longer fall back based on error count, since tree-sitter's
@@ -58,19 +68,32 @@ pub fn build_diff_cache(
 
     let lines: Vec<CachedDiffLine> = if use_cst {
         let result = cst_result.as_ref().unwrap();
-        // Get the style cache from the highlighter (guaranteed to exist for CST)
         let style_cache = highlighter
             .style_cache()
             .expect("CST highlighter should have style_cache");
+
         // CST path: use tree-sitter with full AST context
-        // Collect all highlights in a single pass (avoiding per-line tree traversal)
-        let line_highlights = collect_line_highlights(
-            &combined_source,
-            &result.tree,
-            &result.query,
-            &result.capture_names,
-            style_cache,
-        );
+        // Use injection-aware highlighting for SFC languages (Svelte)
+        let line_highlights = if ext == "svelte" {
+            collect_line_highlights_with_injections(
+                &combined_source,
+                &result.tree,
+                &result.query,
+                &result.capture_names,
+                style_cache,
+                parser_pool,
+                ext,
+            )
+        } else {
+            // Standard CST highlighting for other languages
+            collect_line_highlights(
+                &combined_source,
+                &result.tree,
+                &result.query,
+                &result.capture_names,
+                style_cache,
+            )
+        };
         build_lines_with_cst(
             patch,
             filename,

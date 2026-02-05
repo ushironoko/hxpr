@@ -183,6 +183,12 @@ mod tests {
     }
 
     #[test]
+    fn test_parser_pool_svelte() {
+        let mut pool = ParserPool::new();
+        assert!(pool.get_or_create("svelte").is_some());
+    }
+
+    #[test]
     fn test_parser_pool_unsupported() {
         let mut pool = ParserPool::new();
         assert!(pool.get_or_create("vue").is_none());
@@ -208,8 +214,9 @@ mod tests {
         assert!(ParserPool::supports_extension("swift"));
         assert!(ParserPool::supports_extension("hs"));
 
-        // Svelte falls back to syntect (tree-sitter-svelte-ng requires injection)
-        assert!(!ParserPool::supports_extension("svelte"));
+        // Phase 3: Svelte is now supported
+        assert!(ParserPool::supports_extension("svelte"));
+        // Vue is not yet supported
         assert!(!ParserPool::supports_extension("vue"));
         assert!(!ParserPool::supports_extension("yaml"));
         assert!(!ParserPool::supports_extension("md"));

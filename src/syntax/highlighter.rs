@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use lasso::Rodeo;
 use ratatui::style::Style;
 use syntect::easy::HighlightLines;
-use tree_sitter::{Language, Parser, Query, QueryCursor, StreamingIterator, Tree};
+use tree_sitter::{Language, Query, QueryCursor, StreamingIterator, Tree};
 
 use crate::app::InternedSpan;
 use crate::language::SupportedLanguage;
@@ -23,10 +23,14 @@ use super::themes::ThemeStyleCache;
 use super::{convert_syntect_style, get_theme, syntax_for_file, syntax_set};
 
 /// Unified highlighter that can use either tree-sitter or syntect.
-pub enum Highlighter<'a> {
+///
+/// This type does not hold any mutable references to `ParserPool`, allowing
+/// the pool to be borrowed again during injection processing (e.g., for Svelte).
+pub enum Highlighter {
     /// Tree-sitter CST highlighter for supported languages.
     Cst {
-        parser: &'a mut Parser,
+        /// The supported language (used to look up parser from pool)
+        supported_lang: SupportedLanguage,
         language: Language,
         query_source: &'static str,
         capture_names: Vec<String>,
@@ -34,13 +38,13 @@ pub enum Highlighter<'a> {
         style_cache: ThemeStyleCache,
     },
     /// Syntect regex-based highlighter for fallback.
-    Syntect(HighlightLines<'a>),
+    Syntect(HighlightLines<'static>),
     /// No highlighting available.
     None,
 }
 
 /// A single highlight capture with byte range and style.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct LineCapture {
     /// Start byte offset within the line (relative to line start)
     pub local_start: usize,
@@ -72,40 +76,41 @@ pub struct CstParseResult {
     pub capture_names: Vec<String>,
 }
 
-impl<'a> Highlighter<'a> {
+impl Highlighter {
     /// Create a highlighter for the given filename.
     ///
     /// Attempts to use tree-sitter first, falling back to syntect if the language
     /// is not supported by tree-sitter.
-    pub fn for_file(filename: &str, theme_name: &str, parser_pool: &'a mut ParserPool) -> Self {
+    ///
+    /// Note: This does not borrow `ParserPool`. The parser is borrowed only during
+    /// `parse_source`, allowing the pool to be used for injection processing.
+    pub fn for_file(filename: &str, theme_name: &str) -> Self {
         let ext = std::path::Path::new(filename)
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("");
 
         // Try tree-sitter first
-        if let Some(lang) = SupportedLanguage::from_extension(ext) {
-            if let Some(parser) = parser_pool.get_or_create(ext) {
-                let language = lang.ts_language();
-                let query_source = lang.highlights_query();
-                // Pre-create query to get capture names
-                if let Ok(query) = Query::new(&language, query_source) {
-                    let capture_names = query
-                        .capture_names()
-                        .iter()
-                        .map(|s| s.to_string())
-                        .collect();
-                    // Create style cache from theme for O(1) lookups
-                    let theme = get_theme(theme_name);
-                    let style_cache = ThemeStyleCache::new(theme);
-                    return Highlighter::Cst {
-                        parser,
-                        language,
-                        query_source,
-                        capture_names,
-                        style_cache,
-                    };
-                }
+        if let Some(supported_lang) = SupportedLanguage::from_extension(ext) {
+            let language = supported_lang.ts_language();
+            let query_source = supported_lang.highlights_query();
+            // Pre-create query to get capture names
+            if let Ok(query) = Query::new(&language, query_source) {
+                let capture_names = query
+                    .capture_names()
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect();
+                // Create style cache from theme for O(1) lookups
+                let theme = get_theme(theme_name);
+                let style_cache = ThemeStyleCache::new(theme);
+                return Highlighter::Cst {
+                    supported_lang,
+                    language,
+                    query_source,
+                    capture_names,
+                    style_cache,
+                };
             }
         }
 
@@ -122,15 +127,21 @@ impl<'a> Highlighter<'a> {
     ///
     /// For CST highlighter, parses the source and returns the tree.
     /// For Syntect, this is a no-op (syntect processes line by line).
-    pub fn parse_source(&mut self, source: &str) -> Option<CstParseResult> {
+    ///
+    /// # Arguments
+    /// * `source` - The source code to parse
+    /// * `parser_pool` - The parser pool to borrow a parser from (borrowed only for this call)
+    pub fn parse_source(&self, source: &str, parser_pool: &mut ParserPool) -> Option<CstParseResult> {
         match self {
             Highlighter::Cst {
-                parser,
+                supported_lang,
                 language,
                 query_source,
                 capture_names,
                 style_cache: _,
             } => {
+                // Get parser for this language
+                let parser = parser_pool.get_or_create(supported_lang.default_extension())?;
                 let tree = parser.parse(source, None)?;
                 // Create a fresh query for the result
                 let query = Query::new(language, query_source).ok()?;
@@ -234,6 +245,11 @@ pub fn collect_line_highlights(
             let capture_name = &capture_names[capture.index as usize];
             let style = style_cache.get(capture_name);
 
+            // Skip captures with no style (e.g., raw_text, which would mask other captures)
+            if style == Style::default() {
+                continue;
+            }
+
             // Add capture to each line it spans
             for line_idx in start_line..=end_line {
                 let line_start = line_offsets.get(line_idx).copied().unwrap_or(0);
@@ -268,6 +284,197 @@ pub fn collect_line_highlights(
     }
 
     LineHighlights { captures_by_line }
+}
+
+/// Collect highlights with injection support for languages like Svelte.
+///
+/// This extends `collect_line_highlights` to handle embedded languages:
+/// - Parses the parent language (e.g., Svelte)
+/// - Extracts injection ranges using the language's injection query
+/// - Highlights each injection range with the appropriate parser
+/// - Merges all highlights into a single `LineHighlights`
+///
+/// # Arguments
+/// * `source` - The complete source code
+/// * `tree` - The parsed tree from the parent parser
+/// * `query` - The highlight query for the parent language
+/// * `capture_names` - Capture names from the parent query
+/// * `style_cache` - Style cache for theme colors
+/// * `parser_pool` - Parser pool for creating injection parsers
+/// * `parent_ext` - File extension of the parent language (e.g., "svelte")
+pub fn collect_line_highlights_with_injections(
+    source: &str,
+    tree: &Tree,
+    query: &Query,
+    capture_names: &[String],
+    style_cache: &ThemeStyleCache,
+    parser_pool: &mut ParserPool,
+    parent_ext: &str,
+) -> LineHighlights {
+    use crate::language::SupportedLanguage;
+    use crate::syntax::injection::{extract_injections, normalize_language_name};
+
+    // Start with parent language highlights
+    let mut result = collect_line_highlights(source, tree, query, capture_names, style_cache);
+
+    // Get parent language for injection query
+    let parent_lang = match SupportedLanguage::from_extension(parent_ext) {
+        Some(lang) => lang,
+        None => return result,
+    };
+
+    // Get injection query for parent language
+    let injection_query = match parent_ext {
+        "svelte" => tree_sitter_svelte_ng::INJECTIONS_QUERY,
+        _ => return result, // No injection support for other languages yet
+    };
+
+    // Extract injection ranges
+    let ts_language = parent_lang.ts_language();
+    let injections = extract_injections(tree, source.as_bytes(), &ts_language, injection_query);
+
+    if injections.is_empty() {
+        return result;
+    }
+
+    // Pre-compute line byte offsets for fast line lookup
+    let line_offsets: Vec<usize> =
+        std::iter::once(0)
+            .chain(source.bytes().enumerate().filter_map(|(i, b)| {
+                if b == b'\n' {
+                    Some(i + 1)
+                } else {
+                    None
+                }
+            }))
+            .collect();
+
+    // Process each injection
+    for injection in injections {
+        let mut normalized_lang = normalize_language_name(&injection.language);
+
+        // Svelte's injection query marks all raw_text as "javascript" by default,
+        // but <style> content should be CSS. Use the parent node kind from the
+        // syntax tree to determine the correct language.
+        if normalized_lang == "javascript" && parent_ext == "svelte" {
+            if let Some(ref parent_kind) = injection.parent_node_kind {
+                // Check if this injection is inside a style element
+                if parent_kind.contains("style") {
+                    normalized_lang = "css";
+                }
+                // script_element keeps "javascript" (or typescript if lang attr is set)
+            }
+        }
+
+        // Map normalized language name to file extension
+        let ext = match normalized_lang {
+            "typescript" => "ts",
+            "javascript" => "js",
+            "css" => "css",
+            "html" => continue, // Skip HTML injections (handled by parent)
+            _ => continue,      // Skip unsupported languages
+        };
+
+        // Get or create parser for injection language
+        let Some(inj_parser) = parser_pool.get_or_create(ext) else {
+            continue;
+        };
+
+        // Get the injection content
+        let inj_source = &source[injection.range.clone()];
+
+        // Parse the injection content
+        let Some(inj_tree) = inj_parser.parse(inj_source, None) else {
+            continue;
+        };
+
+        // Get highlight query for injection language
+        let Some(inj_lang) = SupportedLanguage::from_extension(ext) else {
+            continue;
+        };
+
+        let inj_query_str = inj_lang.highlights_query();
+        let inj_ts_lang = inj_lang.ts_language();
+
+        let Ok(inj_query) = Query::new(&inj_ts_lang, inj_query_str) else {
+            continue;
+        };
+
+        let inj_capture_names: Vec<String> = inj_query
+            .capture_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        // Collect highlights from injection
+        let mut inj_cursor = QueryCursor::new();
+        let mut inj_matches =
+            inj_cursor.matches(&inj_query, inj_tree.root_node(), inj_source.as_bytes());
+
+        while let Some(mat) = inj_matches.next() {
+            for capture in mat.captures {
+                let node = capture.node;
+                // Byte offsets are relative to injection source
+                let local_start = node.start_byte();
+                let local_end = node.end_byte();
+
+                // Convert to absolute byte offset in full source
+                let abs_start = injection.range.start + local_start;
+                let abs_end = injection.range.start + local_end;
+
+                // Find which line(s) this capture spans
+                let start_line = line_offsets
+                    .binary_search(&abs_start)
+                    .unwrap_or_else(|i| i.saturating_sub(1));
+
+                let end_line = line_offsets
+                    .binary_search(&abs_end)
+                    .unwrap_or_else(|i| i.saturating_sub(1));
+
+                let capture_name = &inj_capture_names[capture.index as usize];
+                let style = style_cache.get(capture_name);
+
+                // Skip captures with no style
+                if style == Style::default() {
+                    continue;
+                }
+
+                // Add capture to each line it spans
+                for line_idx in start_line..=end_line {
+                    let line_start = line_offsets.get(line_idx).copied().unwrap_or(0);
+                    let line_end = line_offsets
+                        .get(line_idx + 1)
+                        .map(|&off| off.saturating_sub(1))
+                        .unwrap_or(source.len());
+
+                    // Clamp capture to line boundaries (relative to line start)
+                    let cap_local_start = abs_start.saturating_sub(line_start);
+                    let cap_local_end = abs_end
+                        .saturating_sub(line_start)
+                        .min(line_end - line_start);
+
+                    if cap_local_start < cap_local_end {
+                        result
+                            .captures_by_line
+                            .entry(line_idx)
+                            .or_default()
+                            .push(LineCapture {
+                                local_start: cap_local_start,
+                                local_end: cap_local_end,
+                                style,
+                            });
+                    }
+                }
+            }
+        }
+    }
+
+    // Re-sort captures within each line by start position
+    for captures in result.captures_by_line.values_mut() {
+        captures.sort_by_key(|c| c.local_start);
+    }
+
+    result
 }
 
 /// Apply pre-computed highlights to a line, producing InternedSpans.
@@ -371,8 +578,7 @@ mod tests {
 
     #[test]
     fn test_highlighter_rust() {
-        let mut pool = ParserPool::new();
-        let highlighter = Highlighter::for_file("test.rs", "base16-ocean.dark", &mut pool);
+        let highlighter = Highlighter::for_file("test.rs", "base16-ocean.dark");
         assert!(
             matches!(highlighter, Highlighter::Cst { .. }),
             "Expected Cst highlighter for Rust"
@@ -381,29 +587,25 @@ mod tests {
 
     #[test]
     fn test_highlighter_typescript() {
-        let mut pool = ParserPool::new();
-        let highlighter = Highlighter::for_file("test.ts", "base16-ocean.dark", &mut pool);
+        let highlighter = Highlighter::for_file("test.ts", "base16-ocean.dark");
         assert!(matches!(highlighter, Highlighter::Cst { .. }));
     }
 
     #[test]
     fn test_highlighter_vue_fallback() {
-        let mut pool = ParserPool::new();
-        let highlighter = Highlighter::for_file("test.vue", "base16-ocean.dark", &mut pool);
+        let highlighter = Highlighter::for_file("test.vue", "base16-ocean.dark");
         assert!(matches!(highlighter, Highlighter::Syntect(_)));
     }
 
     #[test]
     fn test_highlighter_yaml_fallback() {
-        let mut pool = ParserPool::new();
-        let highlighter = Highlighter::for_file("test.yaml", "base16-ocean.dark", &mut pool);
+        let highlighter = Highlighter::for_file("test.yaml", "base16-ocean.dark");
         assert!(matches!(highlighter, Highlighter::Syntect(_)));
     }
 
     #[test]
     fn test_highlighter_unknown() {
-        let mut pool = ParserPool::new();
-        let highlighter = Highlighter::for_file("test.unknown", "base16-ocean.dark", &mut pool);
+        let highlighter = Highlighter::for_file("test.unknown", "base16-ocean.dark");
         assert!(matches!(highlighter, Highlighter::None));
     }
 
@@ -412,11 +614,11 @@ mod tests {
         use crate::syntax::get_theme;
 
         let mut pool = ParserPool::new();
-        let mut highlighter = Highlighter::for_file("test.rs", "base16-ocean.dark", &mut pool);
+        let highlighter = Highlighter::for_file("test.rs", "base16-ocean.dark");
 
         let source = "fn main() {\n    let x = 42;\n}";
 
-        if let Some(result) = highlighter.parse_source(source) {
+        if let Some(result) = highlighter.parse_source(source, &mut pool) {
             // Create style cache from theme for testing
             let theme = get_theme("base16-ocean.dark");
             let style_cache = ThemeStyleCache::new(theme);
@@ -446,8 +648,7 @@ mod tests {
 
     #[test]
     fn test_syntect_highlight() {
-        let mut pool = ParserPool::new();
-        let mut highlighter = Highlighter::for_file("test.vue", "base16-ocean.dark", &mut pool);
+        let mut highlighter = Highlighter::for_file("test.vue", "base16-ocean.dark");
 
         let mut interner = Rodeo::default();
         let spans = highlighter.highlight_line("<template>", &mut interner);
@@ -462,13 +663,13 @@ mod tests {
         use ratatui::style::Color;
 
         let mut pool = ParserPool::new();
-        let mut highlighter = Highlighter::for_file("test.rs", "Dracula", &mut pool);
+        let highlighter = Highlighter::for_file("test.rs", "Dracula");
 
         let source = "fn main() {\n    let x = 42;\n}";
 
-        // Parse first (requires &mut self)
+        // Parse source (borrows pool only for this call)
         let result = highlighter
-            .parse_source(source)
+            .parse_source(source, &mut pool)
             .expect("Should parse Rust source");
 
         // Create style cache from Dracula theme
@@ -518,12 +719,12 @@ mod tests {
         use ratatui::style::Color;
 
         let mut pool = ParserPool::new();
-        let mut highlighter = Highlighter::for_file("test.rs", "Dracula", &mut pool);
+        let highlighter = Highlighter::for_file("test.rs", "Dracula");
 
         let source = "use std::collections::HashMap;\n\nfn main() {}";
 
         let result = highlighter
-            .parse_source(source)
+            .parse_source(source, &mut pool)
             .expect("Should parse Rust source");
 
         let theme = get_theme("Dracula");
@@ -617,13 +818,13 @@ mod tests {
         use crate::syntax::themes::ThemeStyleCache;
 
         let mut pool = ParserPool::new();
-        let mut highlighter = Highlighter::for_file("test.ts", "Dracula", &mut pool);
+        let highlighter = Highlighter::for_file("test.ts", "Dracula");
 
         // Arrow function assignment - common pattern in Vue/React
         let source = "const onClickPageName = () => {\n  const rootDom = store.tree\n}";
 
         let result = highlighter
-            .parse_source(source)
+            .parse_source(source, &mut pool)
             .expect("Should parse TypeScript source");
 
         let theme = get_theme("Dracula");
@@ -663,6 +864,267 @@ mod tests {
         assert!(
             func_span.unwrap().style.fg.is_some(),
             "'onClickPageName' should have foreground color (function)"
+        );
+    }
+
+    #[test]
+    fn test_svelte_uses_cst_highlighter() {
+        let highlighter = Highlighter::for_file("test.svelte", "Dracula");
+        assert!(
+            matches!(highlighter, Highlighter::Cst { .. }),
+            "Svelte should use CST highlighter"
+        );
+    }
+
+    #[test]
+    fn test_svelte_script_injection_typescript() {
+        use crate::syntax::get_theme;
+        use crate::syntax::themes::ThemeStyleCache;
+
+        let mut pool = ParserPool::new();
+        let highlighter = Highlighter::for_file("test.svelte", "Dracula");
+
+        // Svelte file with TypeScript in <script>
+        let source = r#"<script lang="ts">
+    const count: number = 0;
+    function increment() {
+        count += 1;
+    }
+</script>
+
+<button on:click={increment}>
+    {count}
+</button>"#;
+
+        let result = highlighter
+            .parse_source(source, &mut pool)
+            .expect("Should parse Svelte source");
+
+        let theme = get_theme("Dracula");
+        let style_cache = ThemeStyleCache::new(theme);
+
+        // Use injection-aware highlighting
+        let line_highlights = collect_line_highlights_with_injections(
+            source,
+            &result.tree,
+            &result.query,
+            &result.capture_names,
+            &style_cache,
+            &mut pool,
+            "svelte",
+        );
+
+        let mut interner = Rodeo::default();
+
+        // Line 2: "    const count: number = 0;"
+        // "const" should be highlighted as keyword (TypeScript injection)
+        let line = "    const count: number = 0;";
+        let captures = line_highlights.get(1); // Line index 1
+        let spans = apply_line_highlights(line, captures, &mut interner);
+
+        let const_span = spans
+            .iter()
+            .find(|s| interner.resolve(&s.content) == "const");
+        assert!(
+            const_span.is_some(),
+            "Should find 'const' in script injection"
+        );
+        assert!(
+            const_span.unwrap().style.fg.is_some(),
+            "'const' should have syntax highlighting from TypeScript parser"
+        );
+
+        // "number" should be highlighted as type
+        let number_span = spans
+            .iter()
+            .find(|s| interner.resolve(&s.content) == "number");
+        assert!(
+            number_span.is_some(),
+            "Should find 'number' type in script injection"
+        );
+        assert!(
+            number_span.unwrap().style.fg.is_some(),
+            "'number' should have syntax highlighting as type"
+        );
+    }
+
+    #[test]
+    fn test_svelte_style_injection_css() {
+        use crate::syntax::get_theme;
+        use crate::syntax::themes::ThemeStyleCache;
+
+        let mut pool = ParserPool::new();
+        let highlighter = Highlighter::for_file("test.svelte", "Dracula");
+
+        // Svelte file with CSS in <style>
+        let source = r#"<script>
+    let visible = true;
+</script>
+
+<style>
+    .container {
+        color: red;
+        display: flex;
+    }
+</style>
+
+<div class="container">Hello</div>"#;
+
+        let result = highlighter
+            .parse_source(source, &mut pool)
+            .expect("Should parse Svelte source");
+
+        let theme = get_theme("Dracula");
+        let style_cache = ThemeStyleCache::new(theme);
+
+        let line_highlights = collect_line_highlights_with_injections(
+            source,
+            &result.tree,
+            &result.query,
+            &result.capture_names,
+            &style_cache,
+            &mut pool,
+            "svelte",
+        );
+
+        let mut interner = Rodeo::default();
+
+        // Line 6: "    .container {"
+        let line = "    .container {";
+        let captures = line_highlights.get(5); // Line index 5
+        let spans = apply_line_highlights(line, captures, &mut interner);
+
+        // ".container" or "container" should be highlighted as CSS class selector
+        let has_class_highlight = spans.iter().any(|s| {
+            let text = interner.resolve(&s.content);
+            (text == ".container" || text == "container") && s.style.fg.is_some()
+        });
+        assert!(
+            has_class_highlight,
+            "CSS class selector should be highlighted in style injection"
+        );
+
+        // Line 7: "        color: red;"
+        let line = "        color: red;";
+        let captures = line_highlights.get(6);
+        let spans = apply_line_highlights(line, captures, &mut interner);
+
+        // "color" should be highlighted as CSS property
+        let color_span = spans
+            .iter()
+            .find(|s| interner.resolve(&s.content) == "color");
+        assert!(
+            color_span.is_some(),
+            "Should find 'color' CSS property in style injection"
+        );
+        assert!(
+            color_span.unwrap().style.fg.is_some(),
+            "'color' should have syntax highlighting as CSS property"
+        );
+    }
+
+    /// Test that script blocks containing `<style` substring are NOT misclassified as CSS.
+    ///
+    /// This is a regression test for the issue where raw string search (`rfind("<style")`)
+    /// would incorrectly detect `<style` inside JavaScript code (e.g., template strings,
+    /// comments, DOM manipulation) and apply CSS highlighting to the script block.
+    #[test]
+    fn test_svelte_script_with_style_substring_not_misclassified() {
+        use crate::syntax::get_theme;
+        use crate::syntax::themes::ThemeStyleCache;
+
+        let mut pool = ParserPool::new();
+        let highlighter = Highlighter::for_file("test.svelte", "Dracula");
+
+        // Svelte file with script containing "<style" as a string literal
+        // This should NOT be misclassified as CSS
+        let source = r#"<script lang="ts">
+    const template = `<style>body { color: red; }</style>`;
+    const element = document.querySelector("<style");
+    function addStyle() {
+        const style = "<style>test</style>";
+        return style;
+    }
+</script>
+
+<style>
+    .real-css { color: blue; }
+</style>
+
+<div>{template}</div>"#;
+
+        let result = highlighter
+            .parse_source(source, &mut pool)
+            .expect("Should parse Svelte source");
+
+        let theme = get_theme("Dracula");
+        let style_cache = ThemeStyleCache::new(theme);
+
+        let line_highlights = collect_line_highlights_with_injections(
+            source,
+            &result.tree,
+            &result.query,
+            &result.capture_names,
+            &style_cache,
+            &mut pool,
+            "svelte",
+        );
+
+        let mut interner = Rodeo::default();
+
+        // Line 2: "    const template = `<style>body { color: red; }</style>`;"
+        // "const" should be highlighted as JS/TS keyword (NOT CSS)
+        let line = "    const template = `<style>body { color: red; }</style>`;";
+        let captures = line_highlights.get(1); // Line index 1
+        let spans = apply_line_highlights(line, captures, &mut interner);
+
+        let const_span = spans
+            .iter()
+            .find(|s| interner.resolve(&s.content) == "const");
+        assert!(
+            const_span.is_some(),
+            "Should find 'const' in script block with <style substring"
+        );
+        assert!(
+            const_span.unwrap().style.fg.is_some(),
+            "'const' should be highlighted as keyword (TypeScript), not misclassified as CSS"
+        );
+
+        // Line 4: "    function addStyle() {"
+        // "function" should be highlighted as JS/TS keyword
+        let line = "    function addStyle() {";
+        let captures = line_highlights.get(3); // Line index 3
+        let spans = apply_line_highlights(line, captures, &mut interner);
+
+        let function_span = spans
+            .iter()
+            .find(|s| interner.resolve(&s.content) == "function");
+        assert!(
+            function_span.is_some(),
+            "Should find 'function' in script block"
+        );
+        assert!(
+            function_span.unwrap().style.fg.is_some(),
+            "'function' should be highlighted as keyword"
+        );
+
+        // Line 11: "    .real-css { color: blue; }"
+        // This is actual CSS in a <style> block, should be highlighted as CSS
+        let line = "    .real-css { color: blue; }";
+        let captures = line_highlights.get(10); // Line index 10
+        let spans = apply_line_highlights(line, captures, &mut interner);
+
+        // "color" in the actual CSS block should be highlighted
+        let color_span = spans
+            .iter()
+            .find(|s| interner.resolve(&s.content) == "color");
+        assert!(
+            color_span.is_some(),
+            "Should find 'color' in actual CSS block"
+        );
+        assert!(
+            color_span.unwrap().style.fg.is_some(),
+            "'color' in real <style> block should be highlighted as CSS property"
         );
     }
 }

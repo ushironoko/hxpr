@@ -60,6 +60,9 @@ tree-sitter-haskell = "0.23.1"
 # tree-sitter-svelte-ng = "1.0.2"  # TODO: injection が必要 (syntect にフォールバック)
 # Phase 2: MoonBit (path dependency, not on crates.io)
 tree-sitter-moonbit = { path = "crates/tree-sitter-moonbit" }
+tree-sitter-svelte-ng = "1.0.2"
+tree-sitter-html = "0.23.2"
+tree-sitter-css = "0.25.0"
 
 [dev-dependencies]
 assert_cmd = "2.1.2"
