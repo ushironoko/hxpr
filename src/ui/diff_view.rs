@@ -73,8 +73,8 @@ pub fn build_diff_cache(
             .expect("CST highlighter should have style_cache");
 
         // CST path: use tree-sitter with full AST context
-        // Use injection-aware highlighting for SFC languages (Svelte)
-        let line_highlights = if ext == "svelte" {
+        // Use injection-aware highlighting for SFC languages (Svelte, Vue)
+        let line_highlights = if ext == "svelte" || ext == "vue" {
             // Injection path: query is obtained inside the function to avoid borrow conflicts
             collect_line_highlights_with_injections(
                 &combined_source,

@@ -1,0 +1,32 @@
+[package]
+name = "tree-sitter-vue3"
+version = "0.1.0"
+edition = "2021"
+authors = ["ushironoko"]
+description = "Vue 3 grammar for tree-sitter"
+license = "MIT"
+readme = "README.md"
+keywords = ["incremental", "parsing", "tree-sitter", "vue", "vue3"]
+categories = ["parser-implementations", "parsing", "text-editors"]
+repository = "https://github.com/ushironoko/octorus"
+
+build = "build.rs"
+include = [
+  "build.rs",
+  "src/**/*",
+  "queries/*",
+  "LICENSE",
+  "README.md",
+]
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+tree-sitter-language = "0.1.3"
+
+[build-dependencies]
+cc = "1.2.10"
+
+[dev-dependencies]
+tree-sitter = "0.26.3"

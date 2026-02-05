@@ -330,6 +330,7 @@ pub fn collect_line_highlights_with_injections(
     // Get injection query for parent language
     let injection_query = match parent_ext {
         "svelte" => tree_sitter_svelte_ng::INJECTIONS_QUERY,
+        "vue" => tree_sitter_vue3::INJECTIONS_QUERY,
         _ => return result, // No injection support for other languages yet
     };
 
@@ -357,10 +358,10 @@ pub fn collect_line_highlights_with_injections(
     for injection in injections {
         let mut normalized_lang = normalize_language_name(&injection.language);
 
-        // Svelte's injection query marks all raw_text as "javascript" by default,
+        // Svelte/Vue injection query marks all raw_text as "javascript" by default,
         // but <style> content should be CSS. Use the parent node kind from the
         // syntax tree to determine the correct language.
-        if normalized_lang == "javascript" && parent_ext == "svelte" {
+        if normalized_lang == "javascript" && (parent_ext == "svelte" || parent_ext == "vue") {
             if let Some(ref parent_kind) = injection.parent_node_kind {
                 // Check if this injection is inside a style element
                 if parent_kind.contains("style") {
@@ -374,6 +375,8 @@ pub fn collect_line_highlights_with_injections(
         let ext = match normalized_lang {
             "typescript" => "ts",
             "javascript" => "js",
+            "tsx" => "tsx", // Vue supports <script lang="tsx">
+            "jsx" => "jsx", // Vue supports <script lang="jsx">
             "css" => "css",
             "html" => continue, // Skip HTML injections (handled by parent)
             _ => continue,      // Skip unsupported languages
@@ -472,14 +475,22 @@ pub fn collect_line_highlights_with_injections(
     }
 
     // Re-sort captures within each line by start position
+    // For captures starting at the same position, shorter (more specific) captures come first
     for captures in result.captures_by_line.values_mut() {
-        captures.sort_by_key(|c| c.local_start);
+        captures.sort_by(|a, b| {
+            a.local_start
+                .cmp(&b.local_start)
+                .then_with(|| (a.local_end - a.local_start).cmp(&(b.local_end - b.local_start)))
+        });
     }
 
     result
 }
 
 /// Apply pre-computed highlights to a line, producing InternedSpans.
+///
+/// When captures overlap, the more specific (shorter) capture takes precedence.
+/// This allows injection highlights to override parent language highlights.
 ///
 /// # Arguments
 /// * `line` - The line content
@@ -501,43 +512,53 @@ pub fn apply_line_highlights(
         }
     };
 
-    let mut spans = Vec::new();
-    let mut last_end = 0;
+    // Build a map of byte position -> style, where shorter captures override longer ones
+    // This gives injection highlights (more specific) priority over parent highlights
+    let mut style_map: Vec<Option<Style>> = vec![None; line.len()];
 
+    // Process captures in order: shorter captures come after longer ones for same start,
+    // so they will overwrite the longer ones
     for capture in captures {
-        // Skip captures that overlap with already processed text
-        // This handles duplicate captures from tree-sitter error recovery
-        if capture.local_start < last_end {
-            continue;
-        }
-
         // Skip invalid captures
         if capture.local_start >= capture.local_end || capture.local_end > line.len() {
             continue;
         }
 
-        // Add unstyled text before this highlight
-        if capture.local_start > last_end {
-            spans.push(InternedSpan {
-                content: interner.get_or_intern(&line[last_end..capture.local_start]),
-                style: Style::default(),
-            });
+        for slot in &mut style_map[capture.local_start..capture.local_end] {
+            *slot = Some(capture.style);
         }
-
-        // Add highlighted text
-        spans.push(InternedSpan {
-            content: interner.get_or_intern(&line[capture.local_start..capture.local_end]),
-            style: capture.style,
-        });
-        last_end = capture.local_end;
     }
 
-    // Add remaining unstyled text
-    if last_end < line.len() {
-        spans.push(InternedSpan {
-            content: interner.get_or_intern(&line[last_end..]),
-            style: Style::default(),
-        });
+    // Convert style map to spans by merging consecutive bytes with same style
+    let mut spans = Vec::new();
+    let mut current_start = 0;
+    let mut current_style = style_map.first().copied().flatten();
+
+    for (i, style) in style_map.iter().enumerate().skip(1) {
+        let style = *style;
+        if style != current_style {
+            // Emit span for previous range
+            let text = &line[current_start..i];
+            if !text.is_empty() {
+                spans.push(InternedSpan {
+                    content: interner.get_or_intern(text),
+                    style: current_style.unwrap_or_default(),
+                });
+            }
+            current_start = i;
+            current_style = style;
+        }
+    }
+
+    // Emit final span
+    if current_start < line.len() {
+        let text = &line[current_start..];
+        if !text.is_empty() {
+            spans.push(InternedSpan {
+                content: interner.get_or_intern(text),
+                style: current_style.unwrap_or_default(),
+            });
+        }
     }
 
     // If no spans, return the whole line as plain text
@@ -594,9 +615,13 @@ mod tests {
     }
 
     #[test]
-    fn test_highlighter_vue_fallback() {
+    fn test_highlighter_vue_cst() {
+        // Vue is now supported with tree-sitter (Phase 3c)
         let highlighter = Highlighter::for_file("test.vue", "base16-ocean.dark");
-        assert!(matches!(highlighter, Highlighter::Syntect(_)));
+        assert!(
+            matches!(highlighter, Highlighter::Cst { .. }),
+            "Expected Cst highlighter for Vue"
+        );
     }
 
     #[test]
@@ -1136,6 +1161,123 @@ mod tests {
         assert!(
             color_span.unwrap().style.fg.is_some(),
             "'color' in real <style> block should be highlighted as CSS property"
+        );
+    }
+
+    #[test]
+    fn test_vue_script_injection_typescript() {
+        use crate::syntax::get_theme;
+        use crate::syntax::themes::ThemeStyleCache;
+
+        let mut pool = ParserPool::new();
+        let highlighter = Highlighter::for_file("test.vue", "Dracula");
+
+        // Vue file with TypeScript in <script>
+        let source = r#"<script lang="ts">
+    const count: number = 0;
+    function increment() {
+        count += 1;
+    }
+</script>
+
+<template>
+    <button @click="increment">
+        {{ count }}
+    </button>
+</template>"#;
+
+        let result = highlighter
+            .parse_source(source, &mut pool)
+            .expect("Should parse Vue source");
+
+        let theme = get_theme("Dracula");
+        let style_cache = ThemeStyleCache::new(theme);
+
+        // Use injection-aware highlighting
+        let line_highlights = collect_line_highlights_with_injections(
+            source,
+            &result.tree,
+            result.lang,
+            &style_cache,
+            &mut pool,
+            "vue",
+        );
+
+        let mut interner = Rodeo::default();
+
+        // Line 2: "    const count: number = 0;"
+        // "const" should be highlighted as keyword (TypeScript injection)
+        let line = "    const count: number = 0;";
+        let captures = line_highlights.get(1);
+        let spans = apply_line_highlights(line, captures, &mut interner);
+
+        // "const" is part of "    const " span due to how captures overlap
+        let const_span = spans
+            .iter()
+            .find(|s| interner.resolve(&s.content).contains("const"));
+        assert!(
+            const_span.is_some(),
+            "Should find span containing 'const' in TypeScript script block"
+        );
+        assert!(
+            const_span.unwrap().style.fg.is_some(),
+            "'const' should be highlighted as keyword in Vue TypeScript block"
+        );
+    }
+
+    #[test]
+    fn test_vue_style_injection_css() {
+        use crate::syntax::get_theme;
+        use crate::syntax::themes::ThemeStyleCache;
+
+        let mut pool = ParserPool::new();
+        let highlighter = Highlighter::for_file("test.vue", "Dracula");
+
+        // Vue file with CSS in <style>
+        let source = r#"<template>
+    <div class="container">Hello</div>
+</template>
+
+<style>
+    .container {
+        color: red;
+    }
+</style>"#;
+
+        let result = highlighter
+            .parse_source(source, &mut pool)
+            .expect("Should parse Vue source");
+
+        let theme = get_theme("Dracula");
+        let style_cache = ThemeStyleCache::new(theme);
+
+        let line_highlights = collect_line_highlights_with_injections(
+            source,
+            &result.tree,
+            result.lang,
+            &style_cache,
+            &mut pool,
+            "vue",
+        );
+
+        let mut interner = Rodeo::default();
+
+        // Line 7: "        color: red;"
+        let line = "        color: red;";
+        let captures = line_highlights.get(6);
+        let spans = apply_line_highlights(line, captures, &mut interner);
+
+        // "color" should be highlighted as CSS property
+        let color_span = spans
+            .iter()
+            .find(|s| interner.resolve(&s.content) == "color");
+        assert!(
+            color_span.is_some(),
+            "Should find 'color' CSS property in Vue style injection"
+        );
+        assert!(
+            color_span.unwrap().style.fg.is_some(),
+            "'color' should have syntax highlighting as CSS property in Vue"
         );
     }
 }

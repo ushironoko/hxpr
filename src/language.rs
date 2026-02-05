@@ -41,6 +41,8 @@ pub enum SupportedLanguage {
     MoonBit,
     // Phase 3: Svelte (with injection support)
     Svelte,
+    // Phase 3c: Vue (with injection support, path dependency)
+    Vue,
     // Phase 3: CSS (for injection support in Svelte/Vue)
     Css,
 }
@@ -83,6 +85,21 @@ static SVELTE_COMBINED_QUERY: LazyLock<String> = LazyLock::new(|| {
         .join("\n");
 
     format!("{}\n{}", tree_sitter_html::HIGHLIGHTS_QUERY, svelte_query)
+});
+
+/// Combined Vue highlights query (HTML base + Vue-specific).
+///
+/// Vue's HIGHLIGHTS_QUERY is designed for Vue SFC which is HTML-like.
+/// We filter out HTML patterns that don't exist in Vue grammar (doctype, etc.).
+static VUE_COMBINED_QUERY: LazyLock<String> = LazyLock::new(|| {
+    // Filter out patterns that use node types not in Vue grammar
+    let html_query: String = tree_sitter_html::HIGHLIGHTS_QUERY
+        .lines()
+        .filter(|line| !line.contains("doctype"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!("{}\n{}", html_query, tree_sitter_vue3::HIGHLIGHTS_QUERY)
 });
 
 /// C# highlights query (bundled as tree-sitter-c-sharp doesn't export it).
@@ -149,6 +166,8 @@ impl SupportedLanguage {
             "mbt" => Some(Self::MoonBit),
             // Phase 3: Svelte
             "svelte" => Some(Self::Svelte),
+            // Phase 3c: Vue
+            "vue" => Some(Self::Vue),
             // Phase 3: CSS (for injection support)
             "css" => Some(Self::Css),
             _ => None,
@@ -185,6 +204,7 @@ impl SupportedLanguage {
             Self::Haskell => "hs",
             Self::MoonBit => "mbt",
             Self::Svelte => "svelte",
+            Self::Vue => "vue",
             Self::Css => "css",
         }
     }
@@ -214,6 +234,8 @@ impl SupportedLanguage {
             Self::MoonBit => tree_sitter_moonbit::LANGUAGE.into(),
             // Phase 3: Svelte
             Self::Svelte => tree_sitter_svelte_ng::LANGUAGE.into(),
+            // Phase 3c: Vue
+            Self::Vue => tree_sitter_vue3::LANGUAGE.into(),
             // Phase 3: CSS (for injection support)
             Self::Css => tree_sitter_css::LANGUAGE.into(),
         }
@@ -261,6 +283,8 @@ impl SupportedLanguage {
             Self::MoonBit => tree_sitter_moonbit::HIGHLIGHTS_QUERY,
             // Phase 3: Svelte (combined with HTML)
             Self::Svelte => SVELTE_COMBINED_QUERY.as_str(),
+            // Phase 3c: Vue (combined with HTML)
+            Self::Vue => VUE_COMBINED_QUERY.as_str(),
             // Phase 3: CSS (for injection support)
             Self::Css => tree_sitter_css::HIGHLIGHTS_QUERY,
         }
@@ -392,6 +416,14 @@ impl SupportedLanguage {
             ],
             // Phase 3: Svelte (uses JS/TS for script, so similar to JS)
             Self::Svelte => &[
+                "function ",
+                "export function ",
+                "class ",
+                "export const ",
+                "export let ",
+            ],
+            // Phase 3c: Vue (uses JS/TS for script, same as Svelte)
+            Self::Vue => &[
                 "function ",
                 "export function ",
                 "class ",
@@ -1015,6 +1047,34 @@ impl SupportedLanguage {
                 "null",
                 "undefined",
             ],
+            // Phase 3c: Vue (uses JS/TS keywords + Vue-specific)
+            Self::Vue => &[
+                "export",
+                "let",
+                "const",
+                "function",
+                "class",
+                "if",
+                "else",
+                "for",
+                "await",
+                "then",
+                "catch",
+                "as",
+                "ref",
+                "reactive",
+                "computed",
+                "watch",
+                "onMounted",
+                "defineProps",
+                "defineEmits",
+                "defineExpose",
+                "withDefaults",
+                "true",
+                "false",
+                "null",
+                "undefined",
+            ],
             // Phase 3: CSS (for injection support)
             Self::Css => &[
                 "important",
@@ -1083,6 +1143,8 @@ impl SupportedLanguage {
             Self::MoonBit,
             // Phase 3: Svelte
             Self::Svelte,
+            // Phase 3c: Vue
+            Self::Vue,
             // Phase 3: CSS (for injection)
             Self::Css,
         ]
@@ -1236,7 +1298,7 @@ mod tests {
 
     #[test]
     fn test_from_extension_unsupported() {
-        assert_eq!(SupportedLanguage::from_extension("vue"), None);
+        // Vue is now supported in Phase 3c
         assert_eq!(SupportedLanguage::from_extension("yaml"), None);
         assert_eq!(SupportedLanguage::from_extension("md"), None);
         assert_eq!(SupportedLanguage::from_extension("toml"), None);
@@ -1272,12 +1334,11 @@ mod tests {
 
         // Phase 3: Svelte is now supported
         assert!(SupportedLanguage::is_supported("svelte"));
-        // Vue is not yet supported (requires similar injection support)
-        assert!(!SupportedLanguage::is_supported("vue"));
+        // Phase 3c: Vue is now supported
+        assert!(SupportedLanguage::is_supported("vue"));
         // Phase 2: MoonBit is now supported
         assert!(SupportedLanguage::is_supported("mbt"));
-        // Phase 3: Svelte is now supported
-        assert!(SupportedLanguage::is_supported("svelte"));
+
         assert!(!SupportedLanguage::is_supported("yaml"));
         assert!(!SupportedLanguage::is_supported("md"));
     }
@@ -1448,7 +1509,7 @@ mod tests {
     #[test]
     fn test_all_iterator() {
         let langs: Vec<_> = SupportedLanguage::all().collect();
-        assert_eq!(langs.len(), 21);
+        assert_eq!(langs.len(), 22); // +1 for Vue
         assert!(langs.contains(&SupportedLanguage::Rust));
         assert!(langs.contains(&SupportedLanguage::TypeScript));
         assert!(langs.contains(&SupportedLanguage::TypeScriptReact));

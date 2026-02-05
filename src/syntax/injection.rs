@@ -255,4 +255,125 @@ mod tests {
         let injections = extract_injections(&tree, code.as_bytes(), &language, "((invalid syntax");
         assert!(injections.is_empty());
     }
+
+    #[test]
+    fn test_extract_injections_vue_script() {
+        let code = r#"<script lang="ts">
+    const x = 1;
+</script>
+
+<template>
+    <div>Hello</div>
+</template>
+"#;
+
+        let mut parser = tree_sitter::Parser::new();
+        let language: Language = tree_sitter_vue3::LANGUAGE.into();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(code, None).unwrap();
+
+        let injections = extract_injections(
+            &tree,
+            code.as_bytes(),
+            &language,
+            tree_sitter_vue3::INJECTIONS_QUERY,
+        );
+
+        // Should find TypeScript injection
+        assert!(!injections.is_empty(), "Should find injections in Vue code");
+
+        let ts_injection = injections
+            .iter()
+            .find(|i| i.language == "typescript" || i.language == "ts");
+        assert!(
+            ts_injection.is_some(),
+            "Should find TypeScript injection, found: {:?}",
+            injections
+        );
+
+        if let Some(inj) = ts_injection {
+            let content = std::str::from_utf8(&code.as_bytes()[inj.range.clone()]).unwrap();
+            assert!(
+                content.contains("const x = 1"),
+                "Injection should contain script content, got: {}",
+                content
+            );
+        }
+    }
+
+    #[test]
+    fn test_extract_injections_vue_style() {
+        let code = r#"<style>
+    .foo { color: red; }
+</style>
+"#;
+
+        let mut parser = tree_sitter::Parser::new();
+        let language: Language = tree_sitter_vue3::LANGUAGE.into();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(code, None).unwrap();
+
+        let injections = extract_injections(
+            &tree,
+            code.as_bytes(),
+            &language,
+            tree_sitter_vue3::INJECTIONS_QUERY,
+        );
+
+        // Should find CSS injection
+        let css_injection = injections.iter().find(|i| i.language == "css");
+
+        assert!(
+            css_injection.is_some(),
+            "Should find CSS injection, found: {:?}",
+            injections
+        );
+
+        if let Some(inj) = css_injection {
+            let content = std::str::from_utf8(&code.as_bytes()[inj.range.clone()]).unwrap();
+            assert!(
+                content.contains(".foo"),
+                "Injection should contain style content, got: {}",
+                content
+            );
+        }
+    }
+
+    #[test]
+    fn test_extract_injections_vue_interpolation() {
+        let code = r#"<template>
+    <div>{{ message }}</div>
+</template>
+"#;
+
+        let mut parser = tree_sitter::Parser::new();
+        let language: Language = tree_sitter_vue3::LANGUAGE.into();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(code, None).unwrap();
+
+        let injections = extract_injections(
+            &tree,
+            code.as_bytes(),
+            &language,
+            tree_sitter_vue3::INJECTIONS_QUERY,
+        );
+
+        // Should find JavaScript injection for interpolation
+        let js_injection = injections.iter().find(|i| i.language == "javascript");
+
+        assert!(
+            js_injection.is_some(),
+            "Should find JavaScript injection for interpolation, found: {:?}",
+            injections
+        );
+
+        if let Some(inj) = js_injection {
+            let content = std::str::from_utf8(&code.as_bytes()[inj.range.clone()]).unwrap();
+            assert!(
+                content.contains("message"),
+                "Injection should contain interpolation content, got: {}",
+                content
+            );
+        }
+    }
 }

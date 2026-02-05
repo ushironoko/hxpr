@@ -212,9 +212,15 @@ mod tests {
     }
 
     #[test]
+    fn test_parser_pool_vue() {
+        let mut pool = ParserPool::new();
+        assert!(pool.get_or_create("vue").is_some());
+    }
+
+    #[test]
     fn test_parser_pool_unsupported() {
         let mut pool = ParserPool::new();
-        assert!(pool.get_or_create("vue").is_none());
+        // Vue is now supported in Phase 3c
         assert!(pool.get_or_create("yaml").is_none());
         assert!(pool.get_or_create("toml").is_none());
     }
@@ -239,8 +245,9 @@ mod tests {
 
         // Phase 3: Svelte is now supported
         assert!(ParserPool::supports_extension("svelte"));
-        // Vue is not yet supported
-        assert!(!ParserPool::supports_extension("vue"));
+        // Phase 3c: Vue is now supported
+        assert!(ParserPool::supports_extension("vue"));
+
         assert!(!ParserPool::supports_extension("yaml"));
         assert!(!ParserPool::supports_extension("md"));
     }
