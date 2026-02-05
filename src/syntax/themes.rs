@@ -95,6 +95,7 @@ static CAPTURE_TO_SCOPES: phf::Map<&'static str, &'static [&'static str]> = phf_
 /// Cache of styles for each capture name, pre-computed from a theme.
 ///
 /// This avoids repeated scope lookups during highlighting.
+#[derive(Clone)]
 pub struct ThemeStyleCache {
     cache: HashMap<&'static str, Style>,
 }
