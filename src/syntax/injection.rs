@@ -89,7 +89,62 @@ pub fn extract_injections(
         }
     }
 
-    injections
+    // Deduplicate injections for the same range, preferring more specific languages
+    // (e.g., TypeScript/TSX/JSX over JavaScript)
+    deduplicate_injections(injections)
+}
+
+/// Deduplicate injections that cover the same range.
+///
+/// When multiple injections match the same byte range (e.g., a `<script lang="ts">` block
+/// matching both the generic JavaScript rule and the TypeScript-specific rule), this function
+/// keeps only the most specific language.
+///
+/// Language specificity order (most specific first):
+/// - tsx, jsx (explicit JSX variants)
+/// - typescript (explicit TS)
+/// - All other languages are kept as-is
+/// - javascript (least specific, used as fallback)
+fn deduplicate_injections(mut injections: Vec<InjectionRange>) -> Vec<InjectionRange> {
+    use std::collections::HashMap;
+
+    // Group injections by their byte range
+    let mut range_map: HashMap<(usize, usize), Vec<InjectionRange>> = HashMap::new();
+    for inj in injections.drain(..) {
+        let key = (inj.range.start, inj.range.end);
+        range_map.entry(key).or_default().push(inj);
+    }
+
+    // For each range, pick the most specific language
+    let mut result = Vec::new();
+    for (_, mut group) in range_map {
+        if group.len() == 1 {
+            result.push(group.pop().unwrap());
+        } else {
+            // Sort by language specificity (most specific first)
+            group.sort_by_key(|inj| language_specificity(&inj.language));
+            // Take the most specific one
+            result.push(group.remove(0));
+        }
+    }
+
+    // Sort by range start for deterministic output
+    result.sort_by_key(|inj| inj.range.start);
+    result
+}
+
+/// Returns a specificity score for a language (lower is more specific).
+fn language_specificity(lang: &str) -> u32 {
+    match lang.to_lowercase().as_str() {
+        // Most specific: explicit JSX/TSX variants
+        "tsx" | "jsx" => 0,
+        // TypeScript is more specific than JavaScript
+        "ts" | "typescript" => 1,
+        // JavaScript is the fallback
+        "js" | "javascript" => 100,
+        // Other languages get middle priority
+        _ => 50,
+    }
 }
 
 /// Try to extract the injection language from query pattern settings.
@@ -375,5 +430,98 @@ mod tests {
                 content
             );
         }
+    }
+
+    #[test]
+    fn test_deduplicate_injections_prefers_typescript_over_javascript() {
+        // Vue <script lang="ts"> matches both the default JS rule and the TS-specific rule.
+        // The deduplication logic should keep only TypeScript.
+        let code = r#"<script lang="ts">
+    const x: number = 1;
+</script>
+"#;
+
+        let mut parser = tree_sitter::Parser::new();
+        let language: Language = tree_sitter_vue3::LANGUAGE.into();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(code, None).unwrap();
+
+        let injections = extract_injections(
+            &tree,
+            code.as_bytes(),
+            &language,
+            tree_sitter_vue3::INJECTIONS_QUERY,
+        );
+
+        // Should find exactly one injection for the script content
+        // (not both JavaScript and TypeScript)
+        let script_injections: Vec<_> = injections
+            .iter()
+            .filter(|i| i.language == "typescript" || i.language == "javascript")
+            .collect();
+
+        assert_eq!(
+            script_injections.len(),
+            1,
+            "Should have exactly one script injection after deduplication, got: {:?}",
+            script_injections
+        );
+
+        assert_eq!(
+            script_injections[0].language, "typescript",
+            "Should prefer TypeScript over JavaScript"
+        );
+    }
+
+    #[test]
+    fn test_deduplicate_injections_prefers_tsx_over_typescript() {
+        let code = r#"<script lang="tsx">
+    const x = <div>Hello</div>;
+</script>
+"#;
+
+        let mut parser = tree_sitter::Parser::new();
+        let language: Language = tree_sitter_vue3::LANGUAGE.into();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(code, None).unwrap();
+
+        let injections = extract_injections(
+            &tree,
+            code.as_bytes(),
+            &language,
+            tree_sitter_vue3::INJECTIONS_QUERY,
+        );
+
+        // TSX should be preferred over both TypeScript and JavaScript
+        let script_injections: Vec<_> = injections
+            .iter()
+            .filter(|i| {
+                i.language == "tsx" || i.language == "typescript" || i.language == "javascript"
+            })
+            .collect();
+
+        assert_eq!(
+            script_injections.len(),
+            1,
+            "Should have exactly one script injection after deduplication, got: {:?}",
+            script_injections
+        );
+
+        assert_eq!(
+            script_injections[0].language, "tsx",
+            "Should prefer TSX over TypeScript and JavaScript"
+        );
+    }
+
+    #[test]
+    fn test_language_specificity() {
+        // More specific languages should have lower scores
+        assert!(language_specificity("tsx") < language_specificity("typescript"));
+        assert!(language_specificity("jsx") < language_specificity("typescript"));
+        assert!(language_specificity("typescript") < language_specificity("javascript"));
+        assert!(language_specificity("ts") < language_specificity("js"));
+        // Other languages have middle priority
+        assert!(language_specificity("css") < language_specificity("javascript"));
+        assert!(language_specificity("css") > language_specificity("typescript"));
     }
 }

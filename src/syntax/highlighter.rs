@@ -475,12 +475,15 @@ pub fn collect_line_highlights_with_injections(
     }
 
     // Re-sort captures within each line by start position
-    // For captures starting at the same position, shorter (more specific) captures come first
+    // For captures starting at the same position, longer captures come first so that
+    // shorter (more specific) captures can override them when we process in order
     for captures in result.captures_by_line.values_mut() {
         captures.sort_by(|a, b| {
-            a.local_start
-                .cmp(&b.local_start)
-                .then_with(|| (a.local_end - a.local_start).cmp(&(b.local_end - b.local_start)))
+            a.local_start.cmp(&b.local_start).then_with(|| {
+                // Sort by length descending (longer first) so shorter captures
+                // are processed later and override longer ones
+                (b.local_end - b.local_start).cmp(&(a.local_end - a.local_start))
+            })
         });
     }
 
