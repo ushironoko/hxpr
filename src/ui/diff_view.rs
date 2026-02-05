@@ -165,54 +165,16 @@ fn build_combined_source_for_highlight(patch: &str) -> (String, Vec<(usize, Line
 
 /// Check if the content looks like JavaScript/TypeScript script code.
 ///
-/// This is a conservative heuristic: we only prime if we're confident
-/// the content is script. If we can't tell, we don't prime (better to
-/// have less highlighting than wrong highlighting).
+/// Returns true if content contains script code patterns.
 ///
-/// Returns true if content shows clear signs of being script code.
+/// Priming is applied whenever script patterns are detected, even if template
+/// or style patterns are also present (mixed content diffs). HTML `<script>`
+/// elements use raw_text, so mixed content is handled correctly by the Vue
+/// parser, and the TypeScript parser does error recovery on non-script parts.
+///
+/// Only returns false when NO script patterns are found (pure template/style
+/// content should not be wrapped in `<script>` tags).
 fn looks_like_script_content(source: &str) -> bool {
-    // Patterns that strongly suggest template/markup content
-    let template_patterns = [
-        // HTML elements (common Vue/Svelte template tags)
-        "<div", "<span", "<p>", "<a ", "<ul", "<li", "<h1", "<h2", "<h3", "<button", "<input",
-        "<form", "<label", "<img", "<section", "<article", "<header", "<footer", "<nav", "<main",
-        "<aside", // Svelte-specific template syntax
-        "{#if", "{#each", "{#await", "{:else", "{:then", "{:catch", "{/if", "{/each", "{/await",
-        "{@html", "{@debug", "{@const", // Vue template syntax
-        "v-if", "v-else", "v-for", "v-bind", "v-on", "v-model", "v-slot", "@click", "@input",
-        "@change", "@submit", ":class", ":style", ":key", ":ref",
-        // Self-closing custom component syntax (PascalCase components)
-        "/>",
-    ];
-
-    // Patterns that strongly suggest CSS/style content
-    let style_patterns = [
-        // CSS at-rules
-        "@media",
-        "@keyframes",
-        "@import",
-        "@font-face",
-        "@supports",
-        // Common CSS properties with colon
-        "color:",
-        "background:",
-        "margin:",
-        "padding:",
-        "border:",
-        "display:",
-        "position:",
-        "width:",
-        "height:",
-        "font-",
-        "text-align:",
-        "flex:",
-        "grid:",
-        "z-index:",
-        // CSS selectors (common patterns)
-        ".class",
-        "#id",
-    ];
-
     // Patterns that strongly suggest script content
     let script_patterns = [
         // ES module syntax
@@ -262,27 +224,12 @@ fn looks_like_script_content(source: &str) -> bool {
         "defineComponent",
     ];
 
-    // Check for template/style patterns first (these take precedence)
-    for pattern in template_patterns {
-        if source.contains(pattern) {
-            return false;
-        }
-    }
-
-    for pattern in style_patterns {
-        if source.contains(pattern) {
-            return false;
-        }
-    }
-
-    // Check for script patterns
     for pattern in script_patterns {
         if source.contains(pattern) {
             return true;
         }
     }
 
-    // If we can't determine, be conservative and don't prime
     false
 }
 
@@ -1465,6 +1412,128 @@ mod tests {
         assert!(
             !source.contains("<script"),
             "TypeScript source should not have <script> tag"
+        );
+    }
+}
+
+#[cfg(test)]
+mod priming_diff_tests {
+    use super::*;
+    use crate::syntax::ParserPool;
+    use std::collections::HashSet;
+
+    #[test]
+    fn test_build_diff_cache_primed_vue() {
+        // Simulate a diff that contains only script content (no <script> tag)
+        let patch = r#"diff --git a/src/composables/useFoo.ts b/src/composables/useFoo.ts
+@@ -1,5 +1,7 @@
++import { ref } from 'vue'
++
+ export const useFoo = () => {
+-  const old = 1
++  const count = ref(0)
+   return { count }
+ }
+"#;
+
+        let mut parser_pool = ParserPool::new();
+        let cache = build_diff_cache(
+            patch,
+            "src/components/Foo.vue",
+            "base16-ocean.dark",
+            &HashSet::new(),
+            &mut parser_pool,
+        );
+
+        // The import line should have syntax highlighting
+        // Line 2 is "+import { ref } from 'vue'"
+        let import_line = &cache.lines[2];
+        assert!(
+            import_line.spans.len() > 2,
+            "Import line should have syntax highlighting (more than just marker), got {} spans",
+            import_line.spans.len()
+        );
+    }
+
+    #[test]
+    fn test_build_diff_cache_primed_vue_mixed_content() {
+        // Simulate a diff with BOTH script and template content (no structural tags).
+        // This is the common case when a Vue SFC diff spans multiple hunks across
+        // script and template sections.
+        let patch = r#"diff --git a/src/components/Foo.vue b/src/components/Foo.vue
+@@ -7,14 +7,13 @@
++import { ref } from 'vue'
+ import SomeComponent from '@/components/SomeComponent.vue'
+-import OldComponent from '@/components/OldComponent.vue'
+
+ const count = ref(0)
+@@ -80,5 +79,5 @@
+     </div>
+-    <OldDialog />
++    <NewDialog @close="closeDialog" />
+   </div>
+"#;
+
+        let mut parser_pool = ParserPool::new();
+        let cache = build_diff_cache(
+            patch,
+            "src/components/Foo.vue",
+            "base16-ocean.dark",
+            &HashSet::new(),
+            &mut parser_pool,
+        );
+
+        // Find import and const lines by content
+        let mut import_idx = None;
+        let mut const_idx = None;
+        for (i, line) in cache.lines.iter().enumerate() {
+            let text: String = line
+                .spans
+                .iter()
+                .map(|s| cache.resolve(s.content).to_string())
+                .collect();
+            if text.contains("import { ref }") {
+                import_idx = Some(i);
+            }
+            if text.contains("const count") {
+                const_idx = Some(i);
+            }
+        }
+
+        // The import line should have TypeScript highlighting
+        let import_line = &cache.lines[import_idx.expect("import line not found")];
+        assert!(
+            import_line.spans.len() > 2,
+            "Import line in mixed content should have syntax highlighting, got {} spans",
+            import_line.spans.len()
+        );
+
+        // The const line should also have TypeScript highlighting
+        let const_line = &cache.lines[const_idx.expect("const line not found")];
+        assert!(
+            const_line.spans.len() > 2,
+            "Const line in mixed content should have syntax highlighting, got {} spans",
+            const_line.spans.len()
+        );
+    }
+
+    #[test]
+    fn test_looks_like_script_content_mixed() {
+        // Mixed content should still be detected as script
+        let source = "import { ref } from 'vue'\nconst count = ref(0)\n</div>\n<NewDialog @close=\"closeDialog\" />\n";
+        assert!(
+            looks_like_script_content(source),
+            "Mixed script+template content should be detected as script"
+        );
+    }
+
+    #[test]
+    fn test_looks_like_script_content_pure_template() {
+        // Pure template content should NOT be detected as script
+        let source = "<div>\n  <span>hello</span>\n</div>\n";
+        assert!(
+            !looks_like_script_content(source),
+            "Pure template content should not be detected as script"
         );
     }
 }

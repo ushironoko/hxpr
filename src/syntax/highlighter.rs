@@ -1355,20 +1355,10 @@ const count = ref(0)
             "vue",
         );
 
-        // Check highlights for line 1 (import { ref } from 'vue')
-        // Line 0 is <script lang="ts">, line 1 is the import
+        // Line 1 is import, line 2 is const (line 0 is <script lang="ts">)
         let line1_captures = highlights.get(1);
-        println!("Line 1 captures: {:?}", line1_captures);
-
-        // Line 2 is const count = ref(0)
         let line2_captures = highlights.get(2);
-        println!("Line 2 captures: {:?}", line2_captures);
 
-        // Line 0 is <script lang="ts">
-        let line0_captures = highlights.get(0);
-        println!("Line 0 captures: {:?}", line0_captures);
-
-        // Should have captures for TypeScript keywords
         assert!(
             line1_captures.is_some() && !line1_captures.unwrap().is_empty(),
             "Should have highlights for import line"

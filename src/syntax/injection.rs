@@ -566,20 +566,12 @@ const count = ref(0)
             injections
         );
 
-        if let Some(inj) = ts_injection {
-            let content = std::str::from_utf8(&code.as_bytes()[inj.range.clone()]).unwrap();
-            println!("TypeScript injection content:\n{}", content);
-            println!("Injection range: {:?}", inj.range);
-            assert!(
-                content.contains("import"),
-                "Injection should contain script content, got: {}",
-                content
-            );
-            assert!(
-                content.contains("const count"),
-                "Injection should contain script content, got: {}",
-                content
-            );
-        }
+        let inj = ts_injection.unwrap();
+        let content = std::str::from_utf8(&code.as_bytes()[inj.range.clone()]).unwrap();
+        assert!(content.contains("import"), "Injection should contain import");
+        assert!(
+            content.contains("const count"),
+            "Injection should contain const"
+        );
     }
 }
