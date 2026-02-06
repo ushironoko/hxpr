@@ -126,23 +126,23 @@ async fn run_with_pr(repo: &str, pr: u32, config: &config::Config, args: &Args) 
     let (mut app, tx, needs_fetch) = if args.refresh {
         // --refresh 時は全キャッシュを削除
         let _ = cache::invalidate_all_cache(repo, pr);
-        let (app, tx) = app::App::new_loading(repo, pr, config.clone());
+        let (app, tx) = app::App::new_loading(repo, pr, config.clone(), args.cache_ttl);
         (app, tx, loader::FetchMode::Fresh)
     } else {
         match cache::read_cache(repo, pr, args.cache_ttl) {
             Ok(cache::CacheResult::Hit(entry)) => {
                 let pr_updated_at = entry.pr_updated_at;
                 let (app, tx) =
-                    app::App::new_with_cache(repo, pr, config.clone(), entry.pr, entry.files);
+                    app::App::new_with_cache(repo, pr, config.clone(), args.cache_ttl, entry.pr, entry.files);
                 (app, tx, loader::FetchMode::CheckUpdate(pr_updated_at))
             }
             Ok(cache::CacheResult::Stale(entry)) => {
                 let (app, tx) =
-                    app::App::new_with_cache(repo, pr, config.clone(), entry.pr, entry.files);
+                    app::App::new_with_cache(repo, pr, config.clone(), args.cache_ttl, entry.pr, entry.files);
                 (app, tx, loader::FetchMode::Fresh)
             }
             Ok(cache::CacheResult::Miss) | Err(_) => {
-                let (app, tx) = app::App::new_loading(repo, pr, config.clone());
+                let (app, tx) = app::App::new_loading(repo, pr, config.clone(), args.cache_ttl);
                 (app, tx, loader::FetchMode::Fresh)
             }
         }
@@ -196,7 +196,7 @@ async fn run_with_pr(repo: &str, pr: u32, config: &config::Config, args: &Args) 
 
 /// Run the app with PR list (new flow)
 async fn run_with_pr_list(repo: &str, config: config::Config, args: &Args) -> Result<()> {
-    let mut app = app::App::new_pr_list(repo, config);
+    let mut app = app::App::new_pr_list(repo, config, args.cache_ttl);
     setup_working_dir(&mut app, args);
 
     // Set pending AI Rally flag if --ai-rally was passed

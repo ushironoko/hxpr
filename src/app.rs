@@ -87,8 +87,6 @@ pub struct DiffCache {
     pub file_index: usize,
     /// patch のハッシュ（変更検出用）
     pub patch_hash: u64,
-    /// コメント行のセット（キャッシュ無効化判定用）
-    pub comment_lines: HashSet<usize>,
     /// パース済みの行データ
     pub lines: Vec<CachedDiffLine>,
     /// 文字列インターナー（キャッシュ内で共有）
@@ -363,6 +361,8 @@ pub struct App {
     pub pending_since: Option<Instant>,
     /// シンボル選択ポップアップの状態
     pub symbol_popup: Option<SymbolPopupState>,
+    /// キャッシュ TTL（秒）。--cache-ttl で指定した値をコメント系キャッシュにも統一適用する。
+    pub cache_ttl: u64,
 }
 
 impl App {
@@ -371,6 +371,7 @@ impl App {
         repo: &str,
         pr_number: u32,
         config: Config,
+        cache_ttl: u64,
     ) -> (Self, mpsc::Sender<DataLoadResult>) {
         let (tx, rx) = mpsc::channel(2);
 
@@ -438,6 +439,7 @@ impl App {
             pending_keys: SmallVec::new(),
             pending_since: None,
             symbol_popup: None,
+            cache_ttl,
         };
 
         (app, tx)
@@ -448,6 +450,7 @@ impl App {
         repo: &str,
         pr_number: u32,
         config: Config,
+        cache_ttl: u64,
         pr: PullRequest,
         files: Vec<ChangedFile>,
     ) -> (Self, mpsc::Sender<DataLoadResult>) {
@@ -521,13 +524,14 @@ impl App {
             pending_keys: SmallVec::new(),
             pending_since: None,
             symbol_popup: None,
+            cache_ttl,
         };
 
         (app, tx)
     }
 
     /// PR一覧表示モードで開始（--pr省略時）
-    pub fn new_pr_list(repo: &str, config: Config) -> Self {
+    pub fn new_pr_list(repo: &str, config: Config, cache_ttl: u64) -> Self {
         Self {
             repo: repo.to_string(),
             pr_number: None,
@@ -592,6 +596,7 @@ impl App {
             pending_keys: SmallVec::new(),
             pending_since: None,
             symbol_popup: None,
+            cache_ttl,
         }
     }
 
@@ -804,11 +809,6 @@ impl App {
                     self.diff_cache_receiver = None;
                     return;
                 }
-                // comment_lines変更されていないか確認（BG中にコメント取得が完了した場合）
-                if cache.comment_lines != self.file_comment_lines {
-                    self.diff_cache_receiver = None;
-                    return;
-                }
                 // キャッシュをスワップ（再描画は次フレームで自動）
                 self.diff_cache = Some(cache);
                 self.diff_cache_receiver = None;
@@ -851,14 +851,12 @@ impl App {
 
         tokio::task::spawn_blocking(move || {
             let mut parser_pool = ParserPool::new();
-            let comment_lines = HashSet::new();
 
             for (index, filename, patch) in &files {
                 let mut cache = crate::ui::diff_view::build_diff_cache(
                     patch,
                     filename,
                     &theme,
-                    &comment_lines,
                     &mut parser_pool,
                 );
                 cache.file_index = *index;
@@ -2513,7 +2511,7 @@ impl App {
         let cache_result = crate::cache::read_comment_cache(
             &self.repo,
             self.pr_number(),
-            crate::cache::DEFAULT_TTL_SECS,
+            self.cache_ttl,
         );
 
         let need_fetch = match cache_result {
@@ -2592,7 +2590,7 @@ impl App {
         let cache_result = crate::cache::read_discussion_comment_cache(
             &self.repo,
             self.pr_number(),
-            crate::cache::DEFAULT_TTL_SECS,
+            self.cache_ttl,
         );
 
         let need_fetch = match cache_result {
@@ -3246,9 +3244,7 @@ impl App {
                     return;
                 };
                 let current_hash = hash_string(patch);
-                if cache.patch_hash == current_hash
-                    && cache.comment_lines == self.file_comment_lines
-                {
+                if cache.patch_hash == current_hash {
                     return; // キャッシュ有効
                 }
             }
@@ -3280,9 +3276,7 @@ impl App {
         // 2. ストアにハイライト済みキャッシュがあるか確認
         if let Some(cached) = self.highlighted_cache_store.remove(&file_index) {
             let current_hash = hash_string(&patch);
-            if cached.patch_hash == current_hash
-                && cached.comment_lines == self.file_comment_lines
-            {
+            if cached.patch_hash == current_hash {
                 self.diff_cache = Some(cached);
                 return; // ストアから復元、バックグラウンド構築不要
             }
@@ -3290,8 +3284,7 @@ impl App {
         }
 
         // 3. キャッシュミス: プレーンキャッシュを即座に構築（~1ms）
-        let mut plain_cache =
-            crate::ui::diff_view::build_plain_diff_cache(&patch, &self.file_comment_lines);
+        let mut plain_cache = crate::ui::diff_view::build_plain_diff_cache(&patch);
         plain_cache.file_index = file_index;
         self.diff_cache = Some(plain_cache);
 
@@ -3300,7 +3293,6 @@ impl App {
         self.diff_cache_receiver = Some(rx);
 
         let theme = self.config.diff.theme.clone();
-        let comment_lines = self.file_comment_lines.clone();
 
         tokio::task::spawn_blocking(move || {
             let mut parser_pool = ParserPool::new();
@@ -3308,7 +3300,6 @@ impl App {
                 &patch,
                 &filename,
                 &theme,
-                &comment_lines,
                 &mut parser_pool,
             );
             cache.file_index = file_index;
@@ -3586,10 +3577,12 @@ impl App {
     }
 
     /// PR選択時の処理
+    ///
+    /// L1キャッシュを確認し、Hit/Stale時はキャッシュデータで即座にUI表示しつつ
+    /// バックグラウンドで更新チェック/再取得を行う。
     fn select_pr(&mut self, pr_number: u32) {
         self.pr_number = Some(pr_number);
         self.state = AppState::FileList;
-        self.data_state = DataState::Loading;
 
         // PR遷移時にバックグラウンドキャッシュをクリア（staleキャッシュ防止）
         self.diff_cache_receiver = None;
@@ -3601,6 +3594,35 @@ impl App {
         if self.pending_ai_rally {
             self.start_ai_rally_on_load = true;
         }
+
+        // L1キャッシュを確認し、Hit/Stale/Missに応じて分岐
+        let fetch_mode = match crate::cache::read_cache(&self.repo, pr_number, self.cache_ttl) {
+            Ok(crate::cache::CacheResult::Hit(entry)) => {
+                let pr_updated_at = entry.pr_updated_at;
+                let diff_line_count = Self::calc_diff_line_count(&entry.files, 0);
+                self.data_state = DataState::Loaded {
+                    pr: Box::new(entry.pr),
+                    files: entry.files,
+                };
+                self.diff_line_count = diff_line_count;
+                self.start_prefetch_all_files();
+                crate::loader::FetchMode::CheckUpdate(pr_updated_at)
+            }
+            Ok(crate::cache::CacheResult::Stale(entry)) => {
+                let diff_line_count = Self::calc_diff_line_count(&entry.files, 0);
+                self.data_state = DataState::Loaded {
+                    pr: Box::new(entry.pr),
+                    files: entry.files,
+                };
+                self.diff_line_count = diff_line_count;
+                self.start_prefetch_all_files();
+                crate::loader::FetchMode::Fresh
+            }
+            _ => {
+                self.data_state = DataState::Loading;
+                crate::loader::FetchMode::Fresh
+            }
+        };
 
         // データ読み込みチャンネルを設定
         let (tx, rx) = mpsc::channel(2);
@@ -3614,13 +3636,7 @@ impl App {
 
         tokio::spawn(async move {
             // Initial fetch
-            crate::loader::fetch_pr_data(
-                repo.clone(),
-                pr_number,
-                crate::loader::FetchMode::Fresh,
-                tx.clone(),
-            )
-            .await;
+            crate::loader::fetch_pr_data(repo.clone(), pr_number, fetch_mode, tx.clone()).await;
 
             // Retry loop
             while retry_rx.recv().await.is_some() {
@@ -3699,7 +3715,7 @@ mod tests {
     #[test]
     fn test_has_comment_at_current_line() {
         let config = Config::default();
-        let (mut app, _) = App::new_loading("owner/repo", 1, config);
+        let (mut app, _) = App::new_loading("owner/repo", 1, config, crate::cache::DEFAULT_TTL_SECS);
         app.file_comment_positions = vec![
             CommentPosition {
                 diff_line_index: 5,
@@ -3724,7 +3740,7 @@ mod tests {
     #[test]
     fn test_get_comment_indices_at_current_line() {
         let config = Config::default();
-        let (mut app, _) = App::new_loading("owner/repo", 1, config);
+        let (mut app, _) = App::new_loading("owner/repo", 1, config, crate::cache::DEFAULT_TTL_SECS);
         // Two comments on line 5, one on line 10
         app.file_comment_positions = vec![
             CommentPosition {
@@ -3757,7 +3773,7 @@ mod tests {
     #[test]
     fn test_jump_to_next_comment_basic() {
         let config = Config::default();
-        let (mut app, _) = App::new_loading("owner/repo", 1, config);
+        let (mut app, _) = App::new_loading("owner/repo", 1, config, crate::cache::DEFAULT_TTL_SECS);
         app.file_comment_positions = vec![
             CommentPosition {
                 diff_line_index: 5,
@@ -3787,7 +3803,7 @@ mod tests {
     #[test]
     fn test_jump_to_next_comment_no_wrap() {
         let config = Config::default();
-        let (mut app, _) = App::new_loading("owner/repo", 1, config);
+        let (mut app, _) = App::new_loading("owner/repo", 1, config, crate::cache::DEFAULT_TTL_SECS);
         app.file_comment_positions = vec![CommentPosition {
             diff_line_index: 5,
             comment_index: 0,
@@ -3802,7 +3818,7 @@ mod tests {
     #[test]
     fn test_jump_to_prev_comment_basic() {
         let config = Config::default();
-        let (mut app, _) = App::new_loading("owner/repo", 1, config);
+        let (mut app, _) = App::new_loading("owner/repo", 1, config, crate::cache::DEFAULT_TTL_SECS);
         app.file_comment_positions = vec![
             CommentPosition {
                 diff_line_index: 5,
@@ -3832,7 +3848,7 @@ mod tests {
     #[test]
     fn test_jump_to_prev_comment_no_wrap() {
         let config = Config::default();
-        let (mut app, _) = App::new_loading("owner/repo", 1, config);
+        let (mut app, _) = App::new_loading("owner/repo", 1, config, crate::cache::DEFAULT_TTL_SECS);
         app.file_comment_positions = vec![CommentPosition {
             diff_line_index: 5,
             comment_index: 0,
@@ -3847,7 +3863,7 @@ mod tests {
     #[test]
     fn test_jump_with_empty_positions() {
         let config = Config::default();
-        let (mut app, _) = App::new_loading("owner/repo", 1, config);
+        let (mut app, _) = App::new_loading("owner/repo", 1, config, crate::cache::DEFAULT_TTL_SECS);
         app.file_comment_positions = vec![];
 
         app.selected_line = 10;

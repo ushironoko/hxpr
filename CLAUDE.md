@@ -64,6 +64,7 @@ main.rs
 - **cache.rs**: キャッシュ管理（JSON ファイル、TTL ベース）
   - PRデータ: `~/.cache/octorus/{repo}_{pr}.json`
   - コメント: `~/.cache/octorus/{repo}_{pr}_comments.json`
+  - ディスカッションコメント: `~/.cache/octorus/{repo}_{pr}_discussion_comments.json`
 - **loader.rs**: バックグラウンドデータ取得（`tokio::spawn`）
 - **config.rs**: 設定ファイル読み込み（`~/.config/octorus/config.toml`）
 - **editor/**: 外部エディタ連携（コメント入力）
@@ -106,7 +107,7 @@ FileList ──[Enter/→/l]──> SplitViewDiff ──[Tab/→/l]──> DiffV
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ L1: 永続キャッシュ（ファイルシステム）                         │
+│ L1: セッションスコープキャッシュ（ファイルシステム、終了時破棄） │
 │   cache.rs: PRデータ/コメントのJSON キャッシュ (TTL: 300s)    │
 └─────────────────────────────────────────────────────────────┘
                          ↓
@@ -141,9 +142,10 @@ FileList ──[Enter/→/l]──> SplitViewDiff ──[Tab/→/l]──> DiffV
 
 ---
 
-#### L1: 永続キャッシュ（cache.rs）
+#### L1: セッションスコープキャッシュ（cache.rs）
 
-PRデータとコメントをファイルシステムにJSON保存し、再起動時の即時表示を実現。
+PRデータとコメントをファイルシステムにJSON保存し、セッション中の即時表示を実現。
+プロセス終了時に全キャッシュを削除する設計（セッションスコープ）。
 
 | キャッシュ種類 | ファイルパス | TTL |
 |----------------|-------------|-----|
@@ -156,10 +158,12 @@ PRデータとコメントをファイルシステムにJSON保存し、再起�
 ```
 [起動]
   → read_cache(repo, pr, ttl)
-    → Hit → App::new_with_cache()          [即座にUI表示]
-          + spawn { CheckUpdate(cached_at) } [バックグラウンドで鮮度チェック]
-    → Stale/Miss → App::new_loading()       [ローディング表示]
-                 + spawn { Fresh fetch }     [API取得]
+    → Hit → App::new_with_cache()               [即座にUI表示]
+          + spawn { CheckUpdate(pr_updated_at) } [バックグラウンドで鮮度チェック]
+    → Stale → App::new_with_cache()              [staleデータで即座にUI表示]
+            + spawn { Fresh fetch }              [バックグラウンドで再取得]
+    → Miss → App::new_loading()                  [ローディング表示]
+           + spawn { Fresh fetch }               [API取得]
   → メインループ: poll_data_updates()
     → mpsc 経由で更新受信 → DataState::Loaded に遷移
 ```
@@ -206,14 +210,13 @@ PRデータロード完了時に、全ファイルのシンタックスハイラ
 DiffCache {
     file_index: usize,              // キャッシュ対象のファイルインデックス
     patch_hash: u64,                // patch 内容のハッシュ（変更検出用）
-    comment_lines: HashSet<usize>,  // コメント行セット（無効化判定用）
     lines: Vec<CachedDiffLine>,     // パース済み行データ
     interner: Rodeo,                // 文字列インターナー（キャッシュ内で共有）
     highlighted: bool,              // ハイライト済みフラグ（false=プレーン）
 }
 
 CachedDiffLine {
-    spans: Vec<InternedSpan>,       // REVERSED 修飾子なし
+    spans: Vec<InternedSpan>,       // REVERSED 修飾子なし（コメントマーカーはレンダリング時に挿入）
 }
 
 InternedSpan {
@@ -222,15 +225,18 @@ InternedSpan {
 }
 ```
 
+**コメントマーカー（● ）**: キャッシュ構築時ではなくレンダリング時（`render_cached_lines`）にイテレータ合成で挿入。
+これにより `DiffCache` が `comment_lines` に依存せず、プリフェッチキャッシュがコメント取得後も有効。
+
 **3段階ルックアップ（ensure_diff_cache）**:
 
 ```
 1. 現在の diff_cache が有効か確認（O(1)）
-   → file_index, patch_hash, comment_lines を照合
+   → file_index, patch_hash を照合
    → 有効ならそのまま使用
 
 2. highlighted_cache_store にハイライト済みキャッシュがあるか確認
-   → patch_hash + comment_lines を照合
+   → patch_hash を照合
    → 有効なら復元（ファイル遷移時の即座復元）
 
 3. キャッシュミス: 2段階構築
@@ -239,7 +245,7 @@ InternedSpan {
            → poll_diff_cache_updates() で受信してスワップ
 ```
 
-**キャッシュ無効化条件**: `file_index` / `patch_hash` / `comment_lines` のいずれかが不一致
+**キャッシュ無効化条件**: `file_index` / `patch_hash` のいずれかが不一致
 
 **更新トリガー**:
 - `handle_file_list_input(Enter)`: ファイル選択時
@@ -247,7 +253,7 @@ InternedSpan {
 - `jump_to_comment()`: コメントジャンプ時
 
 **Stale防止**:
-- `poll_diff_cache_updates()`: バリデーション（file_index, patch_hash, comment_lines, DataState）で stale キャッシュを破棄
+- `poll_diff_cache_updates()`: バリデーション（file_index, patch_hash, DataState）で stale キャッシュを破棄
 - PR遷移時: `diff_cache_receiver`, `prefetch_receiver`, `highlighted_cache_store` をすべてクリア
 
 ---

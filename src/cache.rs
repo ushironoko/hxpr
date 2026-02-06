@@ -137,11 +137,18 @@ fn read_cache_generic<T: Cacheable>(
     }
 }
 
-/// ジェネリックキャッシュ書き込み
+/// ジェネリックキャッシュ書き込み（atomic: tempfile + persist）
 fn write_cache_generic<T: Cacheable>(repo: &str, pr_number: u32, entry: &T) -> Result<()> {
-    std::fs::create_dir_all(cache_dir())?;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    let dir = cache_dir();
+    std::fs::create_dir_all(&dir)?;
     let content = serde_json::to_string_pretty(entry)?;
-    std::fs::write(cache_file_path_generic::<T>(repo, pr_number)?, content)?;
+    let target = cache_file_path_generic::<T>(repo, pr_number)?;
+    let mut tmp = NamedTempFile::new_in(&dir)?;
+    tmp.write_all(content.as_bytes())?;
+    tmp.persist(target)?;
     Ok(())
 }
 
