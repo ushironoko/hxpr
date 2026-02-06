@@ -3606,6 +3606,11 @@ impl App {
                 };
                 self.diff_line_count = diff_line_count;
                 self.start_prefetch_all_files();
+                // キャッシュHit時はhandle_data_resultを経由しないため、ここでRally起動
+                if self.start_ai_rally_on_load {
+                    self.start_ai_rally_on_load = false;
+                    self.start_ai_rally();
+                }
                 crate::loader::FetchMode::CheckUpdate(pr_updated_at)
             }
             Ok(crate::cache::CacheResult::Stale(entry)) => {
@@ -3616,6 +3621,11 @@ impl App {
                 };
                 self.diff_line_count = diff_line_count;
                 self.start_prefetch_all_files();
+                // キャッシュStale時はhandle_data_resultを経由しないため、ここでRally起動
+                if self.start_ai_rally_on_load {
+                    self.start_ai_rally_on_load = false;
+                    self.start_ai_rally();
+                }
                 crate::loader::FetchMode::Fresh
             }
             _ => {
