@@ -100,35 +100,208 @@ FileList ──[Enter/→/l]──> SplitViewDiff ──[Tab/→/l]──> DiffV
 **DataState** (データ状態):
 - `Loading` → `Loaded { pr, files }` or `Error(String)`
 
-### Async Pattern
+### Performance Optimizations
 
-キャッシュヒット時は即座に UI 表示し、バックグラウンドで更新チェックを行う lazy loading パターン:
+最適化は5つのレイヤーで構成される。上位レイヤーほどユーザーに近く、下位ほど基盤的。
 
-**PRデータ取得**:
-1. `main.rs`: 同期的にキャッシュ読み込み
-2. `App::new_with_cache()` で即座にデータ表示
-3. `loader::fetch_pr_data()` がバックグラウンドで更新チェック
-4. `App::poll_data_updates()` が mpsc チャンネル経由で更新を受信
+```
+┌─────────────────────────────────────────────────────────────┐
+│ L1: 永続キャッシュ（ファイルシステム）                         │
+│   cache.rs: PRデータ/コメントのJSON キャッシュ (TTL: 300s)    │
+└─────────────────────────────────────────────────────────────┘
+                         ↓
+┌─────────────────────────────────────────────────────────────┐
+│ L2: プリフェッチ（バックグラウンド事前構築）                    │
+│   app.rs: start_prefetch_all_files() → 全ファイル事前構築     │
+└─────────────────────────────────────────────────────────────┘
+                         ↓
+┌─────────────────────────────────────────────────────────────┐
+│ L3: DiffCache（インメモリ 3段階ルックアップ）                  │
+│   app.rs: ensure_diff_cache() → 現在/ストア/新規構築          │
+└─────────────────────────────────────────────────────────────┘
+                         ↓
+┌─────────────────────────────────────────────────────────────┐
+│ L4: ParserPool（パーサー/クエリ再利用）                       │
+│   syntax/parser_pool.rs: 言語ごとに Parser/Query を1つ保持    │
+└─────────────────────────────────────────────────────────────┘
+                         ↓
+┌─────────────────────────────────────────────────────────────┐
+│ L5: ハイライト構築最適化                                      │
+│   syntax/highlighter.rs: 全体パース・文字列インターニング等   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### 定数一覧
+
+| 定数 | 値 | 場所 | 用途 |
+|------|----|------|------|
+| `DEFAULT_TTL_SECS` | 300s (5分) | `cache.rs` | PRデータ/コメントキャッシュ有効期限 |
+| `MAX_HIGHLIGHTED_CACHE_ENTRIES` | 50 | `app.rs` | ハイライトキャッシュストア上限 |
+| `MAX_PREFETCH_FILES` | 50 | `app.rs` | プリフェッチ対象ファイル上限 |
+
+---
+
+#### L1: 永続キャッシュ（cache.rs）
+
+PRデータとコメントをファイルシステムにJSON保存し、再起動時の即時表示を実現。
+
+| キャッシュ種類 | ファイルパス | TTL |
+|----------------|-------------|-----|
+| PRデータ | `~/.cache/octorus/{repo}_{pr}.json` | 300s |
+| レビューコメント | `~/.cache/octorus/{repo}_{pr}_comments.json` | 300s |
+| ディスカッションコメント | `~/.cache/octorus/{repo}_{pr}_discussion_comments.json` | 300s |
+
+**戦略: Lazy Loading with Background Update Check**
+
+```
+[起動]
+  → read_cache(repo, pr, ttl)
+    → Hit → App::new_with_cache()          [即座にUI表示]
+          + spawn { CheckUpdate(cached_at) } [バックグラウンドで鮮度チェック]
+    → Stale/Miss → App::new_loading()       [ローディング表示]
+                 + spawn { Fresh fetch }     [API取得]
+  → メインループ: poll_data_updates()
+    → mpsc 経由で更新受信 → DataState::Loaded に遷移
+```
 
 **コメント取得**:
 1. `App::open_comment_list()`: キャッシュ確認 → 即座に画面遷移
 2. キャッシュヒット: 即座に表示、API呼び出しなし
-3. キャッシュ古い/なし: バックグラウンドで取得
-4. `App::poll_comment_updates()` が mpsc チャンネル経由で更新を受信
+3. キャッシュ古い/なし: バックグラウンドで取得 → `poll_comment_updates()` 経由で受信
 
-### Diff Cache
+**セキュリティ**: `sanitize_repo_name()` でパストラバーサル攻撃を防止
 
-シンタックスハイライト済みの diff 行をキャッシュし、スクロール時の再計算を回避:
+---
 
-- `DiffCache`: ファイルインデックス、patch ハッシュ、コメント行セット、キャッシュ済み行データを保持
-- `CachedDiffLine`: `Vec<Span<'static>>` を保持（REVERSED 修飾子なし）
-- `App::ensure_diff_cache()`: キャッシュの有効性を確認し、必要に応じて再構築
-- キャッシュ無効化条件: ファイル変更、patch 内容変更、コメント行変更
+#### L2: プリフェッチ（app.rs: start_prefetch_all_files）
 
-**更新タイミング**:
+PRデータロード完了時に、全ファイルのシンタックスハイライトキャッシュをバックグラウンドで事前構築。
+
+**開始トリガー**: PRデータロード完了時（起動時キャッシュヒット or `poll_data_updates()` でデータ到着時）
+
+```
+[PRデータロード完了]
+  → start_prefetch_all_files()
+    → 未キャッシュファイル収集（patch ありのみ、上限 MAX_PREFETCH_FILES 件）
+    → spawn_blocking {
+        単一 ParserPool で全ファイルの build_diff_cache() を順次実行
+        → mpsc::channel 経由で完成したキャッシュを送信
+      }
+  → メインループ: poll_prefetch_updates()
+    → 受信した DiffCache を highlighted_cache_store に格納
+    → 現在表示中のファイルはスキップ（重複防止）
+    → 既にストアにあるファイルもスキップ
+    → サイズ超過時: 現在選択中ファイルから最も遠いエントリを削除（距離ベース eviction）
+```
+
+---
+
+#### L3: DiffCache（app.rs: ensure_diff_cache）
+
+シンタックスハイライト済みの diff 行をインメモリキャッシュし、スクロール時の再計算を回避。
+
+**データ構造**:
+
+```rust
+DiffCache {
+    file_index: usize,              // キャッシュ対象のファイルインデックス
+    patch_hash: u64,                // patch 内容のハッシュ（変更検出用）
+    comment_lines: HashSet<usize>,  // コメント行セット（無効化判定用）
+    lines: Vec<CachedDiffLine>,     // パース済み行データ
+    interner: Rodeo,                // 文字列インターナー（キャッシュ内で共有）
+    highlighted: bool,              // ハイライト済みフラグ（false=プレーン）
+}
+
+CachedDiffLine {
+    spans: Vec<InternedSpan>,       // REVERSED 修飾子なし
+}
+
+InternedSpan {
+    content: Spur,  // インターン済み文字列参照（4 bytes）
+    style: Style,   // スタイル情報（8 bytes）
+}
+```
+
+**3段階ルックアップ（ensure_diff_cache）**:
+
+```
+1. 現在の diff_cache が有効か確認（O(1)）
+   → file_index, patch_hash, comment_lines を照合
+   → 有効ならそのまま使用
+
+2. highlighted_cache_store にハイライト済みキャッシュがあるか確認
+   → patch_hash + comment_lines を照合
+   → 有効なら復元（ファイル遷移時の即座復元）
+
+3. キャッシュミス: 2段階構築
+   → 即座: build_plain_diff_cache() [~1ms、diff色分けのみ]
+   → BG:   spawn_blocking { build_diff_cache() } [シンタックスハイライト]
+           → poll_diff_cache_updates() で受信してスワップ
+```
+
+**キャッシュ無効化条件**: `file_index` / `patch_hash` / `comment_lines` のいずれかが不一致
+
+**更新トリガー**:
 - `handle_file_list_input(Enter)`: ファイル選択時
 - `poll_comment_updates()`: コメント取得完了時
 - `jump_to_comment()`: コメントジャンプ時
+
+**Stale防止**:
+- `poll_diff_cache_updates()`: バリデーション（file_index, patch_hash, comment_lines, DataState）で stale キャッシュを破棄
+- PR遷移時: `diff_cache_receiver`, `prefetch_receiver`, `highlighted_cache_store` をすべてクリア
+
+---
+
+#### L4: ParserPool（syntax/parser_pool.rs）
+
+tree-sitter の Parser と Query を言語ごとにプールし、生成コストを回避。
+
+```rust
+ParserPool {
+    parsers: HashMap<SupportedLanguage, Parser>,  // ~200KB/parser、遅延生成
+    queries: HashMap<SupportedLanguage, Query>,   // コンパイル済みクエリキャッシュ
+}
+```
+
+- `get_or_create(ext)`: 拡張子からパーサーを取得/生成
+- `get_or_create_query(lang)`: ハイライトクエリを取得/コンパイル（injection 処理で特に効果大）
+
+**効果**: Svelte（3クエリ: Svelte/TS/CSS）や Vue（3クエリ: Vue/TS/CSS）で大幅高速化。プリフェッチ時は単一 ParserPool を全ファイルで共有。
+
+---
+
+#### L5: ハイライト構築最適化（syntax/highlighter.rs, ui/diff_view.rs）
+
+**5a. 全体パース + 行ごと適用（collect_line_highlights）**
+
+従来の「行ごとにクエリ実行」ではなく、ソース全体を1回クエリ実行し、結果を行ごとにマッピング。
+
+```
+[build_diff_cache]
+  → build_combined_source_for_highlight_with_priming()
+    → added/context 行のみ抽出（removed 行を除外して構文エラー回避）
+    → Vue/Svelte: priming tag 追加（<script lang="ts"> 等）
+  → Highlighter::for_file() → ThemeStyleCache 構築
+  → highlighter.parse_source() → Tree
+  → collect_line_highlights_with_injections()
+    → 親言語のハイライト収集（1回のクエリ実行）
+    → 各 injection 範囲を別パーサーで処理（TS/CSS 等）
+    → マージして LineHighlights 返却
+  → build_lines_with_cst()
+    → 各 diff 行にハイライトを適用 → InternedSpan 生成
+```
+
+**5b. 文字列インターニング（lasso::Rodeo）**
+
+`let`, `const`, `fn` 等の重複トークンを `Spur`（4 bytes インデックス）で共有。DiffCache ごとに Rodeo を保持。
+
+**5c. スタイルキャッシュ（ThemeStyleCache）**
+
+`HashMap<&'static str, Style>` で capture 名 → Style を事前計算。各 capture で O(1) ルックアップ。
+
+**5d. injection 処理（Svelte/Vue）**
+
+`collect_line_highlights_with_injections()` で `<script lang="ts">`/`<style>` 内のコードを別パーサーでハイライト。親言語のハイライトとマージ。
 
 ## AI Rally Feature
 
