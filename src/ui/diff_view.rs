@@ -27,19 +27,17 @@ use crate::syntax::{
 ///
 /// # Arguments
 /// * `patch` - The diff patch content
-/// * `comment_lines` - Set of line indices that have comments
 ///
 /// Returns a DiffCache with file_index set to 0 (caller should update).
-pub fn build_plain_diff_cache(patch: &str, comment_lines: &HashSet<usize>) -> DiffCache {
+pub fn build_plain_diff_cache(patch: &str) -> DiffCache {
     let mut interner = Rodeo::default();
     let lines: Vec<CachedDiffLine> = patch
         .lines()
         .enumerate()
-        .map(|(i, line)| {
-            let has_comment = comment_lines.contains(&i);
+        .map(|(_, line)| {
             let (line_type, content) = classify_line(line);
 
-            let mut spans = match line_type {
+            let spans = match line_type {
                 LineType::Header => vec![InternedSpan {
                     content: interner.get_or_intern(line),
                     style: Style::default().fg(Color::Cyan),
@@ -80,15 +78,6 @@ pub fn build_plain_diff_cache(patch: &str, comment_lines: &HashSet<usize>) -> Di
                 ],
             };
 
-            if has_comment {
-                spans.insert(
-                    0,
-                    InternedSpan {
-                        content: interner.get_or_intern("● "),
-                        style: Style::default().fg(Color::Yellow),
-                    },
-                );
-            }
             CachedDiffLine { spans }
         })
         .collect();
@@ -96,7 +85,6 @@ pub fn build_plain_diff_cache(patch: &str, comment_lines: &HashSet<usize>) -> Di
     DiffCache {
         file_index: 0,
         patch_hash: hash_string(patch),
-        comment_lines: comment_lines.clone(),
         lines,
         interner,
         highlighted: false,
@@ -112,7 +100,6 @@ pub fn build_plain_diff_cache(patch: &str, comment_lines: &HashSet<usize>) -> Di
 /// * `patch` - The diff patch content
 /// * `filename` - The filename for syntax detection
 /// * `theme_name` - The theme name for syntect fallback
-/// * `comment_lines` - Set of line indices that have comments
 /// * `parser_pool` - Shared parser pool for tree-sitter parser reuse
 ///
 /// Returns a complete DiffCache with file_index set to 0 (caller should update).
@@ -120,7 +107,6 @@ pub fn build_diff_cache(
     patch: &str,
     filename: &str,
     theme_name: &str,
-    comment_lines: &HashSet<usize>,
     parser_pool: &mut ParserPool,
 ) -> DiffCache {
     let mut interner = Rodeo::default();
@@ -192,7 +178,6 @@ pub fn build_diff_cache(
             patch,
             filename,
             theme_name,
-            comment_lines,
             &line_highlights,
             &line_mapping,
             priming_lines,
@@ -200,13 +185,12 @@ pub fn build_diff_cache(
         )
     } else {
         // Syntect fallback path (no CST support for this file type)
-        build_lines_with_syntect(patch, filename, theme_name, comment_lines, &mut interner)
+        build_lines_with_syntect(patch, filename, theme_name, &mut interner)
     };
 
     DiffCache {
         file_index: 0, // Caller should update this
         patch_hash: hash_string(patch),
-        comment_lines: comment_lines.clone(),
         lines,
         interner,
         highlighted: true,
@@ -373,7 +357,6 @@ fn build_combined_source_for_highlight_with_priming(
 /// * `patch` - The original diff patch
 /// * `filename` - The filename for syntect fallback highlighting
 /// * `theme_name` - The theme name for syntect fallback highlighting
-/// * `comment_lines` - Set of line indices with comments
 /// * `line_highlights` - Pre-computed highlights from tree-sitter (indexed by source line)
 /// * `line_mapping` - Mapping from source line index to (diff line index, line type)
 /// * `priming_lines` - Number of priming lines added for SFC languages (to offset indices)
@@ -383,7 +366,6 @@ fn build_lines_with_cst(
     patch: &str,
     filename: &str,
     theme_name: &str,
-    comment_lines: &HashSet<usize>,
     line_highlights: &crate::syntax::LineHighlights,
     line_mapping: &[(usize, LineType)],
     priming_lines: usize,
@@ -409,7 +391,6 @@ fn build_lines_with_cst(
         .lines()
         .enumerate()
         .map(|(i, line)| {
-            let has_comment = comment_lines.contains(&i);
             let (line_type, content) = classify_line(line);
 
             let spans = match line_type {
@@ -468,23 +449,7 @@ fn build_lines_with_cst(
                 }
             };
 
-            let mut result_spans = spans;
-
-            // Add comment indicator at the beginning if this line has comments
-            if has_comment {
-                let marker = interner.get_or_intern("● ");
-                result_spans.insert(
-                    0,
-                    InternedSpan {
-                        content: marker,
-                        style: Style::default().fg(Color::Yellow),
-                    },
-                );
-            }
-
-            CachedDiffLine {
-                spans: result_spans,
-            }
+            CachedDiffLine { spans }
         })
         .collect()
 }
@@ -494,7 +459,6 @@ fn build_lines_with_syntect(
     patch: &str,
     filename: &str,
     theme_name: &str,
-    comment_lines: &HashSet<usize>,
     interner: &mut Rodeo,
 ) -> Vec<CachedDiffLine> {
     let syntax = syntax_for_file(filename);
@@ -514,24 +478,10 @@ fn build_lines_with_syntect(
 
     patch
         .lines()
-        .enumerate()
-        .map(|(i, line)| {
-            let has_comment = comment_lines.contains(&i);
+        .map(|line| {
             let (line_type, content) = classify_line(line);
 
-            let mut spans = build_line_spans(line_type, line, content, &mut highlighter, interner);
-
-            // Add comment indicator at the beginning if this line has comments
-            if has_comment {
-                let marker = interner.get_or_intern("● ");
-                spans.insert(
-                    0,
-                    InternedSpan {
-                        content: marker,
-                        style: Style::default().fg(Color::Yellow),
-                    },
-                );
-            }
+            let spans = build_line_spans(line_type, line, content, &mut highlighter, interner);
 
             CachedDiffLine { spans }
         })
@@ -541,15 +491,18 @@ fn build_lines_with_syntect(
 /// Convert cached diff lines to renderable [`Line`]s using zero-copy borrowing.
 ///
 /// Resolves interned strings from the DiffCache's interner, avoiding heap
-/// allocations entirely.
+/// allocations entirely. Comment markers (`● `) are injected at render time
+/// via iterator composition (no `Vec::insert`).
 ///
 /// * `cache` – the DiffCache containing both lines and the interner.
 /// * `range` – the range of lines to render (may be a sub-range).
 /// * `selected_line` – absolute index of the currently selected line.
+/// * `comment_lines` – set of diff line indices that have comments (for `●` marker).
 pub fn render_cached_lines<'a>(
     cache: &'a DiffCache,
     range: std::ops::Range<usize>,
     selected_line: usize,
+    comment_lines: &HashSet<usize>,
 ) -> Vec<Line<'a>> {
     // Clamp range to valid bounds to prevent out-of-bounds panic
     let len = cache.lines.len();
@@ -564,15 +517,22 @@ pub fn render_cached_lines<'a>(
         .map(|(rel_idx, cached)| {
             let abs_idx = safe_range.start + rel_idx;
             let is_selected = abs_idx == selected_line;
-            let spans: Vec<Span<'_>> = cached
+
+            let marker = if comment_lines.contains(&abs_idx) {
+                Some(Span::styled("● ", Style::default().fg(Color::Yellow)))
+            } else {
+                None
+            };
+            let base = cached
                 .spans
                 .iter()
-                .map(|s| Span::styled(cache.resolve(s.content), s.style))
-                .collect();
+                .map(|s| Span::styled(cache.resolve(s.content), s.style));
+            let all_spans: Vec<Span<'_>> = marker.into_iter().chain(base).collect();
+
             if is_selected {
-                Line::from(spans).style(Style::default().add_modifier(Modifier::REVERSED))
+                Line::from(all_spans).style(Style::default().add_modifier(Modifier::REVERSED))
             } else {
-                Line::from(spans)
+                Line::from(all_spans)
             }
         })
         .collect()
@@ -688,7 +648,7 @@ pub(crate) fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::l
 
         // Only process visible lines (with buffer) for performance
         // When visible_start >= visible_end, this produces an empty range (safe)
-        render_cached_lines(cache, visible_start..visible_end, app.selected_line)
+        render_cached_lines(cache, visible_start..visible_end, app.selected_line, &app.file_comment_lines)
     } else {
         // Fallback: parse without cache (should rarely happen)
         let file = app.files().get(app.selected_file);
@@ -777,7 +737,7 @@ fn parse_patch_to_lines(
     // This ensures consistent behavior with cached path
     // Creates a temporary ParserPool - this is acceptable for this rarely-used fallback path
     let mut parser_pool = ParserPool::new();
-    let cache = build_diff_cache(patch, filename, theme_name, comment_lines, &mut parser_pool);
+    let cache = build_diff_cache(patch, filename, theme_name, &mut parser_pool);
 
     cache
         .lines
@@ -785,19 +745,30 @@ fn parse_patch_to_lines(
         .enumerate()
         .map(|(i, cached)| {
             let is_selected = i == selected_line;
-            let spans: Vec<Span<'static>> = cached
-                .spans
-                .iter()
-                .map(|s| {
-                    let text = cache.resolve(s.content).to_string();
-                    let mut style = s.style;
+            let marker = if comment_lines.contains(&i) {
+                Some(Span::styled(
+                    "● ".to_string(),
                     if is_selected {
-                        style = style.add_modifier(Modifier::REVERSED);
-                    }
-                    Span::styled(text, style)
-                })
-                .collect();
-            Line::from(spans)
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::REVERSED)
+                    } else {
+                        Style::default().fg(Color::Yellow)
+                    },
+                ))
+            } else {
+                None
+            };
+            let base = cached.spans.iter().map(|s| {
+                let text = cache.resolve(s.content).to_string();
+                let mut style = s.style;
+                if is_selected {
+                    style = style.add_modifier(Modifier::REVERSED);
+                }
+                Span::styled(text, style)
+            });
+            let all_spans: Vec<Span<'static>> = marker.into_iter().chain(base).collect();
+            Line::from(all_spans)
         })
         .collect()
 }
@@ -1209,12 +1180,10 @@ mod tests {
  }"#;
 
         let mut parser_pool = ParserPool::new();
-        let comment_lines = HashSet::new();
         let cache = build_diff_cache(
             patch,
             "test.rs",
             "Dracula",
-            &comment_lines,
             &mut parser_pool,
         );
 
@@ -1259,12 +1228,10 @@ mod tests {
  }"#;
 
         let mut parser_pool = ParserPool::new();
-        let comment_lines = HashSet::new();
         let cache = build_diff_cache(
             patch,
             "test.rs",
             "Dracula",
-            &comment_lines,
             &mut parser_pool,
         );
 
@@ -1322,12 +1289,10 @@ mod tests {
  export default oldValue;"#;
 
         let mut parser_pool = ParserPool::new();
-        let comment_lines = HashSet::new();
         let cache = build_diff_cache(
             patch,
             "test.ts",
             "Dracula",
-            &comment_lines,
             &mut parser_pool,
         );
 
@@ -1383,12 +1348,10 @@ mod tests {
  function increment() {"#;
 
         let mut parser_pool = ParserPool::new();
-        let comment_lines = HashSet::new();
         let cache = build_diff_cache(
             patch,
             "Component.vue",
             "Dracula",
-            &comment_lines,
             &mut parser_pool,
         );
 
@@ -1540,12 +1503,11 @@ mod tests {
     #[test]
     fn plain_and_highlighted_cache_have_same_line_count() {
         let patch = "diff --git a/foo.rs b/foo.rs\n--- a/foo.rs\n+++ b/foo.rs\n@@ -1,3 +1,3 @@\n fn main() {\n-    println!(\"hello\");\n+    println!(\"world\");\n }";
-        let comment_lines = HashSet::new();
         let mut parser_pool = ParserPool::new();
 
-        let plain = build_plain_diff_cache(patch, &comment_lines);
+        let plain = build_plain_diff_cache(patch);
         let highlighted =
-            build_diff_cache(patch, "foo.rs", "base16-ocean.dark", &comment_lines, &mut parser_pool);
+            build_diff_cache(patch, "foo.rs", "base16-ocean.dark", &mut parser_pool);
 
         assert_eq!(plain.lines.len(), highlighted.lines.len());
 
@@ -1555,43 +1517,64 @@ mod tests {
     }
 
     #[test]
-    fn plain_and_highlighted_cache_comment_markers_match() {
+    fn render_cached_lines_inserts_comment_markers() {
         let patch = "diff --git a/foo.rs b/foo.rs\n--- a/foo.rs\n+++ b/foo.rs\n@@ -1,3 +1,3 @@\n fn main() {\n-    println!(\"hello\");\n+    println!(\"world\");\n }";
-        // コメント付きの行で marker の配置が一致するか確認
+        // コメントマーカーがレンダリング時に挿入されることを検証
         let mut comment_lines = HashSet::new();
         comment_lines.insert(4); // 行インデックス4（context行）
         comment_lines.insert(6); // 行インデックス6（added行）
         let mut parser_pool = ParserPool::new();
 
-        let plain = build_plain_diff_cache(patch, &comment_lines);
+        let plain = build_plain_diff_cache(patch);
         let highlighted =
-            build_diff_cache(patch, "foo.rs", "base16-ocean.dark", &comment_lines, &mut parser_pool);
+            build_diff_cache(patch, "foo.rs", "base16-ocean.dark", &mut parser_pool);
 
         assert_eq!(plain.lines.len(), highlighted.lines.len());
-        assert_eq!(plain.comment_lines, highlighted.comment_lines);
 
-        // コメント行にはマーカー「●」が先頭にあること（両方のキャッシュで一致）
+        // キャッシュ自体にはコメントマーカーが含まれないことを確認
+        let plain_first = plain.resolve(plain.lines[4].spans[0].content);
+        assert!(
+            !plain_first.contains('●'),
+            "plain cache should not contain comment marker in spans"
+        );
+
+        // render_cached_lines でコメントマーカーが挿入されること
+        let plain_rendered = render_cached_lines(&plain, 0..plain.lines.len(), 0, &comment_lines);
+        let hl_rendered = render_cached_lines(&highlighted, 0..highlighted.lines.len(), 0, &comment_lines);
+
         for &line_idx in &[4usize, 6] {
-            let plain_first = plain.resolve(plain.lines[line_idx].spans[0].content);
-            let hl_first = highlighted.resolve(highlighted.lines[line_idx].spans[0].content);
+            let plain_line_text: String = plain_rendered[line_idx]
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect();
+            let hl_line_text: String = hl_rendered[line_idx]
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect();
             assert!(
-                plain_first.contains('●'),
-                "plain cache line {} should have comment marker, got: {:?}",
+                plain_line_text.contains('●'),
+                "plain rendered line {} should have comment marker, got: {:?}",
                 line_idx,
-                plain_first,
+                plain_line_text,
             );
             assert!(
-                hl_first.contains('●'),
-                "highlighted cache line {} should have comment marker, got: {:?}",
+                hl_line_text.contains('●'),
+                "highlighted rendered line {} should have comment marker, got: {:?}",
                 line_idx,
-                hl_first,
+                hl_line_text,
             );
         }
 
         // コメントのない行にはマーカーがないこと
-        let plain_no_comment = plain.resolve(plain.lines[0].spans[0].content);
+        let no_comment_text: String = plain_rendered[0]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
         assert!(
-            !plain_no_comment.contains('●'),
+            !no_comment_text.contains('●'),
             "non-comment line should not have marker"
         );
     }
@@ -1601,7 +1584,6 @@ mod tests {
 mod priming_diff_tests {
     use super::*;
     use crate::syntax::ParserPool;
-    use std::collections::HashSet;
 
     #[test]
     fn test_build_diff_cache_primed_vue() {
@@ -1622,7 +1604,6 @@ mod priming_diff_tests {
             patch,
             "src/components/Foo.vue",
             "base16-ocean.dark",
-            &HashSet::new(),
             &mut parser_pool,
         );
 
@@ -1660,7 +1641,6 @@ mod priming_diff_tests {
             patch,
             "src/components/Foo.vue",
             "base16-ocean.dark",
-            &HashSet::new(),
             &mut parser_pool,
         );
 
@@ -1721,7 +1701,6 @@ mod priming_diff_tests {
             patch,
             "src/components/Foo.vue",
             "base16-ocean.dark",
-            &HashSet::new(),
             &mut parser_pool,
         );
 
