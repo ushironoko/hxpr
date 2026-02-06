@@ -1548,6 +1548,52 @@ mod tests {
             build_diff_cache(patch, "foo.rs", "base16-ocean.dark", &comment_lines, &mut parser_pool);
 
         assert_eq!(plain.lines.len(), highlighted.lines.len());
+
+        // highlighted フラグの検証
+        assert!(!plain.highlighted, "plain cache should not be highlighted");
+        assert!(highlighted.highlighted, "highlighted cache should be highlighted");
+    }
+
+    #[test]
+    fn plain_and_highlighted_cache_comment_markers_match() {
+        let patch = "diff --git a/foo.rs b/foo.rs\n--- a/foo.rs\n+++ b/foo.rs\n@@ -1,3 +1,3 @@\n fn main() {\n-    println!(\"hello\");\n+    println!(\"world\");\n }";
+        // コメント付きの行で marker の配置が一致するか確認
+        let mut comment_lines = HashSet::new();
+        comment_lines.insert(4); // 行インデックス4（context行）
+        comment_lines.insert(6); // 行インデックス6（added行）
+        let mut parser_pool = ParserPool::new();
+
+        let plain = build_plain_diff_cache(patch, &comment_lines);
+        let highlighted =
+            build_diff_cache(patch, "foo.rs", "base16-ocean.dark", &comment_lines, &mut parser_pool);
+
+        assert_eq!(plain.lines.len(), highlighted.lines.len());
+        assert_eq!(plain.comment_lines, highlighted.comment_lines);
+
+        // コメント行にはマーカー「●」が先頭にあること（両方のキャッシュで一致）
+        for &line_idx in &[4usize, 6] {
+            let plain_first = plain.resolve(plain.lines[line_idx].spans[0].content);
+            let hl_first = highlighted.resolve(highlighted.lines[line_idx].spans[0].content);
+            assert!(
+                plain_first.contains('●'),
+                "plain cache line {} should have comment marker, got: {:?}",
+                line_idx,
+                plain_first,
+            );
+            assert!(
+                hl_first.contains('●'),
+                "highlighted cache line {} should have comment marker, got: {:?}",
+                line_idx,
+                hl_first,
+            );
+        }
+
+        // コメントのない行にはマーカーがないこと
+        let plain_no_comment = plain.resolve(plain.lines[0].spans[0].content);
+        assert!(
+            !plain_no_comment.contains('●'),
+            "non-comment line should not have marker"
+        );
     }
 }
 

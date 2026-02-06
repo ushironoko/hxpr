@@ -28,6 +28,16 @@ use std::time::Instant;
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+/// ハイライトキャッシュストアの最大エントリ数（メモリ上限）
+///
+/// 大規模PRでのOOM防止。超過時は最も古いエントリから削除。
+const MAX_HIGHLIGHTED_CACHE_ENTRIES: usize = 50;
+
+/// プリフェッチ対象ファイルの最大数
+///
+/// 大規模PRで全ファイルをクローンしないよう制限。
+const MAX_PREFETCH_FILES: usize = 50;
+
 /// コメントのdiff内位置を表す構造体
 #[derive(Debug, Clone)]
 pub struct CommentPosition {
@@ -771,19 +781,28 @@ impl App {
 
         match rx.try_recv() {
             Ok(cache) => {
+                // DataState::Loaded でなければ破棄（PR遷移中のstaleキャッシュ防止）
+                if !matches!(self.data_state, DataState::Loaded { .. }) {
+                    self.diff_cache_receiver = None;
+                    return;
+                }
                 // バリデーション: ファイル切替されていないか確認
                 if cache.file_index != self.selected_file {
                     self.diff_cache_receiver = None;
                     return;
                 }
-                // patch変更されていないか確認
-                if let Some(file) = self.files().get(self.selected_file) {
-                    if let Some(ref patch) = file.patch {
-                        if cache.patch_hash != hash_string(patch) {
-                            self.diff_cache_receiver = None;
-                            return;
-                        }
-                    }
+                // patch変更されていないか確認（ファイルが存在しない場合も破棄）
+                let Some(file) = self.files().get(self.selected_file) else {
+                    self.diff_cache_receiver = None;
+                    return;
+                };
+                let Some(ref patch) = file.patch else {
+                    self.diff_cache_receiver = None;
+                    return;
+                };
+                if cache.patch_hash != hash_string(patch) {
+                    self.diff_cache_receiver = None;
+                    return;
                 }
                 // comment_lines変更されていないか確認（BG中にコメント取得が完了した場合）
                 if cache.comment_lines != self.file_comment_lines {
@@ -801,18 +820,24 @@ impl App {
         }
     }
 
-    /// 全ファイルのハイライトキャッシュを事前構築（バックグラウンド）
+    /// ファイルのハイライトキャッシュを事前構築（バックグラウンド）
     ///
-    /// データロード完了時に呼び出す。1つの spawn_blocking タスクで全ファイルを
-    /// 順次処理し、ParserPool を再利用してクエリキャッシュの恩恵を受ける。
+    /// データロード完了時に呼び出す。MAX_PREFETCH_FILES 件まで処理し、
+    /// 既にキャッシュ済みのファイルはスキップする。
     fn start_prefetch_all_files(&mut self) {
         // 既存のプリフェッチを中断
         self.prefetch_receiver = None;
 
+        // キャッシュ済みファイルをスキップし、上限まで収集
         let files: Vec<_> = self
             .files()
             .iter()
-            .map(|f| (f.filename.clone(), f.patch.clone()))
+            .enumerate()
+            .filter(|(i, f)| {
+                f.patch.is_some() && !self.highlighted_cache_store.contains_key(i)
+            })
+            .take(MAX_PREFETCH_FILES)
+            .map(|(i, f)| (i, f.filename.clone(), f.patch.clone().unwrap()))
             .collect();
 
         if files.is_empty() {
@@ -820,15 +845,15 @@ impl App {
         }
 
         let theme = self.config.diff.theme.clone();
-        let (tx, rx) = mpsc::channel(files.len());
+        let channel_size = files.len().min(MAX_PREFETCH_FILES);
+        let (tx, rx) = mpsc::channel(channel_size);
         self.prefetch_receiver = Some(rx);
 
         tokio::task::spawn_blocking(move || {
             let mut parser_pool = ParserPool::new();
             let comment_lines = HashSet::new();
 
-            for (index, (filename, patch)) in files.iter().enumerate() {
-                let Some(patch) = patch else { continue };
+            for (index, filename, patch) in &files {
                 let mut cache = crate::ui::diff_view::build_diff_cache(
                     patch,
                     filename,
@@ -836,7 +861,7 @@ impl App {
                     &comment_lines,
                     &mut parser_pool,
                 );
-                cache.file_index = index;
+                cache.file_index = *index;
                 if tx.blocking_send(cache).is_err() {
                     break; // receiver がドロップされた
                 }
@@ -865,6 +890,18 @@ impl App {
                     // ストアに既にあればスキップ
                     if self.highlighted_cache_store.contains_key(&file_index) {
                         continue;
+                    }
+                    // サイズ上限チェック: 超過時は最も古いエントリを削除
+                    if self.highlighted_cache_store.len() >= MAX_HIGHLIGHTED_CACHE_ENTRIES {
+                        // 現在選択中のファイルから最も遠いエントリを削除
+                        let evict_key = self
+                            .highlighted_cache_store
+                            .keys()
+                            .max_by_key(|k| (**k).abs_diff(self.selected_file))
+                            .copied();
+                        if let Some(key) = evict_key {
+                            self.highlighted_cache_store.remove(&key);
+                        }
                     }
                     self.highlighted_cache_store.insert(file_index, cache);
                 }
@@ -3220,9 +3257,11 @@ impl App {
         // 古い receiver をドロップ（競合防止）
         self.diff_cache_receiver = None;
 
-        // 現在のハイライト済みキャッシュをストアに退避
+        // 現在のハイライト済みキャッシュをストアに退避（上限チェック付き）
         if let Some(cache) = self.diff_cache.take() {
-            if cache.highlighted {
+            if cache.highlighted
+                && self.highlighted_cache_store.len() < MAX_HIGHLIGHTED_CACHE_ENTRIES
+            {
                 self.highlighted_cache_store
                     .insert(cache.file_index, cache);
             }
@@ -3552,6 +3591,12 @@ impl App {
         self.state = AppState::FileList;
         self.data_state = DataState::Loading;
 
+        // PR遷移時にバックグラウンドキャッシュをクリア（staleキャッシュ防止）
+        self.diff_cache_receiver = None;
+        self.prefetch_receiver = None;
+        self.highlighted_cache_store.clear();
+        self.diff_cache = None;
+
         // Apply pending AI Rally flag
         if self.pending_ai_rally {
             self.start_ai_rally_on_load = true;
@@ -3600,6 +3645,8 @@ impl App {
             self.review_comments = None;
             self.discussion_comments = None;
             self.diff_cache = None;
+            self.diff_cache_receiver = None;
+            self.prefetch_receiver = None;
             self.highlighted_cache_store.clear();
             self.selected_file = 0;
             self.selected_line = 0;
