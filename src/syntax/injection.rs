@@ -568,7 +568,10 @@ const count = ref(0)
 
         let inj = ts_injection.unwrap();
         let content = std::str::from_utf8(&code.as_bytes()[inj.range.clone()]).unwrap();
-        assert!(content.contains("import"), "Injection should contain import");
+        assert!(
+            content.contains("import"),
+            "Injection should contain import"
+        );
         assert!(
             content.contains("const count"),
             "Injection should contain const"
