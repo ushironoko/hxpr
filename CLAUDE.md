@@ -15,7 +15,6 @@ cargo build --release
 
 # 実行
 cargo run -- --repo owner/repo --pr 123
-cargo run -- --repo owner/repo --pr 123 --refresh  # キャッシュ無視
 
 # テスト
 cargo test
@@ -31,10 +30,8 @@ cargo test <test_name>  # 単一テスト実行
 
 ```
 main.rs
-  ├── キャッシュ読み込み (同期)
-  │     └── cache.rs: read_cache() → ~/.cache/octorus/{repo}_{pr}.json
   ├── App 初期化
-  │     └── app.rs: new_loading() または new_with_cache()
+  │     └── app.rs: new_loading() [常に Loading 状態で開始]
   └── バックグラウンドタスク起動
         └── loader.rs: fetch_pr_data()
               └── github/client.rs: gh_command() → gh CLI 実行
@@ -61,10 +58,11 @@ main.rs
   - `ai_rally.rs`: AI Rally 画面
   - `help.rs`: ヘルプ画面
 - **diff.rs**: diff パース、行分類（`LineType`）、ハンク解析
-- **cache.rs**: キャッシュ管理（JSON ファイル、TTL ベース）
-  - PRデータ: `~/.cache/octorus/{repo}_{pr}.json`
-  - コメント: `~/.cache/octorus/{repo}_{pr}_comments.json`
-  - ディスカッションコメント: `~/.cache/octorus/{repo}_{pr}_discussion_comments.json`
+- **cache.rs**: インメモリセッションキャッシュ（`SessionCache`、LRU eviction 付き）
+  - `PrData`: PRデータ（`Box<PullRequest>` + `Vec<ChangedFile>`）
+  - レビューコメント / ディスカッションコメント: PRデータのライフサイクルに連動
+  - `sanitize_repo_name()`: パストラバーサル防止（AI Rally 等で使用）
+  - `cache_dir()` / `cleanup_rally_sessions()`: AI Rally セッション管理
 - **loader.rs**: バックグラウンドデータ取得（`tokio::spawn`）
 - **config.rs**: 設定ファイル読み込み（`~/.config/octorus/config.toml`）
 - **editor/**: 外部エディタ連携（コメント入力）
@@ -107,8 +105,8 @@ FileList ──[Enter/→/l]──> SplitViewDiff ──[Tab/→/l]──> DiffV
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ L1: セッションスコープキャッシュ（ファイルシステム、終了時破棄） │
-│   cache.rs: PRデータ/コメントのJSON キャッシュ (TTL: 300s)    │
+│ L1: インメモリセッションキャッシュ（LRU eviction 付き）        │
+│   cache.rs: SessionCache — PRデータ/コメントを HashMap で管理  │
 └─────────────────────────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────────┐
@@ -136,44 +134,71 @@ FileList ──[Enter/→/l]──> SplitViewDiff ──[Tab/→/l]──> DiffV
 
 | 定数 | 値 | 場所 | 用途 |
 |------|----|------|------|
-| `DEFAULT_TTL_SECS` | 300s (5分) | `cache.rs` | PRデータ/コメントキャッシュ有効期限 |
+| `MAX_PR_CACHE_ENTRIES` | 5 | `cache.rs` | セッションキャッシュPRデータ上限（LRU） |
 | `MAX_HIGHLIGHTED_CACHE_ENTRIES` | 50 | `app.rs` | ハイライトキャッシュストア上限 |
 | `MAX_PREFETCH_FILES` | 50 | `app.rs` | プリフェッチ対象ファイル上限 |
 
 ---
 
-#### L1: セッションスコープキャッシュ（cache.rs）
+#### L1: インメモリセッションキャッシュ（cache.rs: SessionCache）
 
-PRデータとコメントをファイルシステムにJSON保存し、セッション中の即時表示を実現。
-プロセス終了時に全キャッシュを削除する設計（セッションスコープ）。
+PRデータとコメントをインメモリの `HashMap` で管理。ファイルI/Oは一切行わない。
+プロセス終了時にメモリ解放されるため明示的なクリーンアップは不要。
 
-| キャッシュ種類 | ファイルパス | TTL |
-|----------------|-------------|-----|
-| PRデータ | `~/.cache/octorus/{repo}_{pr}.json` | 300s |
-| レビューコメント | `~/.cache/octorus/{repo}_{pr}_comments.json` | 300s |
-| ディスカッションコメント | `~/.cache/octorus/{repo}_{pr}_discussion_comments.json` | 300s |
+**データ構造**:
 
-**戦略: Lazy Loading with Background Update Check**
+```rust
+SessionCache {
+    pr_data: HashMap<PrCacheKey, PrData>,        // PRデータ本体
+    access_order: Vec<PrCacheKey>,               // LRU 追跡（末尾が最新）
+    review_comments: HashMap<PrCacheKey, Vec<ReviewComment>>,
+    discussion_comments: HashMap<PrCacheKey, Vec<DiscussionComment>>,
+}
+
+PrCacheKey { repo: String, pr_number: u32 }
+
+PrData {
+    pr: Box<PullRequest>,       // Arc不使用: シングルスレッド設計
+    files: Vec<ChangedFile>,    // Arc不使用: clone()で分配
+    pr_updated_at: String,
+}
+```
+
+**設計方針**:
+- `Arc` ではなく `Box`/`Vec` + `clone()` を使用。メインスレッドのイベントループからのみアクセスされるため、スレッド間共有は不要
+- `DataState::Loaded` と `SessionCache` の両方にデータが必要な場合は `clone()` で分配（PR更新時のみ発生）
+- LRU eviction: 最大 `MAX_PR_CACHE_ENTRIES`（5）件。超過時は最も古いエントリを削除
+- コメントは対応する `pr_data` が存在するキーにのみ保存可能（ライフサイクル連動）
+
+**戦略**:
 
 ```
-[起動]
-  → read_cache(repo, pr, ttl)
-    → Hit → App::new_with_cache()               [即座にUI表示]
-          + spawn { CheckUpdate(pr_updated_at) } [バックグラウンドで鮮度チェック]
-    → Stale → App::new_with_cache()              [staleデータで即座にUI表示]
-            + spawn { Fresh fetch }              [バックグラウンドで再取得]
-    → Miss → App::new_loading()                  [ローディング表示]
-           + spawn { Fresh fetch }               [API取得]
+[起動（PR番号指定）]
+  → App::new_loading() [常に Loading 状態で開始]
+  + spawn { FetchMode::Fresh }  [APIから取得]
   → メインループ: poll_data_updates()
-    → mpsc 経由で更新受信 → DataState::Loaded に遷移
+    → mpsc 経由で受信 → session_cache.put_pr_data() + DataState::Loaded に遷移
+
+[PR一覧からPR選択（select_pr）]
+  → session_cache.get_pr_data()
+    → Some → DataState::Loaded に即座遷移 [インメモリキャッシュヒット]
+           + spawn { FetchMode::CheckUpdate(pr_updated_at) } [バックグラウンドで鮮度チェック]
+    → None → DataState::Loading
+           + spawn { FetchMode::Fresh } [APIから取得]
+
+[Rキー（refresh_all）]
+  → session_cache.invalidate_all() [全キャッシュ破棄]
+  → retry_load() → FetchMode::Fresh [APIから再取得]
 ```
 
 **コメント取得**:
-1. `App::open_comment_list()`: キャッシュ確認 → 即座に画面遷移
+1. `App::open_comment_list()`: `session_cache` 確認 → 即座に画面遷移
 2. キャッシュヒット: 即座に表示、API呼び出しなし
-3. キャッシュ古い/なし: バックグラウンドで取得 → `poll_comment_updates()` 経由で受信
+3. キャッシュなし: バックグラウンドで取得 → `poll_comment_updates()` 経由で受信
 
-**セキュリティ**: `sanitize_repo_name()` でパストラバーサル攻撃を防止
+**クロスPRキャッシュ汚染防止**: `PrReceiver<T> = Option<(u32, mpsc::Receiver<T>)>` で受信データの発信元PR番号を追跡。現在のPRと異なるデータはキャッシュのみに格納し、UI状態には反映しない。
+
+**セキュリティ**: `sanitize_repo_name()` でパストラバーサル攻撃を防止（AI Rally のセッションパスで使用）
 
 ---
 
@@ -181,7 +206,7 @@ PRデータとコメントをファイルシステムにJSON保存し、セッ�
 
 PRデータロード完了時に、全ファイルのシンタックスハイライトキャッシュをバックグラウンドで事前構築。
 
-**開始トリガー**: PRデータロード完了時（起動時キャッシュヒット or `poll_data_updates()` でデータ到着時）
+**開始トリガー**: PRデータロード完了時（`poll_data_updates()` でデータ到着時、または `select_pr()` でインメモリキャッシュヒット時）
 
 ```
 [PRデータロード完了]
