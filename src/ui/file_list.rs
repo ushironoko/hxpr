@@ -3,7 +3,8 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+        Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
+        ScrollbarState,
     },
     Frame,
 };
@@ -12,7 +13,7 @@ use super::common::render_rally_status_bar;
 use crate::app::{App, DataState};
 use crate::github::ChangedFile;
 
-pub fn render(frame: &mut Frame, app: &App) {
+pub fn render(frame: &mut Frame, app: &mut App) {
     let has_rally = app.has_background_rally();
     let constraints = if has_rally {
         vec![
@@ -61,7 +62,14 @@ pub fn render(frame: &mut Frame, app: &App) {
                 .title(format!("Changed Files ({})", total_files)),
         )
         .highlight_style(Style::default().bg(Color::DarkGray));
-    frame.render_widget(list, chunks[1]);
+
+    let mut list_state = ListState::default()
+        .with_offset(app.file_list_scroll_offset)
+        .with_selected(Some(app.selected_file));
+
+    frame.render_stateful_widget(list, chunks[1], &mut list_state);
+
+    app.file_list_scroll_offset = list_state.offset();
 
     // Render scrollbar if there are more files than visible
     if total_files > 1 {

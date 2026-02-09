@@ -3,7 +3,8 @@ use ratatui::{
     style::{Color, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, List, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
+        Block, Borders, List, ListState, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+        Wrap,
     },
     Frame,
 };
@@ -13,7 +14,7 @@ use super::diff_view;
 use super::file_list::build_file_list_items;
 use crate::app::{App, AppState, DataState};
 
-pub fn render(frame: &mut Frame, app: &App) {
+pub fn render(frame: &mut Frame, app: &mut App) {
     let has_rally = app.has_background_rally();
 
     // Rally status bar の有無で垂直分割
@@ -51,7 +52,7 @@ pub fn render(frame: &mut Frame, app: &App) {
 
 fn render_file_list_pane(
     frame: &mut Frame,
-    app: &App,
+    app: &mut App,
     area: ratatui::layout::Rect,
     is_focused: bool,
 ) {
@@ -102,7 +103,14 @@ fn render_file_list_pane(
                 .title(format!("Files ({})", total_files)),
         )
         .highlight_style(Style::default().bg(Color::DarkGray));
-    frame.render_widget(list, chunks[1]);
+
+    let mut list_state = ListState::default()
+        .with_offset(app.file_list_scroll_offset)
+        .with_selected(Some(app.selected_file));
+
+    frame.render_stateful_widget(list, chunks[1], &mut list_state);
+
+    app.file_list_scroll_offset = list_state.offset();
 
     // Render scrollbar if there are more files than visible
     if total_files > 1 {

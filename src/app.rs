@@ -296,6 +296,7 @@ pub struct App {
     /// Help/CommentList など汎用的な戻り先
     pub previous_state: AppState,
     pub selected_file: usize,
+    pub file_list_scroll_offset: usize,
     pub selected_line: usize,
     pub diff_line_count: usize,
     pub scroll_offset: usize,
@@ -401,6 +402,7 @@ impl App {
             preview_return_state: AppState::DiffView,
             previous_state: AppState::FileList,
             selected_file: 0,
+            file_list_scroll_offset: 0,
             selected_line: 0,
             diff_line_count: 0,
             scroll_offset: 0,
@@ -473,6 +475,7 @@ impl App {
             preview_return_state: AppState::DiffView,
             previous_state: AppState::PullRequestList,
             selected_file: 0,
+            file_list_scroll_offset: 0,
             selected_line: 0,
             diff_line_count: 0,
             scroll_offset: 0,
@@ -3546,6 +3549,8 @@ impl App {
         self.prefetch_receiver = None;
         self.highlighted_cache_store.clear();
         self.diff_cache = None;
+        self.selected_file = 0;
+        self.file_list_scroll_offset = 0;
 
         // Apply pending AI Rally flag
         if self.pending_ai_rally {
@@ -3627,6 +3632,7 @@ impl App {
             self.discussion_comments_loading = false;
             self.highlighted_cache_store.clear();
             self.selected_file = 0;
+            self.file_list_scroll_offset = 0;
             self.selected_line = 0;
             self.scroll_offset = 0;
 
