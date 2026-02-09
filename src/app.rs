@@ -3993,11 +3993,12 @@ mod tests {
         assert!(app.comment_receiver.is_none());
         // comments_loading should NOT have been cleared (different PR)
         assert!(app.comments_loading);
-        // Session cache should have the data under PR #1 key
+        // Session cache should NOT have comments for PR #1 since pr_data was never stored
+        // (comments are only cached for keys that have an existing pr_data entry)
         let cache_key = PrCacheKey {
             repo: "owner/repo".to_string(),
             pr_number: 1,
         };
-        assert!(app.session_cache.get_review_comments(&cache_key).is_some());
+        assert!(app.session_cache.get_review_comments(&cache_key).is_none());
     }
 }

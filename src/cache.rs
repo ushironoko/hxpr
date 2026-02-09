@@ -88,7 +88,8 @@ pub struct PrData {
 /// インメモリセッションキャッシュ（LRU eviction 付き）。
 ///
 /// PRデータは最大 `MAX_PR_CACHE_ENTRIES` 件まで保持し、超過時は最も古い
-/// エントリを削除する。コメントデータは対応するPRデータと連動して削除される。
+/// エントリを削除する。コメントデータは対応するPRデータが存在するキーにのみ
+/// 保存可能で、`pr_data` のライフサイクルと連動して管理される。
 pub struct SessionCache {
     pr_data: HashMap<PrCacheKey, PrData>,
     /// アクセス順序リスト（末尾が最新）。LRU eviction に使用。
@@ -154,8 +155,11 @@ impl SessionCache {
         self.review_comments.get(key).map(|v| v.as_slice())
     }
 
+    /// レビューコメントを保存する。対応する `pr_data` が存在しないキーには保存しない。
     pub fn put_review_comments(&mut self, key: PrCacheKey, comments: Vec<ReviewComment>) {
-        self.review_comments.insert(key, comments);
+        if self.pr_data.contains_key(&key) {
+            self.review_comments.insert(key, comments);
+        }
     }
 
     pub fn remove_review_comments(&mut self, key: &PrCacheKey) {
@@ -166,8 +170,11 @@ impl SessionCache {
         self.discussion_comments.get(key).map(|v| v.as_slice())
     }
 
+    /// ディスカッションコメントを保存する。対応する `pr_data` が存在しないキーには保存しない。
     pub fn put_discussion_comments(&mut self, key: PrCacheKey, comments: Vec<DiscussionComment>) {
-        self.discussion_comments.insert(key, comments);
+        if self.pr_data.contains_key(&key) {
+            self.discussion_comments.insert(key, comments);
+        }
     }
 
     pub fn remove_discussion_comments(&mut self, key: &PrCacheKey) {
@@ -356,6 +363,19 @@ mod tests {
 
         assert!(cache.get_review_comments(&key).is_none());
 
+        // pr_data が存在しないキーにはコメントを保存できない
+        cache.put_review_comments(key.clone(), vec![]);
+        assert!(cache.get_review_comments(&key).is_none());
+
+        // pr_data を先に保存すればコメントも保存可能
+        cache.put_pr_data(
+            key.clone(),
+            PrData {
+                pr: Arc::new(make_test_pr("test", "2024-01-01")),
+                files: Arc::new(vec![]),
+                pr_updated_at: "2024-01-01".to_string(),
+            },
+        );
         cache.put_review_comments(key.clone(), vec![]);
         let comments = cache.get_review_comments(&key).unwrap();
         assert!(comments.is_empty());
@@ -371,6 +391,19 @@ mod tests {
 
         assert!(cache.get_discussion_comments(&key).is_none());
 
+        // pr_data が存在しないキーにはコメントを保存できない
+        cache.put_discussion_comments(key.clone(), vec![]);
+        assert!(cache.get_discussion_comments(&key).is_none());
+
+        // pr_data を先に保存すればコメントも保存可能
+        cache.put_pr_data(
+            key.clone(),
+            PrData {
+                pr: Arc::new(make_test_pr("test", "2024-01-01")),
+                files: Arc::new(vec![]),
+                pr_updated_at: "2024-01-01".to_string(),
+            },
+        );
         cache.put_discussion_comments(key.clone(), vec![]);
         let comments = cache.get_discussion_comments(&key).unwrap();
         assert!(comments.is_empty());
@@ -384,6 +417,14 @@ mod tests {
             pr_number: 1,
         };
 
+        cache.put_pr_data(
+            key.clone(),
+            PrData {
+                pr: Arc::new(make_test_pr("test", "2024-01-01")),
+                files: Arc::new(vec![]),
+                pr_updated_at: "2024-01-01".to_string(),
+            },
+        );
         cache.put_review_comments(key.clone(), vec![]);
         assert!(cache.get_review_comments(&key).is_some());
 
@@ -399,6 +440,14 @@ mod tests {
             pr_number: 1,
         };
 
+        cache.put_pr_data(
+            key.clone(),
+            PrData {
+                pr: Arc::new(make_test_pr("test", "2024-01-01")),
+                files: Arc::new(vec![]),
+                pr_updated_at: "2024-01-01".to_string(),
+            },
+        );
         cache.put_discussion_comments(key.clone(), vec![]);
         assert!(cache.get_discussion_comments(&key).is_some());
 
@@ -557,5 +606,80 @@ mod tests {
         assert!(cache.get_pr_data(&key1).is_none());
         // 新しいエントリは存在する
         assert!(cache.get_pr_data(&new_key).is_some());
+    }
+
+    #[test]
+    fn test_session_cache_comments_rejected_without_pr_data() {
+        let mut cache = SessionCache::new();
+        let key = PrCacheKey {
+            repo: "owner/repo".to_string(),
+            pr_number: 99,
+        };
+
+        // pr_data が存在しないキーへのコメント保存は無視される
+        cache.put_review_comments(key.clone(), vec![]);
+        cache.put_discussion_comments(key.clone(), vec![]);
+        assert!(cache.get_review_comments(&key).is_none());
+        assert!(cache.get_discussion_comments(&key).is_none());
+
+        // pr_data を追加すればコメント保存可能
+        cache.put_pr_data(
+            key.clone(),
+            PrData {
+                pr: Arc::new(make_test_pr("test", "2024-01-01")),
+                files: Arc::new(vec![]),
+                pr_updated_at: "2024-01-01".to_string(),
+            },
+        );
+        cache.put_review_comments(key.clone(), vec![]);
+        cache.put_discussion_comments(key.clone(), vec![]);
+        assert!(cache.get_review_comments(&key).is_some());
+        assert!(cache.get_discussion_comments(&key).is_some());
+    }
+
+    #[test]
+    fn test_session_cache_evicted_pr_rejects_comments() {
+        let mut cache = SessionCache::new();
+
+        // MAX_PR_CACHE_ENTRIES 個のエントリを追加
+        for i in 0..MAX_PR_CACHE_ENTRIES {
+            let key = PrCacheKey {
+                repo: "owner/repo".to_string(),
+                pr_number: i as u32,
+            };
+            cache.put_pr_data(
+                key,
+                PrData {
+                    pr: Arc::new(make_test_pr(&format!("PR {}", i), "2024-01-01")),
+                    files: Arc::new(vec![]),
+                    pr_updated_at: "2024-01-01".to_string(),
+                },
+            );
+        }
+
+        // 新しいエントリを追加して PR #0 を evict
+        let new_key = PrCacheKey {
+            repo: "owner/repo".to_string(),
+            pr_number: 100,
+        };
+        cache.put_pr_data(
+            new_key,
+            PrData {
+                pr: Arc::new(make_test_pr("PR 100", "2024-01-01")),
+                files: Arc::new(vec![]),
+                pr_updated_at: "2024-01-01".to_string(),
+            },
+        );
+
+        // evict された PR #0 へのコメント保存は無視される
+        let evicted_key = PrCacheKey {
+            repo: "owner/repo".to_string(),
+            pr_number: 0,
+        };
+        assert!(cache.get_pr_data(&evicted_key).is_none());
+        cache.put_review_comments(evicted_key.clone(), vec![]);
+        cache.put_discussion_comments(evicted_key.clone(), vec![]);
+        assert!(cache.get_review_comments(&evicted_key).is_none());
+        assert!(cache.get_discussion_comments(&evicted_key).is_none());
     }
 }
