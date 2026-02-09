@@ -1100,8 +1100,7 @@ impl App {
                     self.comment_panel_open = false;
                     self.comment_panel_scroll = 0;
                 }
-                self.file_list_scroll_offset =
-                    self.file_list_scroll_offset.min(self.selected_file);
+                self.file_list_scroll_offset = self.file_list_scroll_offset.min(self.selected_file);
                 self.diff_line_count = Self::calc_diff_line_count(&files, self.selected_file);
                 // ファイル一覧が変わるため、ハイライトキャッシュストアをクリア
                 self.highlighted_cache_store.clear();
