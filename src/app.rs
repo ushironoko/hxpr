@@ -1085,10 +1085,18 @@ impl App {
         match result {
             DataLoadResult::Success { pr, files } => {
                 // ファイル数が減った場合、selected_file をクランプ
+                let old_selected = self.selected_file;
                 if !files.is_empty() {
                     self.selected_file = self.selected_file.min(files.len() - 1);
                 } else {
                     self.selected_file = 0;
+                }
+                // selected_file が変わった場合、diff 側の状態を再同期
+                if self.selected_file != old_selected {
+                    self.diff_cache = None;
+                    self.diff_cache_receiver = None;
+                    self.selected_line = 0;
+                    self.scroll_offset = 0;
                 }
                 self.file_list_scroll_offset =
                     self.file_list_scroll_offset.min(self.selected_file);
@@ -4078,5 +4086,163 @@ mod tests {
         assert_eq!(app.selected_file, 1);
         // Should be able to access the file without panic
         assert!(app.files().get(app.selected_file).is_some());
+    }
+
+    #[tokio::test]
+    async fn test_handle_data_result_resyncs_diff_state_when_selected_file_changes() {
+        let config = Config::default();
+        let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+
+        let make_file = |name: &str| ChangedFile {
+            filename: name.to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 1,
+            patch: Some("@@ -1,1 +1,1 @@\n-old\n+new".to_string()),
+        };
+
+        let initial_files: Vec<ChangedFile> = (0..5)
+            .map(|i| make_file(&format!("file_{}.rs", i)))
+            .collect();
+
+        let pr = Box::new(PullRequest {
+            number: 1,
+            title: "Test PR".to_string(),
+            body: None,
+            state: "open".to_string(),
+            head: crate::github::Branch {
+                ref_name: "feature".to_string(),
+                sha: "abc123".to_string(),
+            },
+            base: crate::github::Branch {
+                ref_name: "main".to_string(),
+                sha: "def456".to_string(),
+            },
+            user: crate::github::User {
+                login: "user".to_string(),
+            },
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        });
+
+        // Set initial loaded state with 5 files
+        app.data_state = DataState::Loaded {
+            pr: pr.clone(),
+            files: initial_files,
+        };
+        app.selected_file = 4;
+        app.selected_line = 10;
+        app.scroll_offset = 5;
+
+        // Set a stale diff_cache pointing to old file index 4
+        app.diff_cache = Some(DiffCache {
+            file_index: 4,
+            patch_hash: 0,
+            lines: vec![],
+            interner: Rodeo::default(),
+            highlighted: false,
+        });
+
+        // Refresh with only 2 files (selected_file will be clamped from 4 to 1)
+        let fewer_files: Vec<ChangedFile> = (0..2)
+            .map(|i| make_file(&format!("file_{}.rs", i)))
+            .collect();
+
+        app.handle_data_result(
+            1,
+            DataLoadResult::Success {
+                pr,
+                files: fewer_files,
+            },
+        );
+
+        // selected_file clamped
+        assert_eq!(app.selected_file, 1);
+        // diff_cache must be invalidated (was pointing to old file index 4)
+        assert!(
+            app.diff_cache.is_none(),
+            "diff_cache should be None after selected_file changes"
+        );
+        // selected_line and scroll_offset must be reset
+        assert_eq!(app.selected_line, 0, "selected_line should be reset to 0");
+        assert_eq!(app.scroll_offset, 0, "scroll_offset should be reset to 0");
+    }
+
+    #[tokio::test]
+    async fn test_handle_data_result_preserves_diff_state_when_selected_file_unchanged() {
+        let config = Config::default();
+        let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+
+        let make_file = |name: &str| ChangedFile {
+            filename: name.to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 1,
+            patch: Some("@@ -1,1 +1,1 @@\n-old\n+new".to_string()),
+        };
+
+        let initial_files: Vec<ChangedFile> = (0..5)
+            .map(|i| make_file(&format!("file_{}.rs", i)))
+            .collect();
+
+        let pr = Box::new(PullRequest {
+            number: 1,
+            title: "Test PR".to_string(),
+            body: None,
+            state: "open".to_string(),
+            head: crate::github::Branch {
+                ref_name: "feature".to_string(),
+                sha: "abc123".to_string(),
+            },
+            base: crate::github::Branch {
+                ref_name: "main".to_string(),
+                sha: "def456".to_string(),
+            },
+            user: crate::github::User {
+                login: "user".to_string(),
+            },
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        });
+
+        // Set initial loaded state
+        app.data_state = DataState::Loaded {
+            pr: pr.clone(),
+            files: initial_files,
+        };
+        app.selected_file = 1;
+        app.selected_line = 10;
+        app.scroll_offset = 5;
+
+        // Set diff_cache for file index 1
+        app.diff_cache = Some(DiffCache {
+            file_index: 1,
+            patch_hash: 0,
+            lines: vec![],
+            interner: Rodeo::default(),
+            highlighted: false,
+        });
+
+        // Refresh with same or more files (selected_file stays at 1)
+        let same_files: Vec<ChangedFile> = (0..5)
+            .map(|i| make_file(&format!("file_{}.rs", i)))
+            .collect();
+
+        app.handle_data_result(
+            1,
+            DataLoadResult::Success {
+                pr,
+                files: same_files,
+            },
+        );
+
+        // selected_file unchanged
+        assert_eq!(app.selected_file, 1);
+        // diff_cache should NOT be invalidated (selected_file didn't change)
+        assert!(
+            app.diff_cache.is_some(),
+            "diff_cache should be preserved when selected_file is unchanged"
+        );
+        // selected_line and scroll_offset should be preserved
+        assert_eq!(app.selected_line, 10);
+        assert_eq!(app.scroll_offset, 5);
     }
 }
