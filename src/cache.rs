@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use anyhow::Result;
 use xdg::BaseDirectories;
@@ -79,9 +78,15 @@ pub struct PrCacheKey {
     pub pr_number: u32,
 }
 
+/// PRデータのキャッシュエントリ。
+///
+/// `Arc` ではなく `Box`/`Vec` + `clone()` を使用する設計。
+/// `SessionCache` はメインスレッドのイベントループからのみアクセスされるため、
+/// スレッド間共有のための `Arc` は不要。`DataState` との間でデータを分配する際は
+/// `clone()` で複製する（PR更新時のみ発生するため頻度は低い）。
 pub struct PrData {
-    pub pr: Arc<PullRequest>,
-    pub files: Arc<Vec<ChangedFile>>,
+    pub pr: Box<PullRequest>,
+    pub files: Vec<ChangedFile>,
     pub pr_updated_at: String,
 }
 
@@ -342,8 +347,8 @@ mod tests {
         cache.put_pr_data(
             key.clone(),
             PrData {
-                pr: Arc::new(pr),
-                files: Arc::new(vec![]),
+                pr: Box::new(pr),
+                files: vec![],
                 pr_updated_at: "2024-01-01".to_string(),
             },
         );
@@ -371,8 +376,8 @@ mod tests {
         cache.put_pr_data(
             key.clone(),
             PrData {
-                pr: Arc::new(make_test_pr("test", "2024-01-01")),
-                files: Arc::new(vec![]),
+                pr: Box::new(make_test_pr("test", "2024-01-01")),
+                files: vec![],
                 pr_updated_at: "2024-01-01".to_string(),
             },
         );
@@ -399,8 +404,8 @@ mod tests {
         cache.put_pr_data(
             key.clone(),
             PrData {
-                pr: Arc::new(make_test_pr("test", "2024-01-01")),
-                files: Arc::new(vec![]),
+                pr: Box::new(make_test_pr("test", "2024-01-01")),
+                files: vec![],
                 pr_updated_at: "2024-01-01".to_string(),
             },
         );
@@ -420,8 +425,8 @@ mod tests {
         cache.put_pr_data(
             key.clone(),
             PrData {
-                pr: Arc::new(make_test_pr("test", "2024-01-01")),
-                files: Arc::new(vec![]),
+                pr: Box::new(make_test_pr("test", "2024-01-01")),
+                files: vec![],
                 pr_updated_at: "2024-01-01".to_string(),
             },
         );
@@ -443,8 +448,8 @@ mod tests {
         cache.put_pr_data(
             key.clone(),
             PrData {
-                pr: Arc::new(make_test_pr("test", "2024-01-01")),
-                files: Arc::new(vec![]),
+                pr: Box::new(make_test_pr("test", "2024-01-01")),
+                files: vec![],
                 pr_updated_at: "2024-01-01".to_string(),
             },
         );
@@ -466,8 +471,8 @@ mod tests {
         cache.put_pr_data(
             key.clone(),
             PrData {
-                pr: Arc::new(make_test_pr("test", "2024-01-01")),
-                files: Arc::new(vec![]),
+                pr: Box::new(make_test_pr("test", "2024-01-01")),
+                files: vec![],
                 pr_updated_at: "2024-01-01".to_string(),
             },
         );
@@ -496,16 +501,16 @@ mod tests {
         cache.put_pr_data(
             key1.clone(),
             PrData {
-                pr: Arc::new(make_test_pr("PR 1", "2024-01-01")),
-                files: Arc::new(vec![]),
+                pr: Box::new(make_test_pr("PR 1", "2024-01-01")),
+                files: vec![],
                 pr_updated_at: "2024-01-01".to_string(),
             },
         );
         cache.put_pr_data(
             key2.clone(),
             PrData {
-                pr: Arc::new(make_test_pr("PR 2", "2024-01-02")),
-                files: Arc::new(vec![]),
+                pr: Box::new(make_test_pr("PR 2", "2024-01-02")),
+                files: vec![],
                 pr_updated_at: "2024-01-02".to_string(),
             },
         );
@@ -527,8 +532,8 @@ mod tests {
             cache.put_pr_data(
                 key.clone(),
                 PrData {
-                    pr: Arc::new(make_test_pr(&format!("PR {}", i), "2024-01-01")),
-                    files: Arc::new(vec![]),
+                    pr: Box::new(make_test_pr(&format!("PR {}", i), "2024-01-01")),
+                    files: vec![],
                     pr_updated_at: "2024-01-01".to_string(),
                 },
             );
@@ -568,8 +573,8 @@ mod tests {
             cache.put_pr_data(
                 key,
                 PrData {
-                    pr: Arc::new(make_test_pr(&format!("PR {}", i), "2024-01-01")),
-                    files: Arc::new(vec![]),
+                    pr: Box::new(make_test_pr(&format!("PR {}", i), "2024-01-01")),
+                    files: vec![],
                     pr_updated_at: "2024-01-01".to_string(),
                 },
             );
@@ -590,8 +595,8 @@ mod tests {
         cache.put_pr_data(
             new_key.clone(),
             PrData {
-                pr: Arc::new(make_test_pr("PR 100", "2024-01-01")),
-                files: Arc::new(vec![]),
+                pr: Box::new(make_test_pr("PR 100", "2024-01-01")),
+                files: vec![],
                 pr_updated_at: "2024-01-01".to_string(),
             },
         );
@@ -626,8 +631,8 @@ mod tests {
         cache.put_pr_data(
             key.clone(),
             PrData {
-                pr: Arc::new(make_test_pr("test", "2024-01-01")),
-                files: Arc::new(vec![]),
+                pr: Box::new(make_test_pr("test", "2024-01-01")),
+                files: vec![],
                 pr_updated_at: "2024-01-01".to_string(),
             },
         );
@@ -650,8 +655,8 @@ mod tests {
             cache.put_pr_data(
                 key,
                 PrData {
-                    pr: Arc::new(make_test_pr(&format!("PR {}", i), "2024-01-01")),
-                    files: Arc::new(vec![]),
+                    pr: Box::new(make_test_pr(&format!("PR {}", i), "2024-01-01")),
+                    files: vec![],
                     pr_updated_at: "2024-01-01".to_string(),
                 },
             );
@@ -665,8 +670,8 @@ mod tests {
         cache.put_pr_data(
             new_key,
             PrData {
-                pr: Arc::new(make_test_pr("PR 100", "2024-01-01")),
-                files: Arc::new(vec![]),
+                pr: Box::new(make_test_pr("PR 100", "2024-01-01")),
+                files: vec![],
                 pr_updated_at: "2024-01-01".to_string(),
             },
         );
