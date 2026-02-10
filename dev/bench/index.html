@@ -82,6 +82,196 @@
       .benchmark-chart {
         max-width: 1000px;
       }
+
+      /* View toggle */
+      .view-toggle {
+        display: flex;
+        justify-content: center;
+        gap: 4px;
+        margin: 12px 0;
+      }
+      .view-toggle button {
+        padding: 6px 16px;
+        border-radius: 4px;
+        font-size: 0.875rem;
+        font-weight: 500;
+        transition: background-color 0.15s;
+      }
+      .view-toggle button.active {
+        background-color: #3273dc;
+      }
+      .view-toggle button:not(.active) {
+        background-color: #b5b5b5;
+      }
+
+      /* Table styles */
+      .benchmark-table-container {
+        width: 100%;
+        overflow-x: auto;
+        margin-top: 8px;
+      }
+      .benchmark-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.875rem;
+      }
+      .benchmark-table th,
+      .benchmark-table td {
+        padding: 6px 12px;
+        text-align: left;
+        border-bottom: 1px solid #e8e8e8;
+        white-space: nowrap;
+      }
+      .benchmark-table th {
+        background-color: #f5f5f5;
+        font-weight: 600;
+        position: sticky;
+        top: 0;
+        z-index: 1;
+      }
+      .benchmark-table td.numeric {
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+      .benchmark-table tr:hover {
+        background-color: #f9f9f9;
+      }
+      .benchmark-table .group-header td {
+        background-color: #fafafa;
+        font-weight: 600;
+        padding-top: 12px;
+        border-bottom: 2px solid #ddd;
+        color: #363636;
+      }
+      .benchmark-table .group-header.archive td {
+        color: #999;
+      }
+      .benchmark-table tr.archive-row td {
+        color: #aaa;
+      }
+      .benchmark-table .group-header.reference td {
+        color: #7a7a7a;
+      }
+      .benchmark-table tr.reference-row td {
+        color: #888;
+      }
+      .change-positive {
+        color: #e74c3c;
+      }
+      .change-negative {
+        color: #27ae60;
+      }
+      .change-neutral {
+        color: #999;
+      }
+      .run-selector {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 8px;
+        margin: 8px 0;
+        font-size: 0.875rem;
+      }
+      .run-selector select {
+        padding: 4px 8px;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        font-size: 0.875rem;
+      }
+      .run-info {
+        text-align: center;
+        font-size: 0.8rem;
+        color: #777;
+        margin-bottom: 8px;
+      }
+      .run-info a {
+        font-size: 0.8rem;
+      }
+      .badge {
+        display: inline-block;
+        font-size: 0.65rem;
+        padding: 1px 5px;
+        border-radius: 3px;
+        margin-left: 6px;
+        vertical-align: middle;
+        font-weight: 600;
+      }
+      .badge-archive {
+        background-color: #eee;
+        color: #999;
+        border: 1px solid #ddd;
+      }
+      .badge-reference {
+        background-color: #fff3e0;
+        color: #e67e22;
+        border: 1px solid #f0d0a0;
+      }
+
+      /* Archive/Reference sections in graphs */
+      .archive-section {
+        margin-top: 24px;
+        border-top: 2px solid #eee;
+        padding-top: 12px;
+      }
+      .archive-section-title {
+        text-align: center;
+        font-size: 1.2rem;
+        font-weight: 600;
+        color: #999;
+        margin-bottom: 8px;
+        cursor: pointer;
+        user-select: none;
+      }
+      .archive-section-title:hover {
+        color: #666;
+      }
+      .archive-graphs {
+        opacity: 0.5;
+      }
+      .archive-graphs:hover {
+        opacity: 0.8;
+      }
+
+      .reference-section {
+        margin-top: 24px;
+        border-top: 2px solid #f0d0a0;
+        padding-top: 12px;
+      }
+      .reference-section-title {
+        text-align: center;
+        font-size: 1.2rem;
+        font-weight: 600;
+        color: #e67e22;
+        margin-bottom: 8px;
+        cursor: pointer;
+        user-select: none;
+      }
+      .reference-section-title:hover {
+        color: #d35400;
+      }
+      .reference-graphs {
+        opacity: 0.7;
+      }
+      .reference-graphs:hover {
+        opacity: 0.9;
+      }
+
+      /* Separator in table */
+      .section-separator td {
+        background-color: #f0f0f0;
+        text-align: center;
+        font-weight: 600;
+        color: #999;
+        padding: 10px 12px;
+        border-bottom: 2px solid #ddd;
+        font-size: 0.8rem;
+        letter-spacing: 0.05em;
+      }
+      .section-separator.reference td {
+        background-color: #fff8f0;
+        color: #e67e22;
+        border-bottom-color: #f0d0a0;
+      }
     </style>
     <title>Benchmarks</title>
   </head>
@@ -126,6 +316,51 @@
           _: '#333333'
         };
 
+        // Production benchmark prefixes (matches actual production execution).
+        const productionPrefixes = [
+          'diff_cache/',
+          'diff_parsing/',
+          'visible_range/visible_borrowed',
+          'highlighter/',
+        ];
+
+        // Reference benchmark prefixes (production code but synthetic execution).
+        const referencePrefixes = [
+          'selected_line/borrowed_spans',
+          'selected_line/span_clone',
+        ];
+
+        // Display order for production groups (lower = higher priority).
+        // Groups not listed here appear at the end.
+        const groupOrder = [
+          'visible_range/visible_borrowed',
+          'diff_cache/build_cache_no_highlight',
+          'diff_cache/build_cache',
+          'highlighter/tree_sitter_rust',
+          'highlighter/tree_sitter_typescript',
+          'highlighter/syntect_vue',
+          'diff_parsing/',  // all diff_parsing groups last
+        ];
+
+        function groupSortKey(groupName) {
+          for (let i = 0; i < groupOrder.length; i++) {
+            if (groupName === groupOrder[i] || groupName.startsWith(groupOrder[i])) {
+              return i;
+            }
+          }
+          return groupOrder.length;
+        }
+
+        function sortGroups(groups) {
+          return new Map([...groups.entries()].sort((a, b) => groupSortKey(a[0]) - groupSortKey(b[0])));
+        }
+
+        function benchCategory(name) {
+          if (productionPrefixes.some(p => name.startsWith(p))) return 'production';
+          if (referencePrefixes.some(p => name.startsWith(p))) return 'reference';
+          return 'archive';
+        }
+
         function init() {
           function collectBenchesPerTestCase(entries) {
             const map = new Map();
@@ -164,8 +399,13 @@
           // Prepare data points for charts
           return Object.keys(data.entries).map(name => ({
             name,
+            entries: data.entries[name],
             dataSet: collectBenchesPerTestCase(data.entries[name]),
           }));
+        }
+
+        function formatValueFull(value) {
+          return value.toLocaleString();
         }
 
         function renderAllChars(dataSets) {
@@ -249,7 +489,283 @@
             });
           }
 
-          function renderBenchSet(name, benchSet, main) {
+          function renderTable(parent, entries, benchSet) {
+            // Run selector
+            const selectorDiv = document.createElement('div');
+            selectorDiv.className = 'run-selector';
+            parent.appendChild(selectorDiv);
+
+            const selectorLabel = document.createElement('label');
+            selectorLabel.textContent = 'Run: ';
+            selectorDiv.appendChild(selectorLabel);
+
+            const select = document.createElement('select');
+            selectorDiv.appendChild(select);
+
+            for (let i = entries.length - 1; i >= 0; i--) {
+              const entry = entries[i];
+              const opt = document.createElement('option');
+              opt.value = String(i);
+              const date = new Date(entry.date).toLocaleDateString();
+              opt.textContent = entry.commit.id.slice(0, 7) + ' (' + date + ')';
+              select.appendChild(opt);
+            }
+
+            // Run info
+            const infoDiv = document.createElement('div');
+            infoDiv.className = 'run-info';
+            parent.appendChild(infoDiv);
+
+            // Table container
+            const container = document.createElement('div');
+            container.className = 'benchmark-table-container';
+            parent.appendChild(container);
+
+            function buildTable(runIndex) {
+              const entry = entries[runIndex];
+              const prevEntry = runIndex > 0 ? entries[runIndex - 1] : null;
+              const firstEntry = runIndex > 0 ? entries[0] : null;
+
+              // Update info
+              const commitDate = new Date(entry.date).toLocaleString();
+              const commitMsg = entry.commit.message.split('\n')[0];
+              infoDiv.innerHTML = '';
+              const commitLink = document.createElement('a');
+              commitLink.href = entry.commit.url;
+              commitLink.rel = 'noopener';
+              commitLink.target = '_blank';
+              commitLink.textContent = entry.commit.id.slice(0, 7);
+              infoDiv.appendChild(commitLink);
+              infoDiv.appendChild(document.createTextNode(' - ' + commitMsg + ' (' + commitDate + ')'));
+
+              // Build prev lookup
+              const prevMap = new Map();
+              if (prevEntry) {
+                for (const bench of prevEntry.benches) {
+                  prevMap.set(bench.name, bench);
+                }
+              }
+
+              // Build first run lookup
+              const firstMap = new Map();
+              if (firstEntry) {
+                for (const bench of firstEntry.benches) {
+                  firstMap.set(bench.name, bench);
+                }
+              }
+
+              // Separate benchmarks into 3 categories
+              const productionBenches = [];
+              const referenceBenches = [];
+              const archiveBenches = [];
+              for (const bench of entry.benches) {
+                const cat = benchCategory(bench.name);
+                if (cat === 'production') productionBenches.push(bench);
+                else if (cat === 'reference') referenceBenches.push(bench);
+                else archiveBenches.push(bench);
+              }
+
+              function groupBenches(benches) {
+                const groups = new Map();
+                for (const bench of benches) {
+                  const parts = bench.name.split('/');
+                  const groupKey = parts.length >= 2 ? parts.slice(0, -1).join('/') : '';
+                  const shortName = parts[parts.length - 1];
+                  if (!groups.has(groupKey)) {
+                    groups.set(groupKey, []);
+                  }
+                  groups.get(groupKey).push({ ...bench, shortName });
+                }
+                return groups;
+              }
+
+              const productionGroups = sortGroups(groupBenches(productionBenches));
+              const referenceGroups = groupBenches(referenceBenches);
+              const archiveGroups = groupBenches(archiveBenches);
+
+              // Build table
+              const table = document.createElement('table');
+              table.className = 'benchmark-table';
+
+              const thead = document.createElement('thead');
+              const headerRow = document.createElement('tr');
+              const headers = ['Benchmark', 'Value', 'Range', 'Unit'];
+              if (prevEntry) {
+                headers.push('Previous', 'Change');
+              }
+              if (firstEntry) {
+                headers.push('vs First');
+              }
+              for (const h of headers) {
+                const th = document.createElement('th');
+                th.textContent = h;
+                if (h !== 'Benchmark') th.style.textAlign = 'right';
+                headerRow.appendChild(th);
+              }
+              thead.appendChild(headerRow);
+              table.appendChild(thead);
+
+              const tbody = document.createElement('tbody');
+
+              // category: 'production' | 'reference' | 'archive'
+              function appendGroupRows(groups, category) {
+                for (const [groupName, benches] of groups) {
+                  // Group header row
+                  if (groupName) {
+                    const groupRow = document.createElement('tr');
+                    groupRow.className = 'group-header' + (category !== 'production' ? ' ' + category : '');
+                    const groupCell = document.createElement('td');
+                    groupCell.colSpan = headers.length;
+                    groupCell.textContent = groupName;
+                    if (category === 'reference') {
+                      const badge = document.createElement('span');
+                      badge.className = 'badge badge-reference';
+                      badge.textContent = 'Reference';
+                      groupCell.appendChild(badge);
+                    } else if (category === 'archive') {
+                      const badge = document.createElement('span');
+                      badge.className = 'badge badge-archive';
+                      badge.textContent = 'Archive';
+                      groupCell.appendChild(badge);
+                    }
+                    groupRow.appendChild(groupCell);
+                    tbody.appendChild(groupRow);
+                  }
+
+                  for (const bench of benches) {
+                    const row = document.createElement('tr');
+                    if (category === 'archive') row.className = 'archive-row';
+                    else if (category === 'reference') row.className = 'reference-row';
+
+                    // Name
+                    const nameCell = document.createElement('td');
+                    nameCell.textContent = groupName ? bench.shortName : bench.name;
+                    row.appendChild(nameCell);
+
+                    // Value
+                    const valueCell = document.createElement('td');
+                    valueCell.className = 'numeric';
+                    valueCell.textContent = formatValueFull(bench.value);
+                    valueCell.title = bench.value + ' ' + bench.unit;
+                    row.appendChild(valueCell);
+
+                    // Range
+                    const rangeCell = document.createElement('td');
+                    rangeCell.className = 'numeric';
+                    rangeCell.textContent = bench.range || '-';
+                    row.appendChild(rangeCell);
+
+                    // Unit
+                    const unitCell = document.createElement('td');
+                    unitCell.className = 'numeric';
+                    unitCell.textContent = bench.unit;
+                    row.appendChild(unitCell);
+
+                    if (prevEntry) {
+                      const prev = prevMap.get(bench.name);
+                      // Previous value
+                      const prevCell = document.createElement('td');
+                      prevCell.className = 'numeric';
+                      prevCell.textContent = prev ? formatValueFull(prev.value) : '-';
+                      row.appendChild(prevCell);
+
+                      // Change
+                      const changeCell = document.createElement('td');
+                      changeCell.className = 'numeric';
+                      if (prev) {
+                        const delta = bench.value - prev.value;
+                        const pct = prev.value !== 0 ? (delta / prev.value) * 100 : 0;
+                        const sign = delta > 0 ? '+' : '';
+                        changeCell.textContent = sign + pct.toFixed(1) + '%';
+                        // For benchmarks, lower is better (ns/iter), so positive = regression
+                        if (pct > 5) {
+                          changeCell.className += ' change-positive';
+                        } else if (pct < -5) {
+                          changeCell.className += ' change-negative';
+                        } else {
+                          changeCell.className += ' change-neutral';
+                        }
+                        changeCell.title = sign + formatValueFull(delta) + ' ' + bench.unit;
+                      } else {
+                        changeCell.textContent = 'new';
+                        changeCell.className += ' change-neutral';
+                      }
+                      row.appendChild(changeCell);
+                    }
+
+                    if (firstEntry) {
+                      const first = firstMap.get(bench.name);
+                      const vsFirstCell = document.createElement('td');
+                      vsFirstCell.className = 'numeric';
+                      if (first) {
+                        const delta = bench.value - first.value;
+                        const pct = first.value !== 0 ? (delta / first.value) * 100 : 0;
+                        const sign = delta > 0 ? '+' : '';
+                        vsFirstCell.textContent = sign + pct.toFixed(1) + '%';
+                        if (pct > 5) {
+                          vsFirstCell.className += ' change-positive';
+                        } else if (pct < -5) {
+                          vsFirstCell.className += ' change-negative';
+                        } else {
+                          vsFirstCell.className += ' change-neutral';
+                        }
+                        vsFirstCell.title = 'vs ' + entries[0].commit.id.slice(0, 7) + ': ' + sign + formatValueFull(delta) + ' ' + bench.unit;
+                      } else {
+                        vsFirstCell.textContent = 'new';
+                        vsFirstCell.className += ' change-neutral';
+                      }
+                      row.appendChild(vsFirstCell);
+                    }
+
+                    tbody.appendChild(row);
+                  }
+                }
+              }
+
+              // Production benchmarks first
+              appendGroupRows(productionGroups, 'production');
+
+              // Reference separator + reference benchmarks
+              if (referenceGroups.size > 0) {
+                const refSep = document.createElement('tr');
+                refSep.className = 'section-separator reference';
+                const refCell = document.createElement('td');
+                refCell.colSpan = headers.length;
+                refCell.textContent = 'REFERENCE (production code, synthetic execution)';
+                refSep.appendChild(refCell);
+                tbody.appendChild(refSep);
+
+                appendGroupRows(referenceGroups, 'reference');
+              }
+
+              // Archive separator + archive benchmarks
+              if (archiveGroups.size > 0) {
+                const archSep = document.createElement('tr');
+                archSep.className = 'section-separator';
+                const archCell = document.createElement('td');
+                archCell.colSpan = headers.length;
+                archCell.textContent = 'ARCHIVE (historical / superseded)';
+                archSep.appendChild(archCell);
+                tbody.appendChild(archSep);
+
+                appendGroupRows(archiveGroups, 'archive');
+              }
+
+              table.appendChild(tbody);
+
+              container.innerHTML = '';
+              container.appendChild(table);
+            }
+
+            // Initial render with latest
+            buildTable(entries.length - 1);
+
+            select.addEventListener('change', () => {
+              buildTable(Number(select.value));
+            });
+          }
+
+          function renderBenchSet(name, entries, benchSet, main) {
             const setElem = document.createElement('div');
             setElem.className = 'benchmark-set';
             main.appendChild(setElem);
@@ -259,18 +775,124 @@
             nameElem.textContent = name;
             setElem.appendChild(nameElem);
 
+            // View toggle
+            const toggleDiv = document.createElement('div');
+            toggleDiv.className = 'view-toggle';
+            setElem.appendChild(toggleDiv);
+
+            const graphBtn = document.createElement('button');
+            graphBtn.textContent = 'Graph';
+            graphBtn.className = 'active';
+            toggleDiv.appendChild(graphBtn);
+
+            const tableBtn = document.createElement('button');
+            tableBtn.textContent = 'Table';
+            toggleDiv.appendChild(tableBtn);
+
+            // Separate benchmarks into 3 categories for graph view
+            const productionEntries = new Map();
+            const referenceEntries = new Map();
+            const archiveEntries = new Map();
+            for (const [benchName, benches] of benchSet.entries()) {
+              const cat = benchCategory(benchName);
+              if (cat === 'production') productionEntries.set(benchName, benches);
+              else if (cat === 'reference') referenceEntries.set(benchName, benches);
+              else archiveEntries.set(benchName, benches);
+            }
+
+            // Production graphs
             const graphsElem = document.createElement('div');
             graphsElem.className = 'benchmark-graphs';
             setElem.appendChild(graphsElem);
 
-            for (const [benchName, benches] of benchSet.entries()) {
-              renderGraph(graphsElem, benchName, benches)
+            for (const [benchName, benches] of sortGroups(productionEntries).entries()) {
+              renderGraph(graphsElem, benchName, benches);
             }
+
+            // Helper: create collapsible section
+            function createCollapsibleSection(parentElem, cssClass, titleClass, graphsClass, label, entriesMap) {
+              const section = document.createElement('div');
+              section.className = cssClass;
+              parentElem.appendChild(section);
+
+              const title = document.createElement('div');
+              title.className = titleClass;
+              title.textContent = label + ' (' + entriesMap.size + ')';
+              section.appendChild(title);
+
+              const graphs = document.createElement('div');
+              graphs.className = 'benchmark-graphs ' + graphsClass;
+              graphs.style.display = 'none';
+              section.appendChild(graphs);
+
+              let rendered = false;
+              title.addEventListener('click', () => {
+                const isHidden = graphs.style.display === 'none';
+                graphs.style.display = isHidden ? '' : 'none';
+                if (isHidden && !rendered) {
+                  for (const [benchName, benches] of entriesMap.entries()) {
+                    renderGraph(graphs, benchName, benches);
+                  }
+                  rendered = true;
+                }
+              });
+
+              return section;
+            }
+
+            // Reference graphs (collapsible)
+            let refSection = null;
+            if (referenceEntries.size > 0) {
+              refSection = createCollapsibleSection(
+                setElem, 'reference-section', 'reference-section-title',
+                'reference-graphs', 'Reference', referenceEntries
+              );
+            }
+
+            // Archive graphs (collapsible)
+            let archSection = null;
+            if (archiveEntries.size > 0) {
+              archSection = createCollapsibleSection(
+                setElem, 'archive-section', 'archive-section-title',
+                'archive-graphs', 'Archive', archiveEntries
+              );
+            }
+
+            // Table view
+            const tableElem = document.createElement('div');
+            tableElem.style.display = 'none';
+            setElem.appendChild(tableElem);
+
+            let tableRendered = false;
+
+            // Toggle logic
+            graphBtn.addEventListener('click', () => {
+              graphBtn.className = 'active';
+              tableBtn.className = '';
+              graphsElem.style.display = '';
+              if (refSection) refSection.style.display = '';
+              if (archSection) archSection.style.display = '';
+              tableElem.style.display = 'none';
+            });
+
+            tableBtn.addEventListener('click', () => {
+              tableBtn.className = 'active';
+              graphBtn.className = '';
+              graphsElem.style.display = 'none';
+              if (refSection) refSection.style.display = 'none';
+              if (archSection) archSection.style.display = 'none';
+              tableElem.style.display = '';
+              // Lazy render table on first click
+              if (!tableRendered) {
+                renderTable(tableElem, entries, benchSet);
+                tableRendered = true;
+              }
+            });
           }
 
           const main = document.getElementById('main');
-          for (const {name, dataSet} of dataSets) {
-            renderBenchSet(name, dataSet, main);
+          for (const {name, entries, dataSet} of dataSets) {
+            renderBenchSet(name, entries, dataSet, main);
           }
         }
 
