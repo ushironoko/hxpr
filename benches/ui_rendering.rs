@@ -1,9 +1,16 @@
 //! UI rendering benchmarks for octorus TUI.
 //!
-//! ## Active benchmarks (production code paths)
+//! ## Production benchmarks (matches actual production execution)
 //! - `diff_cache/` – cache building with/without syntax highlighting
-//! - `selected_line/` – span_clone (baseline) vs borrowed_spans (production)
-//! - `visible_range/` – all_lines (baseline) vs visible_borrowed (production)
+//! - `visible_range/visible_borrowed` – visible range processing (production)
+//! - `highlighter/tree_sitter_rust` – Rust highlighting
+//! - `highlighter/tree_sitter_haskell` – Haskell highlighting (complex syntax)
+//! - `highlighter/tree_sitter_vue` – Vue SFC highlighting (injection: HTML/TS/CSS)
+//!
+//! ## Reference benchmarks (production code, synthetic execution)
+//! - `selected_line/span_clone` – baseline (clone each span)
+//! - `selected_line/borrowed_spans` – production function but all-lines execution
+//! - `visible_range/all_lines` – baseline (process all lines)
 //!
 //! ## Archive benchmarks (historical, not used in production)
 //! - `archive/selected_line/line_style` – intermediate approach (clone + Line::style)
@@ -17,7 +24,7 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use common::{generate_diff_patch, generate_typescript_diff_patch, generate_vue_diff_patch};
+use common::{generate_diff_patch, generate_haskell_diff_patch, generate_vue_diff_patch};
 use octorus::{build_diff_cache, render_cached_lines, ParserPool};
 
 /// Benchmark diff cache building with syntax highlighting.
@@ -274,12 +281,16 @@ fn bench_highlighter_tree_sitter_rust(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark tree-sitter highlighting (TypeScript files).
-fn bench_highlighter_tree_sitter_typescript(c: &mut Criterion) {
-    let mut group = c.benchmark_group("highlighter/tree_sitter_typescript");
+/// Benchmark tree-sitter highlighting (Haskell files).
+///
+/// Haskell has complex syntax: type classes, GADTs, pattern matching,
+/// do-notation, and type-level programming. Tests tree-sitter with
+/// a language that has significant syntactic complexity.
+fn bench_highlighter_tree_sitter_haskell(c: &mut Criterion) {
+    let mut group = c.benchmark_group("highlighter/tree_sitter_haskell");
 
     for line_count in [100, 500, 1000, 10000] {
-        let patch = generate_typescript_diff_patch(line_count);
+        let patch = generate_haskell_diff_patch(line_count);
 
         group.throughput(Throughput::Elements(line_count as u64));
         group.bench_with_input(
@@ -291,7 +302,7 @@ fn bench_highlighter_tree_sitter_typescript(c: &mut Criterion) {
                     |mut parser_pool| {
                         black_box(build_diff_cache(
                             black_box(patch),
-                            black_box("test.ts"), // tree-sitter (combined JS+TS query)
+                            black_box("test.hs"), // tree-sitter
                             black_box("Dracula"),
                             black_box(&mut parser_pool),
                         ))
@@ -305,9 +316,12 @@ fn bench_highlighter_tree_sitter_typescript(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark syntect highlighting (Vue files).
-fn bench_highlighter_syntect_vue(c: &mut Criterion) {
-    let mut group = c.benchmark_group("highlighter/syntect_vue");
+/// Benchmark tree-sitter highlighting (Vue SFC files).
+///
+/// Vue SFC uses injection: template (HTML/Vue), script (TypeScript), style (CSS).
+/// Tests tree-sitter multi-language handling within a single file.
+fn bench_highlighter_tree_sitter_vue(c: &mut Criterion) {
+    let mut group = c.benchmark_group("highlighter/tree_sitter_vue");
 
     for line_count in [100, 500, 1000, 10000] {
         let patch = generate_vue_diff_patch(line_count);
@@ -322,7 +336,7 @@ fn bench_highlighter_syntect_vue(c: &mut Criterion) {
                     |mut parser_pool| {
                         black_box(build_diff_cache(
                             black_box(patch),
-                            black_box("test.vue"), // syntect fallback
+                            black_box("test.vue"), // tree-sitter with injection
                             black_box("Dracula"),
                             black_box(&mut parser_pool),
                         ))
@@ -454,10 +468,10 @@ criterion_group!(
     bench_build_diff_cache_no_highlight,
     bench_selected_line_rendering,
     bench_visible_range_processing,
-    // Tree-sitter vs Syntect comparison
+    // Tree-sitter highlighting
     bench_highlighter_tree_sitter_rust,
-    bench_highlighter_tree_sitter_typescript,
-    bench_highlighter_syntect_vue,
+    bench_highlighter_tree_sitter_haskell,
+    bench_highlighter_tree_sitter_vue,
     // Archive
     bench_archive_selected_line,
     bench_archive_visible_range,

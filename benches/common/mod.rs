@@ -283,6 +283,90 @@ fn generate_css_line(rng: &mut ChaCha8Rng, _line_num: usize) -> String {
     templates[idx].to_string()
 }
 
+/// Generate a realistic Haskell diff patch.
+///
+/// Haskell has complex syntax features: type classes, GADTs, pattern matching,
+/// do-notation, type-level programming, and significant whitespace.
+pub fn generate_haskell_diff_patch(line_count: usize) -> String {
+    let mut rng = seeded_rng();
+    let mut lines = Vec::with_capacity(line_count);
+    let mut current_line = 1u32;
+
+    lines.push(format!("@@ -1,{} +1,{} @@", line_count / 2, line_count / 2));
+
+    for i in 1..line_count {
+        if i % 50 == 0 {
+            current_line += 50;
+            lines.push(format!(
+                "@@ -{},{} +{},{} @@",
+                current_line, 30, current_line, 30
+            ));
+            continue;
+        }
+
+        let line_type: u8 = rng.random_range(0..10);
+        let content = generate_haskell_line(&mut rng, i);
+
+        match line_type {
+            0..=1 => lines.push(format!("+{}", content)),
+            2..=3 => lines.push(format!("-{}", content)),
+            _ => lines.push(format!(" {}", content)),
+        }
+    }
+
+    lines.join("\n")
+}
+
+/// Generate a line of realistic Haskell code
+fn generate_haskell_line(rng: &mut ChaCha8Rng, line_num: usize) -> String {
+    let templates = [
+        "module Main (main, processData) where",
+        "import qualified Data.Map.Strict as Map",
+        "import Control.Monad.Trans.State (StateT, get, put, evalStateT)",
+        "data Tree a = Leaf | Node (Tree a) a (Tree a) deriving (Show, Eq, Functor)",
+        "class (Monad m) => MonadReader r m | m -> r where",
+        "  ask :: m r",
+        "instance Functor Tree where",
+        "  fmap f Leaf = Leaf",
+        "  fmap f (Node l x r) = Node (fmap f l) (f x) (fmap f r)",
+        "type family Elem (xs :: [k]) :: k where",
+        "  Elem (x ': _) = x",
+        "processData :: (MonadIO m, MonadReader Config m) => FilePath -> m [Result]",
+        "processData path = do",
+        "  contents <- liftIO $ readFile path",
+        "  config <- ask",
+        "  let parsed = parseWith (configParser config) contents",
+        "  case parsed of",
+        "    Left err -> throwError $ ParseError err",
+        "    Right val -> pure $ transform val",
+        "transform :: Value -> [Result]",
+        "transform = \\case",
+        "  Object fields -> concatMap transformField (Map.toList fields)",
+        "  Array items  -> zipWith transformItem [0..] (toList items)",
+        "  _            -> []",
+        "  where",
+        "    transformField (k, v) = [Result k (show v)]",
+        "    transformItem i v = [Result (show i) (show v)]",
+        "newtype AppM a = AppM { runAppM :: ReaderT Config (ExceptT AppError IO) a }",
+        "  deriving (Functor, Applicative, Monad, MonadIO, MonadReader Config)",
+        "{-# LANGUAGE GADTs, TypeFamilies, DataKinds, RankNTypes #-}",
+        "-- | Main entry point with error handling",
+        "main :: IO ()",
+        "main = do",
+        "  args <- getArgs",
+        "  result <- runExceptT $ runReaderT (runAppM app) defaultConfig",
+        "  either (hPutStrLn stderr . show) pure result",
+        "fibonacci :: Integer -> Integer",
+        "fibonacci n",
+        "  | n <= 0    = 0",
+        "  | n == 1    = 1",
+        "  | otherwise = fibonacci (n - 1) + fibonacci (n - 2)",
+    ];
+
+    let idx = rng.random_range(0..templates.len());
+    format!("{} -- line {}", templates[idx], line_num)
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
