@@ -3,6 +3,7 @@ mod comment_list;
 mod common;
 pub mod diff_view;
 mod file_list;
+mod footer;
 mod help;
 mod pr_list;
 mod split_view;

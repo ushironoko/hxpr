@@ -203,36 +203,8 @@ fn render_diff_footer(
     help_text: &str,
     border_color: Color,
 ) {
-    let mut footer_spans = vec![Span::raw(help_text.to_string())];
-
-    if app.is_submitting_comment() {
-        footer_spans.push(Span::raw("  "));
-        footer_spans.push(Span::styled(
-            format!("{} Submitting...", app.spinner_char()),
-            Style::default().fg(Color::Yellow),
-        ));
-    } else if let Some((success, message)) = &app.submission_result {
-        footer_spans.push(Span::raw("  "));
-        if *success {
-            footer_spans.push(Span::styled(
-                format!("✓ {}", message),
-                Style::default().fg(Color::Green),
-            ));
-        } else {
-            footer_spans.push(Span::styled(
-                format!("✗ {}", message),
-                Style::default().fg(Color::Red),
-            ));
-        }
-    } else if app.comments_loading {
-        footer_spans.push(Span::raw("  "));
-        footer_spans.push(Span::styled(
-            format!("{} Loading comments...", app.spinner_char()),
-            Style::default().fg(Color::Yellow),
-        ));
-    }
-
-    let footer = Paragraph::new(Line::from(footer_spans)).block(
+    let footer_line = super::footer::build_footer_line(app, help_text);
+    let footer = Paragraph::new(footer_line).block(
         Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color)),

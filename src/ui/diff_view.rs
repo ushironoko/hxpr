@@ -857,37 +857,8 @@ fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         "j/k/↑↓: move | n/N: next/prev comment | Enter: comments | Ctrl-d/u: page | ←/h/q: back"
     };
 
-    // Build footer content with submission status
-    let mut spans = vec![Span::raw(help_text)];
-
-    if app.is_submitting_comment() {
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(
-            format!("{} Submitting...", app.spinner_char()),
-            Style::default().fg(Color::Yellow),
-        ));
-    } else if let Some((success, message)) = &app.submission_result {
-        spans.push(Span::raw("  "));
-        if *success {
-            spans.push(Span::styled(
-                format!("✓ {}", message),
-                Style::default().fg(Color::Green),
-            ));
-        } else {
-            spans.push(Span::styled(
-                format!("✗ {}", message),
-                Style::default().fg(Color::Red),
-            ));
-        }
-    } else if app.comments_loading {
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(
-            format!("{} Loading comments...", app.spinner_char()),
-            Style::default().fg(Color::Yellow),
-        ));
-    }
-
-    let footer = Paragraph::new(Line::from(spans)).block(Block::default().borders(Borders::ALL));
+    let footer_line = super::footer::build_footer_line(app, help_text);
+    let footer = Paragraph::new(footer_line).block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, area);
 }
 

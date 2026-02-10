@@ -3660,6 +3660,85 @@ impl App {
             self.state = AppState::PullRequestList;
         }
     }
+
+    /// Create a minimal App instance for unit tests outside of app.rs.
+    #[cfg(test)]
+    pub fn new_for_test() -> Self {
+        let config = Config::default();
+        Self {
+            repo: "test/repo".to_string(),
+            pr_number: Some(1),
+            data_state: DataState::Loading,
+            state: AppState::FileList,
+            pr_list: None,
+            selected_pr: 0,
+            pr_list_scroll_offset: 0,
+            pr_list_loading: false,
+            pr_list_has_more: false,
+            pr_list_state_filter: PrStateFilter::default(),
+            started_from_pr_list: false,
+            pr_list_receiver: None,
+            diff_view_return_state: AppState::FileList,
+            preview_return_state: AppState::DiffView,
+            previous_state: AppState::FileList,
+            selected_file: 0,
+            file_list_scroll_offset: 0,
+            selected_line: 0,
+            diff_line_count: 0,
+            scroll_offset: 0,
+            input_mode: None,
+            input_text_area: TextArea::with_submit_key(config.keybindings.submit.clone()),
+            config,
+            should_quit: false,
+            review_comments: None,
+            selected_comment: 0,
+            comment_list_scroll_offset: 0,
+            comments_loading: false,
+            file_comment_positions: vec![],
+            file_comment_lines: HashSet::new(),
+            comment_panel_open: false,
+            comment_panel_scroll: 0,
+            diff_cache: None,
+            highlighted_cache_store: HashMap::new(),
+            discussion_comments: None,
+            selected_discussion_comment: 0,
+            discussion_comment_list_scroll_offset: 0,
+            discussion_comments_loading: false,
+            discussion_comment_detail_mode: false,
+            discussion_comment_detail_scroll: 0,
+            comment_tab: CommentTab::default(),
+            ai_rally_state: None,
+            working_dir: None,
+            data_receiver: None,
+            retry_sender: None,
+            comment_receiver: None,
+            diff_cache_receiver: None,
+            prefetch_receiver: None,
+            discussion_comment_receiver: None,
+            rally_event_receiver: None,
+            rally_abort_handle: None,
+            rally_command_sender: None,
+            start_ai_rally_on_load: false,
+            pending_ai_rally: false,
+            comment_submit_receiver: None,
+            comment_submitting: false,
+            submission_result: None,
+            submission_result_time: None,
+            spinner_frame: 0,
+            selected_inline_comment: 0,
+            jump_stack: Vec::new(),
+            pending_keys: SmallVec::new(),
+            pending_since: None,
+            symbol_popup: None,
+            session_cache: SessionCache::new(),
+        }
+    }
+
+    /// Set the comment_submitting flag for testing.
+    #[cfg(test)]
+    pub fn set_submitting_for_test(&mut self, submitting: bool) {
+        self.comment_submitting = submitting;
+    }
 }
 
 #[cfg(test)]
