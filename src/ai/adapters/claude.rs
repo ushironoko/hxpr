@@ -104,6 +104,7 @@ impl ClaudeAdapter {
         let mut cmd = Command::new("claude");
         cmd.arg("-p").arg(prompt);
         cmd.arg("--output-format").arg("stream-json");
+        cmd.arg("--verbose");
         cmd.arg("--json-schema").arg(schema);
         cmd.arg("--allowedTools").arg(allowed_tools);
 
@@ -301,6 +302,7 @@ impl ClaudeAdapter {
         cmd.arg("-p").arg(message);
         cmd.arg("--resume").arg(session_id);
         cmd.arg("--output-format").arg("stream-json");
+        cmd.arg("--verbose");
         cmd.arg("--json-schema").arg(schema);
         if let Some(tools) = allowed_tools {
             cmd.arg("--allowedTools").arg(tools);
