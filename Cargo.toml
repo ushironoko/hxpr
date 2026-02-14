@@ -3,7 +3,7 @@ members = [".", "crates/tree-sitter-moonbit", "crates/tree-sitter-vue3"]
 
 [package]
 name = "octorus"
-version = "0.3.3"
+version = "0.3.4"
 edition = "2021"
 authors = ["ushironoko"]
 description = "A TUI tool for GitHub PR review, designed for Helix editor users"
