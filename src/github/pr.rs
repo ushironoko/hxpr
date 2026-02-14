@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use super::client::{gh_api, gh_command};
+use super::client::{gh_api, gh_api_paginate, gh_command};
 use crate::app::ReviewAction;
 
 /// PR状態フィルタ（型安全）
@@ -97,8 +97,8 @@ pub async fn fetch_pr(repo: &str, pr_number: u32) -> Result<PullRequest> {
 }
 
 pub async fn fetch_changed_files(repo: &str, pr_number: u32) -> Result<Vec<ChangedFile>> {
-    let endpoint = format!("repos/{}/pulls/{}/files", repo, pr_number);
-    let json = gh_api(&endpoint).await?;
+    let endpoint = format!("repos/{}/pulls/{}/files?per_page=100", repo, pr_number);
+    let json = gh_api_paginate(&endpoint).await?;
     serde_json::from_value(json).context("Failed to parse changed files response")
 }
 

@@ -2,15 +2,15 @@ use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use super::client::{gh_api, gh_api_post, FieldValue};
+use super::client::{gh_api_paginate, gh_api_post, FieldValue};
 use super::pr::User;
 
-/// ジェネリックなfetch & parse関数
+/// ジェネリックなfetch & parse関数（ページネーション対応）
 async fn fetch_and_parse<T: DeserializeOwned>(
     endpoint: &str,
     error_context: &'static str,
 ) -> Result<T> {
-    let json = gh_api(endpoint).await?;
+    let json = gh_api_paginate(endpoint).await?;
     serde_json::from_value(json).context(error_context)
 }
 
@@ -26,7 +26,7 @@ pub struct ReviewComment {
 
 pub async fn fetch_review_comments(repo: &str, pr_number: u32) -> Result<Vec<ReviewComment>> {
     fetch_and_parse(
-        &format!("repos/{}/pulls/{}/comments", repo, pr_number),
+        &format!("repos/{}/pulls/{}/comments?per_page=100", repo, pr_number),
         "Failed to parse review comments response",
     )
     .await
@@ -46,7 +46,7 @@ pub async fn fetch_discussion_comments(
     pr_number: u32,
 ) -> Result<Vec<DiscussionComment>> {
     fetch_and_parse(
-        &format!("repos/{}/issues/{}/comments", repo, pr_number),
+        &format!("repos/{}/issues/{}/comments?per_page=100", repo, pr_number),
         "Failed to parse discussion comments response",
     )
     .await
@@ -64,7 +64,7 @@ pub struct Review {
 
 pub async fn fetch_reviews(repo: &str, pr_number: u32) -> Result<Vec<Review>> {
     fetch_and_parse(
-        &format!("repos/{}/pulls/{}/reviews", repo, pr_number),
+        &format!("repos/{}/pulls/{}/reviews?per_page=100", repo, pr_number),
         "Failed to parse reviews response",
     )
     .await
