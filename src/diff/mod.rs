@@ -424,7 +424,7 @@ Binary files /dev/null and b/image.png differ
     #[test]
     fn test_parse_multiple_files() {
         let result = parse_unified_diff(UNIFIED_DIFF_MULTIPLE);
-        assert_snapshot!(format_parsed_diff(&result), @r"
+        assert_snapshot!(format_parsed_diff(&result), @r#"
         [src/app.rs]
         diff --git a/src/app.rs b/src/app.rs
         index 3333333..4444444 100644
@@ -444,13 +444,13 @@ Binary files /dev/null and b/image.png differ
         @@ -1,2 +1,3 @@
          pub mod app;
         +pub mod config;
-        ");
+        "#);
     }
 
     #[test]
     fn test_parse_new_file() {
         let result = parse_unified_diff(UNIFIED_DIFF_NEW_FILE);
-        assert_snapshot!(format_parsed_diff(&result), @r"
+        assert_snapshot!(format_parsed_diff(&result), @r#"
         [src/new_file.rs]
         diff --git a/src/new_file.rs b/src/new_file.rs
         new file mode 100644
@@ -461,13 +461,13 @@ Binary files /dev/null and b/image.png differ
         +fn new_function() {
         +    todo!()
         +}
-        ");
+        "#);
     }
 
     #[test]
     fn test_parse_deleted_file() {
         let result = parse_unified_diff(UNIFIED_DIFF_DELETED);
-        assert_snapshot!(format_parsed_diff(&result), @r"
+        assert_snapshot!(format_parsed_diff(&result), @r#"
         [src/old_file.rs]
         diff --git a/src/old_file.rs b/src/old_file.rs
         deleted file mode 100644
@@ -478,14 +478,14 @@ Binary files /dev/null and b/image.png differ
         -fn old_function() {
         -    todo!()
         -}
-        ");
+        "#);
     }
 
     #[test]
     fn test_parse_renamed_file() {
         let result = parse_unified_diff(UNIFIED_DIFF_RENAMED);
         // Uses old filename (from a/ path) for matching with GitHub API
-        assert_snapshot!(format_parsed_diff(&result), @r"
+        assert_snapshot!(format_parsed_diff(&result), @r#"
         [src/old_name.rs]
         diff --git a/src/old_name.rs b/src/new_name.rs
         similarity index 95%
@@ -498,19 +498,19 @@ Binary files /dev/null and b/image.png differ
         -fn old_name() {
         +fn new_name() {
          }
-        ");
+        "#);
     }
 
     #[test]
     fn test_parse_binary_file() {
         let result = parse_unified_diff(UNIFIED_DIFF_BINARY);
-        assert_snapshot!(format_parsed_diff(&result), @r"
+        assert_snapshot!(format_parsed_diff(&result), @r#"
         [image.png]
         diff --git a/image.png b/image.png
         new file mode 100644
         index 0000000..1234567
         Binary files /dev/null and b/image.png differ
-        ");
+        "#);
     }
 
     #[test]
