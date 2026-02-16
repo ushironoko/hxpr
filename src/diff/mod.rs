@@ -219,6 +219,23 @@ fn extract_filename(git_diff_line: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use insta::assert_snapshot;
+    use std::collections::BTreeMap;
+
+    fn format_parsed_diff(result: &HashMap<String, String>) -> String {
+        let sorted: BTreeMap<&str, &str> = result
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        let mut output = String::new();
+        for (i, (filename, patch)) in sorted.iter().enumerate() {
+            if i > 0 {
+                output.push_str("\n---\n");
+            }
+            output.push_str(&format!("[{}]\n{}", filename, patch));
+        }
+        output
+    }
 
     const SAMPLE_PATCH: &str = r#"@@ -1,4 +1,5 @@
  line 1
@@ -391,70 +408,109 @@ Binary files /dev/null and b/image.png differ
     #[test]
     fn test_parse_single_file() {
         let result = parse_unified_diff(UNIFIED_DIFF_SINGLE);
-        assert_eq!(result.len(), 1);
-        assert!(result.contains_key("src/main.rs"));
-
-        let patch = result.get("src/main.rs").unwrap();
-        assert!(patch.contains("@@ -1,3 +1,4 @@"));
-        assert!(patch.contains("+    println!(\"Hello\");"));
+        assert_snapshot!(format_parsed_diff(&result), @r#"
+        [src/main.rs]
+        diff --git a/src/main.rs b/src/main.rs
+        index 1234567..abcdefg 100644
+        --- a/src/main.rs
+        +++ b/src/main.rs
+        @@ -1,3 +1,4 @@
+         fn main() {
+        +    println!("Hello");
+         }
+        "#);
     }
 
     #[test]
     fn test_parse_multiple_files() {
         let result = parse_unified_diff(UNIFIED_DIFF_MULTIPLE);
-        assert_eq!(result.len(), 2);
-        assert!(result.contains_key("src/lib.rs"));
-        assert!(result.contains_key("src/app.rs"));
-
-        let lib_patch = result.get("src/lib.rs").unwrap();
-        assert!(lib_patch.contains("+pub mod config;"));
-
-        let app_patch = result.get("src/app.rs").unwrap();
-        assert!(app_patch.contains("+    version: String,"));
+        assert_snapshot!(format_parsed_diff(&result), @r#"
+        [src/app.rs]
+        diff --git a/src/app.rs b/src/app.rs
+        index 3333333..4444444 100644
+        --- a/src/app.rs
+        +++ b/src/app.rs
+        @@ -10,6 +10,7 @@
+         struct App {
+             name: String,
+        +    version: String,
+         }
+        ---
+        [src/lib.rs]
+        diff --git a/src/lib.rs b/src/lib.rs
+        index 1111111..2222222 100644
+        --- a/src/lib.rs
+        +++ b/src/lib.rs
+        @@ -1,2 +1,3 @@
+         pub mod app;
+        +pub mod config;
+        "#);
     }
 
     #[test]
     fn test_parse_new_file() {
         let result = parse_unified_diff(UNIFIED_DIFF_NEW_FILE);
-        assert_eq!(result.len(), 1);
-        assert!(result.contains_key("src/new_file.rs"));
-
-        let patch = result.get("src/new_file.rs").unwrap();
-        assert!(patch.contains("new file mode"));
-        assert!(patch.contains("--- /dev/null"));
+        assert_snapshot!(format_parsed_diff(&result), @r#"
+        [src/new_file.rs]
+        diff --git a/src/new_file.rs b/src/new_file.rs
+        new file mode 100644
+        index 0000000..1234567
+        --- /dev/null
+        +++ b/src/new_file.rs
+        @@ -0,0 +1,3 @@
+        +fn new_function() {
+        +    todo!()
+        +}
+        "#);
     }
 
     #[test]
     fn test_parse_deleted_file() {
         let result = parse_unified_diff(UNIFIED_DIFF_DELETED);
-        assert_eq!(result.len(), 1);
-        assert!(result.contains_key("src/old_file.rs"));
-
-        let patch = result.get("src/old_file.rs").unwrap();
-        assert!(patch.contains("deleted file mode"));
-        assert!(patch.contains("+++ /dev/null"));
+        assert_snapshot!(format_parsed_diff(&result), @r#"
+        [src/old_file.rs]
+        diff --git a/src/old_file.rs b/src/old_file.rs
+        deleted file mode 100644
+        index 1234567..0000000
+        --- a/src/old_file.rs
+        +++ /dev/null
+        @@ -1,3 +0,0 @@
+        -fn old_function() {
+        -    todo!()
+        -}
+        "#);
     }
 
     #[test]
     fn test_parse_renamed_file() {
         let result = parse_unified_diff(UNIFIED_DIFF_RENAMED);
-        assert_eq!(result.len(), 1);
         // Uses old filename (from a/ path) for matching with GitHub API
-        assert!(result.contains_key("src/old_name.rs"));
-
-        let patch = result.get("src/old_name.rs").unwrap();
-        assert!(patch.contains("rename from"));
-        assert!(patch.contains("rename to"));
+        assert_snapshot!(format_parsed_diff(&result), @r#"
+        [src/old_name.rs]
+        diff --git a/src/old_name.rs b/src/new_name.rs
+        similarity index 95%
+        rename from src/old_name.rs
+        rename to src/new_name.rs
+        index 1234567..abcdefg 100644
+        --- a/src/old_name.rs
+        +++ b/src/new_name.rs
+        @@ -1,3 +1,3 @@
+        -fn old_name() {
+        +fn new_name() {
+         }
+        "#);
     }
 
     #[test]
     fn test_parse_binary_file() {
         let result = parse_unified_diff(UNIFIED_DIFF_BINARY);
-        assert_eq!(result.len(), 1);
-        assert!(result.contains_key("image.png"));
-
-        let patch = result.get("image.png").unwrap();
-        assert!(patch.contains("Binary files"));
+        assert_snapshot!(format_parsed_diff(&result), @r#"
+        [image.png]
+        diff --git a/image.png b/image.png
+        new file mode 100644
+        index 0000000..1234567
+        Binary files /dev/null and b/image.png differ
+        "#);
     }
 
     #[test]

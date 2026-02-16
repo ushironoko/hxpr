@@ -161,6 +161,7 @@ pub(super) fn summarize_text(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use insta::assert_json_snapshot;
 
     // --- parse_reviewer_output tests ---
 
@@ -181,13 +182,23 @@ mod tests {
         });
 
         let output = parse_reviewer_output(Some(&result), "test").unwrap();
-        assert_eq!(output.action, ReviewAction::RequestChanges);
-        assert_eq!(output.summary, "Found some issues");
-        assert_eq!(output.comments.len(), 1);
-        assert_eq!(output.comments[0].path, "src/lib.rs");
-        assert_eq!(output.comments[0].line, 42);
-        assert_eq!(output.comments[0].severity, CommentSeverity::Suggestion);
-        assert_eq!(output.blocking_issues.len(), 1);
+        assert_json_snapshot!(output, @r#"
+        {
+          "action": "request_changes",
+          "summary": "Found some issues",
+          "comments": [
+            {
+              "path": "src/lib.rs",
+              "line": 42,
+              "body": "Consider using a constant here",
+              "severity": "suggestion"
+            }
+          ],
+          "blocking_issues": [
+            "Missing error handling"
+          ]
+        }
+        "#);
     }
 
     #[test]
@@ -200,10 +211,14 @@ mod tests {
         });
 
         let output = parse_reviewer_output(Some(&result), "test").unwrap();
-        assert_eq!(output.action, ReviewAction::Approve);
-        assert_eq!(output.summary, "LGTM");
-        assert!(output.comments.is_empty());
-        assert!(output.blocking_issues.is_empty());
+        assert_json_snapshot!(output, @r#"
+        {
+          "action": "approve",
+          "summary": "LGTM",
+          "comments": [],
+          "blocking_issues": []
+        }
+        "#);
     }
 
     #[test]
@@ -214,10 +229,19 @@ mod tests {
             "files_modified": ["src/lib.rs", "src/main.rs"]
         });
 
+        // Note: question, permission_request, error_details are None
+        // and have #[serde(skip_serializing_if = "Option::is_none")], so they won't appear in JSON
         let output = parse_reviewee_output(Some(&result), "test").unwrap();
-        assert_eq!(output.status, RevieweeStatus::Completed);
-        assert_eq!(output.summary, "Fixed all issues");
-        assert_eq!(output.files_modified.len(), 2);
+        assert_json_snapshot!(output, @r#"
+        {
+          "status": "completed",
+          "summary": "Fixed all issues",
+          "files_modified": [
+            "src/lib.rs",
+            "src/main.rs"
+          ]
+        }
+        "#);
     }
 
     #[test]
@@ -232,11 +256,19 @@ mod tests {
             }
         });
 
+        // Note: question and error_details are None and skipped via skip_serializing_if
         let output = parse_reviewee_output(Some(&result), "test").unwrap();
-        assert_eq!(output.status, RevieweeStatus::NeedsPermission);
-        assert!(output.permission_request.is_some());
-        let perm = output.permission_request.unwrap();
-        assert_eq!(perm.action, "run npm install");
+        assert_json_snapshot!(output, @r#"
+        {
+          "status": "needs_permission",
+          "summary": "Need to run a command",
+          "files_modified": [],
+          "permission_request": {
+            "action": "run npm install",
+            "reason": "Required to install new dependency"
+          }
+        }
+        "#);
     }
 
     // --- Error path tests ---
