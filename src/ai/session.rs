@@ -174,3 +174,133 @@ impl RallySession {
         self.updated_at = chrono_now();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai::adapter::{
+        CommentSeverity, ReviewAction, ReviewComment, RevieweeOutput, RevieweeStatus,
+        ReviewerOutput,
+    };
+    use insta::assert_json_snapshot;
+
+    #[test]
+    fn test_rally_session_new() {
+        let session = RallySession::new("owner/repo", 42);
+        assert_json_snapshot!(session, {
+            ".started_at" => "[timestamp]",
+            ".updated_at" => "[timestamp]",
+        }, @r#"
+        {
+          "repo": "owner/repo",
+          "pr_number": 42,
+          "iteration": 0,
+          "state": "Initializing",
+          "started_at": "[timestamp]",
+          "updated_at": "[timestamp]"
+        }
+        "#);
+    }
+
+    #[test]
+    fn test_rally_session_update_state() {
+        let mut session = RallySession::new("owner/repo", 1);
+        let before = session.updated_at.clone();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        session.update_state(RallyState::ReviewerReviewing);
+        assert_eq!(session.state, RallyState::ReviewerReviewing);
+        assert_ne!(
+            session.updated_at, before,
+            "updated_at should change after update_state"
+        );
+    }
+
+    #[test]
+    fn test_rally_session_increment_iteration() {
+        let mut session = RallySession::new("owner/repo", 1);
+        assert_eq!(session.iteration, 0);
+        let before = session.updated_at.clone();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        session.increment_iteration();
+        assert_eq!(session.iteration, 1);
+        assert_ne!(
+            session.updated_at, before,
+            "updated_at should change after increment"
+        );
+        session.increment_iteration();
+        assert_eq!(session.iteration, 2);
+    }
+
+    #[test]
+    fn test_history_entry_review_serialization() {
+        let entry = RallyHistoryEntry {
+            iteration: 1,
+            entry_type: HistoryEntryType::Review(ReviewerOutput {
+                action: ReviewAction::RequestChanges,
+                summary: "Found issues".to_string(),
+                comments: vec![ReviewComment {
+                    path: "src/main.rs".to_string(),
+                    line: 10,
+                    body: "Fix this".to_string(),
+                    severity: CommentSeverity::Major,
+                }],
+                blocking_issues: vec!["Error handling".to_string()],
+            }),
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+        };
+        assert_json_snapshot!(entry, @r#"
+        {
+          "iteration": 1,
+          "entry_type": {
+            "Review": {
+              "action": "request_changes",
+              "summary": "Found issues",
+              "comments": [
+                {
+                  "path": "src/main.rs",
+                  "line": 10,
+                  "body": "Fix this",
+                  "severity": "major"
+                }
+              ],
+              "blocking_issues": [
+                "Error handling"
+              ]
+            }
+          },
+          "timestamp": "2024-01-01T00:00:00Z"
+        }
+        "#);
+    }
+
+    #[test]
+    fn test_history_entry_fix_serialization() {
+        let entry = RallyHistoryEntry {
+            iteration: 1,
+            entry_type: HistoryEntryType::Fix(RevieweeOutput {
+                status: RevieweeStatus::Completed,
+                summary: "Fixed all issues".to_string(),
+                files_modified: vec!["src/main.rs".to_string()],
+                question: None,
+                permission_request: None,
+                error_details: None,
+            }),
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+        };
+        assert_json_snapshot!(entry, @r#"
+        {
+          "iteration": 1,
+          "entry_type": {
+            "Fix": {
+              "status": "completed",
+              "summary": "Fixed all issues",
+              "files_modified": [
+                "src/main.rs"
+              ]
+            }
+          },
+          "timestamp": "2024-01-01T00:00:00Z"
+        }
+        "#);
+    }
+}

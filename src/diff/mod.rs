@@ -206,12 +206,6 @@ fn extract_filename(git_diff_line: &str) -> Option<String> {
         return Some(filename.to_string());
     }
 
-    // Fallback: try to find any " b/" separator
-    if let Some(b_pos) = content.find(" b/") {
-        let filename = &content[2..b_pos]; // Skip "a/"
-        return Some(filename.to_string());
-    }
-
     warn!("Failed to parse git diff line: {}", git_diff_line);
     None
 }
@@ -365,6 +359,32 @@ Binary files /dev/null and b/image.png differ
     }
 
     #[test]
+    fn test_classify_line_no_prefix() {
+        // diff プレフィックスなし → Context にフォールバック (L123-125)
+        let (line_type, content) = classify_line("no prefix");
+        assert_eq!(line_type, LineType::Context);
+        assert_eq!(content, "no prefix");
+    }
+
+    #[test]
+    fn test_classify_line_empty() {
+        // 空文字列 → Context にフォールバック (L123-125)
+        let (line_type, content) = classify_line("");
+        assert_eq!(line_type, LineType::Context);
+        assert_eq!(content, "");
+    }
+
+    #[test]
+    fn test_parse_hunk_header_no_comma_no_space() {
+        // "@@ -1 +42\ntest" → after_plus = "42" で find([',', ' ']) が None
+        // → unwrap_or(after_plus.len()) に到達 (L46)
+        let patch = "@@ -1 +42\ntest";
+        let info = get_line_info(patch, 1).unwrap();
+        assert_eq!(info.line_type, LineType::Context);
+        assert_eq!(info.new_line_number, Some(42));
+    }
+
+    #[test]
     fn test_out_of_bounds() {
         assert!(get_line_info(SAMPLE_PATCH, 100).is_none());
     }
@@ -403,6 +423,12 @@ Binary files /dev/null and b/image.png differ
     fn test_extract_filename_invalid() {
         assert_eq!(extract_filename("not a diff line"), None);
         assert_eq!(extract_filename("diff something else"), None);
+    }
+
+    #[test]
+    fn test_extract_filename_no_b_separator() {
+        // " b/" が存在しない場合 → warn! パスを通って None
+        assert_eq!(extract_filename("diff --git a/file nob"), None);
     }
 
     #[test]

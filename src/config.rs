@@ -359,6 +359,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use insta::assert_json_snapshot;
 
     #[test]
     fn test_default_keybindings() {
@@ -404,5 +405,70 @@ mod tests {
         let config: Config = toml::from_str("").unwrap();
         assert_eq!(config.keybindings.approve.display(), "a");
         assert_eq!(config.keybindings.request_changes.display(), "r");
+    }
+
+    #[test]
+    fn test_parse_ai_config_defaults() {
+        let config: Config = toml::from_str("").unwrap();
+        assert_json_snapshot!(config.ai, @r#"
+        {
+          "reviewer": "claude",
+          "reviewee": "claude",
+          "max_iterations": 10,
+          "timeout_secs": 600,
+          "prompt_dir": null,
+          "reviewer_additional_tools": [],
+          "reviewee_additional_tools": []
+        }
+        "#);
+    }
+
+    #[test]
+    fn test_parse_ai_config_custom() {
+        let toml_str = r#"
+            [ai]
+            reviewer = "codex"
+            reviewee = "claude"
+            max_iterations = 5
+            timeout_secs = 300
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_json_snapshot!(config.ai, @r#"
+        {
+          "reviewer": "codex",
+          "reviewee": "claude",
+          "max_iterations": 5,
+          "timeout_secs": 300,
+          "prompt_dir": null,
+          "reviewer_additional_tools": [],
+          "reviewee_additional_tools": []
+        }
+        "#);
+    }
+
+    #[test]
+    fn test_parse_ai_config_with_additional_tools() {
+        let toml_str = r#"
+            [ai]
+            reviewer_additional_tools = ["Skill", "WebSearch"]
+            reviewee_additional_tools = ["Bash(git push:*)"]
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_json_snapshot!(config.ai, @r#"
+        {
+          "reviewer": "claude",
+          "reviewee": "claude",
+          "max_iterations": 10,
+          "timeout_secs": 600,
+          "prompt_dir": null,
+          "reviewer_additional_tools": [
+            "Skill",
+            "WebSearch"
+          ],
+          "reviewee_additional_tools": [
+            "Bash(git push:*)"
+          ]
+        }
+        "#);
     }
 }

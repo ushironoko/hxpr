@@ -523,83 +523,76 @@ use super::common::{parse_reviewee_output, parse_reviewer_output, summarize_json
 #[cfg(test)]
 mod tests {
     use super::*;
+    use insta::assert_snapshot;
 
     #[test]
     fn test_build_reviewer_allowed_tools_default() {
         let config = AiConfig::default();
         let tools = ClaudeAdapter::build_reviewer_allowed_tools(&config);
-        assert!(tools.contains("Read,Glob,Grep"));
-        assert!(tools.contains("Bash(gh pr view:*)"));
-        assert!(!tools.contains("Skill"));
-        assert!(!tools.contains("WebFetch"));
+        assert_snapshot!(tools, @"Read,Glob,Grep,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh api --method GET:*),Bash(gh api -X GET:*)");
     }
 
     #[test]
     fn test_build_reviewer_allowed_tools_with_skill() {
-        let mut config = AiConfig::default();
-        config.reviewer_additional_tools = vec!["Skill".to_string()];
+        let config = AiConfig {
+            reviewer_additional_tools: vec!["Skill".to_string()],
+            ..Default::default()
+        };
         let tools = ClaudeAdapter::build_reviewer_allowed_tools(&config);
         assert!(tools.ends_with(",Skill"));
     }
 
     #[test]
     fn test_build_reviewer_allowed_tools_with_multiple() {
-        let mut config = AiConfig::default();
-        config.reviewer_additional_tools = vec!["Skill".to_string(), "WebSearch".to_string()];
+        let config = AiConfig {
+            reviewer_additional_tools: vec!["Skill".to_string(), "WebSearch".to_string()],
+            ..Default::default()
+        };
         let tools = ClaudeAdapter::build_reviewer_allowed_tools(&config);
-        assert!(tools.contains("Skill"));
-        assert!(tools.contains("WebSearch"));
+        assert_snapshot!(tools, @"Read,Glob,Grep,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh api --method GET:*),Bash(gh api -X GET:*),Skill,WebSearch");
     }
 
     #[test]
     fn test_reviewee_default_no_git_push() {
         let config = AiConfig::default();
         let tools = ClaudeAdapter::build_reviewee_allowed_tools(&config);
-        // git push should NOT be included by default (Breaking change)
-        assert!(!tools.contains("git push"));
-        // Other git commands should still be present
-        assert!(tools.contains("Bash(git status:*)"));
-        assert!(tools.contains("Bash(git commit:*)"));
+        assert_snapshot!(tools, @"Read,Edit,Write,Glob,Grep,Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git commit:*),Bash(git log:*),Bash(git show:*),Bash(git branch:*),Bash(git switch:*),Bash(git stash:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh api --method GET:*),Bash(gh api -X GET:*),Bash(cargo build:*),Bash(cargo test:*),Bash(cargo check:*),Bash(cargo clippy:*),Bash(cargo fmt:*),Bash(cargo run:*),Bash(npm install:*),Bash(npm test:*),Bash(npm run:*),Bash(npm ci:*),Bash(pnpm install:*),Bash(pnpm test:*),Bash(pnpm run:*),Bash(bun install:*),Bash(bun test:*),Bash(bun run:*)");
     }
 
     #[test]
     fn test_reviewee_with_git_push() {
-        let mut config = AiConfig::default();
-        config.reviewee_additional_tools = vec!["Bash(git push:*)".to_string()];
+        let config = AiConfig {
+            reviewee_additional_tools: vec!["Bash(git push:*)".to_string()],
+            ..Default::default()
+        };
         let tools = ClaudeAdapter::build_reviewee_allowed_tools(&config);
         assert!(tools.contains("Bash(git push:*)"));
     }
 
     #[test]
     fn test_reviewee_with_multiple_tools() {
-        let mut config = AiConfig::default();
-        config.reviewee_additional_tools =
-            vec!["Skill".to_string(), "Bash(git push:*)".to_string()];
+        let config = AiConfig {
+            reviewee_additional_tools: vec!["Skill".to_string(), "Bash(git push:*)".to_string()],
+            ..Default::default()
+        };
         let tools = ClaudeAdapter::build_reviewee_allowed_tools(&config);
-        assert!(tools.contains("Skill"));
-        assert!(tools.contains("Bash(git push:*)"));
+        assert_snapshot!(tools, @"Read,Edit,Write,Glob,Grep,Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git commit:*),Bash(git log:*),Bash(git show:*),Bash(git branch:*),Bash(git switch:*),Bash(git stash:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh api --method GET:*),Bash(gh api -X GET:*),Bash(cargo build:*),Bash(cargo test:*),Bash(cargo check:*),Bash(cargo clippy:*),Bash(cargo fmt:*),Bash(cargo run:*),Bash(npm install:*),Bash(npm test:*),Bash(npm run:*),Bash(npm ci:*),Bash(pnpm install:*),Bash(pnpm test:*),Bash(pnpm run:*),Bash(bun install:*),Bash(bun test:*),Bash(bun run:*),Skill,Bash(git push:*)");
     }
 
     #[test]
     fn test_reviewee_base_tools_present() {
         let config = AiConfig::default();
         let tools = ClaudeAdapter::build_reviewee_allowed_tools(&config);
-        // File ops
-        assert!(tools.contains("Read,Edit,Write,Glob,Grep"));
-        // Git local ops
-        assert!(tools.contains("Bash(git add:*)"));
-        assert!(tools.contains("Bash(git stash:*)"));
-        // Build tools
-        assert!(tools.contains("Bash(cargo test:*)"));
-        assert!(tools.contains("Bash(npm test:*)"));
-        assert!(tools.contains("Bash(bun run:*)"));
+        assert_snapshot!(tools, @"Read,Edit,Write,Glob,Grep,Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git commit:*),Bash(git log:*),Bash(git show:*),Bash(git branch:*),Bash(git switch:*),Bash(git stash:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh api --method GET:*),Bash(gh api -X GET:*),Bash(cargo build:*),Bash(cargo test:*),Bash(cargo check:*),Bash(cargo clippy:*),Bash(cargo fmt:*),Bash(cargo run:*),Bash(npm install:*),Bash(npm test:*),Bash(npm run:*),Bash(npm ci:*),Bash(pnpm install:*),Bash(pnpm test:*),Bash(pnpm run:*),Bash(bun install:*),Bash(bun test:*),Bash(bun run:*)");
     }
 
     #[test]
     fn test_reviewee_with_complex_bash_pattern() {
-        let mut config = AiConfig::default();
         // Test that arbitrary Bash patterns can be added
-        config.reviewee_additional_tools = vec!["Bash(gh api --method POST:*)".to_string()];
+        let config = AiConfig {
+            reviewee_additional_tools: vec!["Bash(gh api --method POST:*)".to_string()],
+            ..Default::default()
+        };
         let tools = ClaudeAdapter::build_reviewee_allowed_tools(&config);
         assert!(tools.contains("Bash(gh api --method POST:*)"));
     }

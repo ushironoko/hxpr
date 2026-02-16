@@ -197,6 +197,11 @@ impl SessionCache {
     pub fn len(&self) -> usize {
         self.pr_data.len()
     }
+
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.pr_data.is_empty()
+    }
 }
 
 #[cfg(test)]

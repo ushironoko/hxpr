@@ -202,3 +202,29 @@ pub async fn fetch_pr_list_with_offset(
 
     Ok(PrListPage { items, has_more })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pr_state_filter_as_gh_arg() {
+        assert_eq!(PrStateFilter::Open.as_gh_arg(), "open");
+        assert_eq!(PrStateFilter::Closed.as_gh_arg(), "closed");
+        assert_eq!(PrStateFilter::All.as_gh_arg(), "all");
+    }
+
+    #[test]
+    fn test_pr_state_filter_display_name() {
+        assert_eq!(PrStateFilter::Open.display_name(), "open");
+        assert_eq!(PrStateFilter::Closed.display_name(), "closed");
+        assert_eq!(PrStateFilter::All.display_name(), "all");
+    }
+
+    #[test]
+    fn test_pr_state_filter_next_cycle() {
+        assert_eq!(PrStateFilter::Open.next(), PrStateFilter::Closed);
+        assert_eq!(PrStateFilter::Closed.next(), PrStateFilter::All);
+        assert_eq!(PrStateFilter::All.next(), PrStateFilter::Open);
+    }
+}

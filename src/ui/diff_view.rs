@@ -1456,6 +1456,60 @@ mod tests {
     }
 
     #[test]
+    fn test_build_combined_source_basic() {
+        let patch = r#"@@ -1,3 +1,3 @@
+ context line
+-removed line
++added line"#;
+
+        let (source, mapping) = build_combined_source_for_highlight(patch);
+
+        // Removed 行が除外されていること
+        assert!(!source.contains("removed line"));
+        // Added/Context 行のみ含まれること
+        assert!(source.contains("context line"));
+        assert!(source.contains("added line"));
+
+        // マッピングサイズ: context(1) + added(2) = 2行（header/removed は除外）
+        assert_eq!(mapping.len(), 2);
+        // マッピング: (diff_line_idx, line_type)
+        assert_eq!(mapping[0], (1, LineType::Context)); // " context line"
+        assert_eq!(mapping[1], (3, LineType::Added)); // "+added line"
+    }
+
+    #[test]
+    fn test_build_combined_source_multiple_hunks() {
+        let patch = r#"@@ -1,2 +1,2 @@
+ first
+-old
++new
+@@ -10,2 +10,2 @@
+ second
++another"#;
+
+        let (source, mapping) = build_combined_source_for_highlight(patch);
+
+        // 4行: first, new, second, another
+        assert_eq!(mapping.len(), 4);
+
+        // diff_line_idx がジャンプすること（ハンクヘッダ分）
+        assert_eq!(mapping[0].0, 1); // " first"
+        assert_eq!(mapping[1].0, 3); // "+new"
+        assert_eq!(mapping[2].0, 5); // " second"
+        assert_eq!(mapping[3].0, 6); // "+another"
+
+        // ソースにヘッダが含まれないこと
+        assert!(!source.contains("@@"));
+    }
+
+    #[test]
+    fn test_build_combined_source_empty_patch() {
+        let (source, mapping) = build_combined_source_for_highlight("");
+        assert!(source.is_empty());
+        assert!(mapping.is_empty());
+    }
+
+    #[test]
     fn plain_and_highlighted_cache_have_same_line_count() {
         let patch = "diff --git a/foo.rs b/foo.rs\n--- a/foo.rs\n+++ b/foo.rs\n@@ -1,3 +1,3 @@\n fn main() {\n-    println!(\"hello\");\n+    println!(\"world\");\n }";
         let mut parser_pool = ParserPool::new();
@@ -1533,6 +1587,122 @@ mod tests {
         assert!(
             !no_comment_text.contains('●'),
             "non-comment line should not have marker"
+        );
+    }
+
+    #[test]
+    fn test_build_plain_diff_cache_line_styles() {
+        // 全 LineType を含むパッチ
+        let patch = "diff --git a/foo.rs b/foo.rs\n@@ -1,3 +1,3 @@\n context\n+added\n-removed";
+        let cache = build_plain_diff_cache(patch);
+
+        assert_eq!(cache.lines.len(), 5);
+
+        // Meta 行 (diff --git): Yellow, 単一スパン
+        let meta = &cache.lines[0];
+        assert_eq!(meta.spans.len(), 1);
+        assert_eq!(meta.spans[0].style.fg, Some(Color::Yellow));
+
+        // Header 行 (@@): Cyan, 単一スパン
+        let header = &cache.lines[1];
+        assert_eq!(header.spans.len(), 1);
+        assert_eq!(header.spans[0].style.fg, Some(Color::Cyan));
+
+        // Context 行: " " マーカー + コンテンツ, default style
+        let context = &cache.lines[2];
+        assert_eq!(context.spans.len(), 2);
+        assert_eq!(cache.resolve(context.spans[0].content), " ");
+        assert_eq!(context.spans[0].style.fg, None);
+
+        // Added 行: "+" マーカー + コンテンツ, Green
+        let added = &cache.lines[3];
+        assert_eq!(added.spans.len(), 2);
+        assert_eq!(cache.resolve(added.spans[0].content), "+");
+        assert_eq!(added.spans[0].style.fg, Some(Color::Green));
+        assert_eq!(added.spans[1].style.fg, Some(Color::Green));
+
+        // Removed 行: "-" マーカー + コンテンツ, Red
+        let removed = &cache.lines[4];
+        assert_eq!(removed.spans.len(), 2);
+        assert_eq!(cache.resolve(removed.spans[0].content), "-");
+        assert_eq!(removed.spans[0].style.fg, Some(Color::Red));
+        assert_eq!(removed.spans[1].style.fg, Some(Color::Red));
+    }
+
+    #[test]
+    fn test_parse_patch_to_lines_basic() {
+        let patch = r#"@@ -1,3 +1,3 @@
+ context line
+-removed line
++added line"#;
+
+        let comment_lines = HashSet::new();
+        let lines = parse_patch_to_lines(patch, 0, "test.rs", "base16-ocean.dark", &comment_lines);
+
+        // 4行: header, context, removed, added
+        assert_eq!(lines.len(), 4);
+    }
+
+    #[test]
+    fn test_parse_patch_to_lines_with_comments_and_selection() {
+        let patch = r#"@@ -1,2 +1,3 @@
+ context
++added
+-removed"#;
+
+        let mut comment_lines = HashSet::new();
+        comment_lines.insert(2); // added 行にコメント
+
+        let lines =
+            parse_patch_to_lines(patch, 2, "test.rs", "base16-ocean.dark", &comment_lines);
+
+        assert_eq!(lines.len(), 4);
+
+        // selected_line=2 の行は REVERSED modifier を持つ
+        let selected_line = &lines[2];
+        let has_reversed = selected_line.spans.iter().any(|s| {
+            s.style
+                .add_modifier
+                .contains(Modifier::REVERSED)
+        });
+        assert!(has_reversed, "Selected line should have REVERSED modifier");
+
+        // コメントマーカー（● ）が挿入されていること
+        let comment_line_text: String = selected_line
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            comment_line_text.contains('●'),
+            "Comment line should have ● marker, got: {:?}",
+            comment_line_text
+        );
+    }
+
+    #[test]
+    fn test_render_cached_lines_out_of_bounds_range() {
+        let patch = "@@ -1,2 +1,2 @@\n context\n+added\n-removed";
+        let cache = build_plain_diff_cache(patch);
+        assert_eq!(cache.lines.len(), 4);
+
+        // range が完全に範囲外 → 空の Vec
+        let result = render_cached_lines(&cache, 100..200, 0, &HashSet::new());
+        assert!(
+            result.is_empty(),
+            "Out-of-bounds range should return empty Vec"
+        );
+    }
+
+    #[test]
+    fn test_render_cached_lines_empty_cache() {
+        let cache = build_plain_diff_cache("");
+        assert!(cache.lines.is_empty());
+
+        let result = render_cached_lines(&cache, 0..10, 0, &HashSet::new());
+        assert!(
+            result.is_empty(),
+            "Empty cache should return empty Vec"
         );
     }
 }
@@ -1679,6 +1849,92 @@ mod priming_diff_tests {
             const_line.spans.len() > 2,
             "Script line should have syntax highlighting even when <template> is visible"
         );
+    }
+
+    #[test]
+    fn test_build_diff_cache_syntect_fallback() {
+        // CST 非対応拡張子 (.yaml) → syntect フォールバックパス
+        let patch = r#"@@ -1,3 +1,4 @@
+ name: test
++version: "1.0"
+ description: hello
+ author: world"#;
+
+        let mut parser_pool = ParserPool::new();
+        let cache = build_diff_cache(patch, "data.yaml", "base16-ocean.dark", &mut parser_pool);
+
+        // 行数が正しいこと（header + 4 content lines = 5）
+        assert_eq!(cache.lines.len(), 5);
+        assert!(cache.highlighted, "syntect path should set highlighted=true");
+
+        // Added 行の先頭スパンが "+" マーカー（Green）
+        let added_line = &cache.lines[2]; // "+version: \"1.0\""
+        assert_eq!(cache.resolve(added_line.spans[0].content), "+");
+        assert_eq!(
+            added_line.spans[0].style.fg,
+            Some(Color::Green),
+            "Added line marker should be Green"
+        );
+    }
+
+    #[test]
+    fn test_build_diff_cache_no_syntax_support() {
+        // シンタックスサポートなし (.unknown) → highlight_or_fallback(None) パス
+        let patch = r#"@@ -1,2 +1,3 @@
+ existing line
++new line
+-old line"#;
+
+        let mut parser_pool = ParserPool::new();
+        let cache = build_diff_cache(patch, "file.unknown", "base16-ocean.dark", &mut parser_pool);
+
+        assert_eq!(cache.lines.len(), 4);
+
+        // Added 行: フォールバックカラー Green
+        let added_line = &cache.lines[2];
+        assert_eq!(cache.resolve(added_line.spans[0].content), "+");
+        // コンテンツスパンもフォールバック色が適用
+        let added_content_style = added_line.spans[1].style;
+        assert_eq!(
+            added_content_style.fg,
+            Some(Color::Green),
+            "No-syntax added content should use Green fallback"
+        );
+
+        // Removed 行: フォールバックカラー Red
+        let removed_line = &cache.lines[3];
+        assert_eq!(cache.resolve(removed_line.spans[0].content), "-");
+        let removed_content_style = removed_line.spans[1].style;
+        assert_eq!(
+            removed_content_style.fg,
+            Some(Color::Red),
+            "No-syntax removed content should use Red fallback"
+        );
+    }
+
+    #[test]
+    fn test_build_lines_with_syntect_vue_priming() {
+        // build_lines_with_syntect を直接呼出し、Vue プライミングパス (L470-476) をカバー
+        let patch = r#"@@ -1,2 +1,3 @@
+ const x = 1;
++const y = 2;"#;
+
+        let mut interner = Rodeo::default();
+        let lines = build_lines_with_syntect(patch, "Component.vue", "base16-ocean.dark", &mut interner);
+
+        assert_eq!(lines.len(), 3);
+
+        // Header 行
+        let header_text = interner.resolve(&lines[0].spans[0].content);
+        assert!(header_text.starts_with("@@"));
+
+        // Context 行のマーカー
+        let context_marker = interner.resolve(&lines[1].spans[0].content);
+        assert_eq!(context_marker, " ");
+
+        // Added 行のマーカー
+        let added_marker = interner.resolve(&lines[2].spans[0].content);
+        assert_eq!(added_marker, "+");
     }
 
     #[test]
