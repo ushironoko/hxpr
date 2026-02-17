@@ -86,9 +86,7 @@ pub async fn fetch_local_diff(
         merge_name_only_files(current_workdir, &mut files).await;
     }
 
-    if files.is_empty() {
-        merge_untracked_files(current_workdir, &mut files).await;
-    }
+    merge_untracked_files(current_workdir, &mut files).await;
 
     let pr = PullRequest {
         number: 0,
@@ -386,7 +384,7 @@ async fn run_git_untracked(working_dir: Option<&str>) -> Result<String> {
 async fn run_git_no_index_diff(working_dir: Option<&str>, filename: &str) -> Result<String> {
     run_git_command(
         working_dir,
-        &["diff", "--no-index", "--", "/dev/null", filename],
+        &["diff", "--no-ext-diff", "--no-color", "--no-index", "--", "/dev/null", filename],
     )
     .await
 }

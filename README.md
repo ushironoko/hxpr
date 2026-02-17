@@ -21,6 +21,7 @@ A TUI tool for GitHub PR review with Vim-style keybindings.
 - View and navigate review comments with jump-to-line
 - Submit reviews (Approve / Request Changes / Comment)
 - Fast startup with intelligent caching
+- Watch local working tree changes in real time and preview `git diff` instantly
 - Configurable keybindings and editor
 - **AI Rally**: Automated PR review and fix cycle using AI agents
 
@@ -61,6 +62,9 @@ or --repo owner/repo --pr 123
 
 # 4. Start AI Rally (select PR from list, then auto-start)
 or --ai-rally
+
+# 5. Preview local working tree diff in real time
+or --local
 ```
 
 ### Options
@@ -71,6 +75,8 @@ or --ai-rally
 | `-p, --pr <PR>` | Pull request number |
 | `--ai-rally` | Start AI Rally mode directly |
 | `--working-dir <DIR>` | Working directory for AI agents (default: current directory) |
+| `--local` | Show local git diff against current `HEAD` (no GitHub PR fetch) |
+| `--auto-focus` | In local mode, automatically focus the changed file when diff updates |
 
 ### Subcommands
 
