@@ -388,3 +388,123 @@ async fn run_git_no_index_diff(working_dir: Option<&str>, filename: &str) -> Res
     )
     .await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use std::process::Command;
+    use tempfile::tempdir;
+    use tokio::sync::mpsc;
+
+    fn run_git(cmd: &mut Command, dir: &Path, args: &[&str], message: &str) {
+        let status = cmd
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "octorus-test")
+            .env("GIT_AUTHOR_EMAIL", "octorus-test@example.com")
+            .env("GIT_COMMITTER_NAME", "octorus-test")
+            .env("GIT_COMMITTER_EMAIL", "octorus-test@example.com")
+            .status()
+            .expect(message);
+
+        assert!(status.success(), "{message}: {status}");
+    }
+
+    fn write_file(path: &Path, content: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_fetch_local_diff_detects_subdir_changes_and_skips_ignored_files() {
+        let tempdir = tempdir().unwrap();
+        let workdir = tempdir.path();
+
+        run_git(
+            &mut Command::new("git"),
+            workdir,
+            &["init", "-b", "main"],
+            "failed to initialize temp git repo",
+        );
+        write_file(&workdir.join(".gitignore"), "ignored/\n");
+        write_file(&workdir.join("src/main.rs"), "fn main() {}\n");
+        run_git(
+            &mut Command::new("git"),
+            workdir,
+            &["add", ".gitignore", "src/main.rs"],
+            "failed to add initial files",
+        );
+        run_git(
+            &mut Command::new("git"),
+            workdir,
+            &["commit", "-m", "initial commit"],
+            "failed to create initial commit",
+        );
+
+        write_file(&workdir.join("src/main.rs"), "fn main() { println!(\"hello\"); }\n");
+        write_file(
+            &workdir.join("feature/new_file.rs"),
+            "pub fn feature() {}\n",
+        );
+        write_file(
+            &workdir.join("ignored/skip.txt"),
+            "this file should stay ignored",
+        );
+
+        let (tx, mut rx) = mpsc::channel::<DataLoadResult>(1);
+        fetch_local_diff("local".to_string(), Some(workdir.to_string_lossy().to_string()), tx).await;
+
+        let result = rx.recv().await.unwrap();
+        let files = match result {
+            DataLoadResult::Success { files, .. } => files,
+            DataLoadResult::Error(err) => panic!("unexpected error: {err}"),
+        };
+
+        let filenames: Vec<_> = files.iter().map(|file| file.filename.as_str()).collect();
+
+        assert!(filenames.contains(&"src/main.rs"));
+        assert!(filenames.contains(&"feature/new_file.rs"));
+        assert!(!filenames.contains(&"ignored/skip.txt"));
+    }
+
+    #[tokio::test]
+    async fn test_fetch_local_diff_does_not_return_non_target_ignored_file() {
+        let tempdir = tempdir().unwrap();
+        let workdir = tempdir.path();
+
+        run_git(
+            &mut Command::new("git"),
+            workdir,
+            &["init", "-b", "main"],
+            "failed to initialize temp git repo",
+        );
+        write_file(&workdir.join(".gitignore"), "ignored/\n");
+        write_file(&workdir.join("README.md"), "# octorus\n");
+        run_git(
+            &mut Command::new("git"),
+            workdir,
+            &["add", ".gitignore", "README.md"],
+            "failed to add initial files",
+        );
+        run_git(
+            &mut Command::new("git"),
+            workdir,
+            &["commit", "-m", "initial commit"],
+            "failed to create initial commit",
+        );
+
+        write_file(&workdir.join("ignored/build.tmp"), "ignore\n");
+
+        let (tx, mut rx) = mpsc::channel::<DataLoadResult>(1);
+        fetch_local_diff("local".to_string(), Some(workdir.to_string_lossy().to_string()), tx).await;
+
+        let result = rx.recv().await.unwrap();
+        let files = match result {
+            DataLoadResult::Success { files, .. } => files,
+            DataLoadResult::Error(err) => panic!("unexpected error: {err}"),
+        };
+
+        assert!(files.is_empty());
+    }
+}
