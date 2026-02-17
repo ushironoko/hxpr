@@ -1,4 +1,8 @@
+use anyhow::{Context, Result};
+use chrono::Utc;
+use std::collections::HashMap;
 use tokio::sync::mpsc;
+use tokio::process::Command;
 use tracing::warn;
 
 use crate::diff;
@@ -45,6 +49,147 @@ pub async fn fetch_pr_data(
             check_for_updates(&repo, pr_number, &cached_updated_at, tx).await;
         }
     }
+}
+
+/// ローカル `git diff` から PR データを再構築して読み込み
+pub async fn fetch_local_diff(
+    _repo: String,
+    working_dir: Option<String>,
+    tx: mpsc::Sender<DataLoadResult>,
+) {
+    let current_workdir = working_dir.as_deref();
+
+    let diff_output = match run_git_diff(current_workdir).await {
+        Ok(output) => output,
+        Err(e) => {
+            let _ = tx.send(DataLoadResult::Error(e.to_string())).await;
+            return;
+        }
+    };
+
+    let numstat_output = run_git_numstat(current_workdir).await.ok();
+    let file_changes = parse_numstat_output(numstat_output.as_deref());
+
+    let mut patches = diff::parse_unified_diff(&diff_output);
+    let mut files = build_changed_files(&mut patches, &file_changes);
+
+    if files.is_empty() || files.len() < file_changes.len() {
+        merge_missing_local_changes(
+            current_workdir,
+            &file_changes,
+            &mut files,
+        )
+        .await;
+    }
+
+    if files.is_empty() {
+        merge_name_only_files(current_workdir, &mut files).await;
+    }
+
+    if files.is_empty() {
+        merge_untracked_files(current_workdir, &mut files).await;
+    }
+
+    let pr = PullRequest {
+        number: 0,
+        title: "Local HEAD diff".to_string(),
+        body: Some("Current working tree diff from HEAD".to_string()),
+        state: "local".to_string(),
+        head: github::Branch {
+            ref_name: "HEAD".to_string(),
+            sha: current_head_sha(current_workdir)
+                .await
+                .unwrap_or_else(|_| "local".to_string()),
+        },
+        base: github::Branch {
+            ref_name: "local".to_string(),
+            sha: "local".to_string(),
+        },
+        user: github::User {
+            login: "local".to_string(),
+        },
+        updated_at: Utc::now().to_rfc3339(),
+    };
+
+    let _ = tx
+        .send(DataLoadResult::Success {
+            pr: Box::new(pr),
+            files,
+        })
+        .await;
+}
+
+async fn merge_missing_local_changes(
+    working_dir: Option<&str>,
+    file_changes: &HashMap<String, (u32, u32)>,
+    files: &mut Vec<ChangedFile>,
+) {
+    for (filename, (additions, deletions)) in file_changes {
+        if files.iter().any(|f| f.filename == *filename) {
+            continue;
+        }
+
+        let patch = run_git_diff_file(working_dir, filename).await.unwrap_or_default();
+        files.push(ChangedFile {
+            filename: filename.clone(),
+            status: status_from_patch(&patch).unwrap_or_else(|| infer_status(*additions, *deletions)),
+            additions: *additions,
+            deletions: *deletions,
+            patch: if patch.is_empty() { None } else { Some(patch) },
+        });
+    }
+
+    files.sort_unstable_by(|a, b| a.filename.cmp(&b.filename));
+}
+
+async fn merge_name_only_files(working_dir: Option<&str>, files: &mut Vec<ChangedFile>) {
+    let name_only_output = match run_git_name_only(working_dir).await {
+        Ok(output) => output,
+        Err(_) => return,
+    };
+    let names = parse_path_list(&name_only_output);
+
+    for filename in names {
+        if files.iter().any(|f| f.filename == filename) {
+            continue;
+        }
+
+        let patch = run_git_diff_file(working_dir, &filename).await.unwrap_or_default();
+        files.push(ChangedFile {
+            filename: filename.clone(),
+            status: status_from_patch(&patch).unwrap_or_else(|| "modified".to_string()),
+            additions: 0,
+            deletions: 0,
+            patch: if patch.is_empty() { None } else { Some(patch) },
+        });
+    }
+
+    files.sort_unstable_by(|a, b| a.filename.cmp(&b.filename));
+}
+
+async fn merge_untracked_files(working_dir: Option<&str>, files: &mut Vec<ChangedFile>) {
+    let untracked_output = match run_git_untracked(working_dir).await {
+        Ok(output) => output,
+        Err(_) => return,
+    };
+    let names = parse_path_list(&untracked_output);
+
+    for filename in names {
+        if files.iter().any(|f| f.filename == filename) {
+            continue;
+        }
+
+        let patch = run_git_no_index_diff(working_dir, &filename).await.unwrap_or_default();
+        files.push(ChangedFile {
+            filename: filename.clone(),
+            status: "added".to_string(),
+            additions: 0,
+            deletions: 0,
+            patch: if patch.is_empty() { None } else { Some(patch) },
+        });
+    }
+
+    files.sort_unstable_by(|a, b| a.filename.cmp(&b.filename));
 }
 
 async fn fetch_and_send(repo: &str, pr_number: u32, tx: mpsc::Sender<DataLoadResult>) {
@@ -105,4 +250,143 @@ async fn check_for_updates(
         }
         // 更新なし → 何もしない（キャッシュデータをそのまま使用）
     }
+}
+
+async fn run_git_diff(working_dir: Option<&str>) -> Result<String> {
+    run_git_command(working_dir, &["diff", "HEAD"]).await
+}
+
+async fn run_git_numstat(working_dir: Option<&str>) -> Result<String> {
+    run_git_command(working_dir, &["diff", "--numstat", "HEAD"]).await
+}
+
+async fn run_git_name_only(working_dir: Option<&str>) -> Result<String> {
+    run_git_command(working_dir, &["diff", "--name-only", "HEAD"]).await
+}
+
+async fn current_head_sha(working_dir: Option<&str>) -> Result<String> {
+    run_git_command(working_dir, &["rev-parse", "HEAD"])
+        .await
+        .map(|s| s.trim().to_string())
+}
+
+async fn run_git_command(working_dir: Option<&str>, args: &[&str]) -> Result<String> {
+    let mut command = Command::new("git");
+    command.args(args);
+
+    if let Some(dir) = working_dir {
+        command.current_dir(dir);
+    }
+
+    let output = command
+        .output()
+        .await
+        .context("failed to spawn git command")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        anyhow::bail!("git {} failed: {}", args.join(" "), stderr.trim());
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn parse_numstat_output(output: Option<&str>) -> HashMap<String, (u32, u32)> {
+    let mut result = HashMap::new();
+    let Some(output) = output else {
+        return result;
+    };
+
+    for line in output.lines() {
+        let mut parts = line.split('\t');
+        let added_raw = parts.next();
+        let deleted_raw = parts.next();
+        let path = parts.next_back();
+
+        if let (Some(added_raw), Some(deleted_raw), Some(path)) =
+            (added_raw, deleted_raw, path)
+        {
+            let parse_count = |value: &str| -> u32 { value.parse().unwrap_or(0) };
+            result.insert(
+                path.to_string(),
+                (parse_count(added_raw), parse_count(deleted_raw)),
+            );
+        }
+    }
+
+    result
+}
+
+fn parse_path_list(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect()
+}
+
+fn infer_status(additions: u32, deletions: u32) -> String {
+    match (additions, deletions) {
+        (0, _) => "removed".to_string(),
+        (_, 0) => "added".to_string(),
+        _ => "modified".to_string(),
+    }
+}
+
+fn status_from_patch(patch: &str) -> Option<String> {
+    if patch.contains("new file mode") {
+        Some("added".to_string())
+    } else if patch.contains("deleted file mode") {
+        Some("removed".to_string())
+    } else if patch.contains("rename from") || patch.contains("rename to") {
+        Some("renamed".to_string())
+    } else {
+        Some("modified".to_string())
+    }
+}
+
+fn build_changed_files(
+    patches: &mut HashMap<String, String>,
+    numstat: &HashMap<String, (u32, u32)>,
+) -> Vec<ChangedFile> {
+    let mut filenames: Vec<_> = patches.keys().cloned().collect();
+    filenames.sort_unstable();
+
+    let mut files = Vec::with_capacity(filenames.len());
+
+    for filename in filenames {
+        if let Some(patch) = patches.remove(&filename) {
+            let (additions, deletions) = numstat.get(&filename).copied().unwrap_or((0, 0));
+            let status = status_from_patch(&patch).unwrap_or_else(|| "modified".to_string());
+            files.push(ChangedFile {
+                filename,
+                status,
+                additions,
+                deletions,
+                patch: Some(patch),
+            });
+        }
+    }
+
+    files
+}
+
+async fn run_git_diff_file(working_dir: Option<&str>, filename: &str) -> Result<String> {
+    run_git_command(working_dir, &["diff", "HEAD", "--", filename]).await
+}
+
+async fn run_git_untracked(working_dir: Option<&str>) -> Result<String> {
+    run_git_command(
+        working_dir,
+        &["ls-files", "--others", "--exclude-standard"],
+    )
+    .await
+}
+
+async fn run_git_no_index_diff(working_dir: Option<&str>, filename: &str) -> Result<String> {
+    run_git_command(
+        working_dir,
+        &["diff", "--no-index", "--", "/dev/null", filename],
+    )
+    .await
 }

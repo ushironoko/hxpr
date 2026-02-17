@@ -288,6 +288,12 @@ pub struct App {
     pub pr_list_state_filter: PrStateFilter,
     /// PR一覧から開始したかどうか（戻り先判定用）
     pub started_from_pr_list: bool,
+    /// ローカル差分監視モードかどうか
+    local_mode: bool,
+    /// `--auto-focus` オプション（ローカル差分時）
+    local_auto_focus: bool,
+    /// 直近のローカルファイル署名（差分変更を検出）
+    local_file_signatures: HashMap<String, u64>,
     pr_list_receiver: Option<mpsc::Receiver<Result<github::PrListPage, String>>>,
     /// DiffView で q/Esc を押した時の戻り先
     pub diff_view_return_state: AppState,
@@ -397,6 +403,9 @@ impl App {
             pr_list_has_more: false,
             pr_list_state_filter: PrStateFilter::default(),
             started_from_pr_list: false,
+            local_mode: false,
+            local_auto_focus: false,
+            local_file_signatures: HashMap::new(),
             pr_list_receiver: None,
             diff_view_return_state: AppState::FileList,
             preview_return_state: AppState::DiffView,
@@ -523,6 +532,9 @@ impl App {
             pending_keys: SmallVec::new(),
             pending_since: None,
             symbol_popup: None,
+            local_mode: false,
+            local_auto_focus: false,
+            local_file_signatures: HashMap::new(),
             session_cache: SessionCache::new(),
         }
     }
@@ -585,6 +597,14 @@ impl App {
 
     pub fn set_working_dir(&mut self, dir: Option<String>) {
         self.working_dir = dir;
+    }
+
+    pub fn set_local_mode(&mut self, local: bool) {
+        self.local_mode = local;
+    }
+
+    pub fn set_local_auto_focus(&mut self, enable: bool) {
+        self.local_auto_focus = enable;
     }
 
     /// Set flag to start AI Rally when data is loaded (used by --ai-rally CLI flag)
@@ -1084,15 +1104,24 @@ impl App {
     fn handle_data_result(&mut self, origin_pr: u32, result: DataLoadResult) {
         match result {
             DataLoadResult::Success { pr, files } => {
-                // ファイル数が減った場合、selected_file をクランプ
-                let old_selected = self.selected_file;
-                if !files.is_empty() {
-                    self.selected_file = self.selected_file.min(files.len() - 1);
+                let files = files;
+                let changed_file_index = if self.local_mode && self.local_auto_focus {
+                    self.find_changed_local_file_index(&files)
                 } else {
-                    self.selected_file = 0;
+                    None
+                };
+                let old_selected = self.selected_file;
+                let mut next_selected = if files.is_empty() {
+                    0
+                } else {
+                    self.selected_file.min(files.len() - 1)
+                };
+
+                if let Some(idx) = changed_file_index {
+                    next_selected = idx;
                 }
-                // selected_file が変わった場合、diff 側の状態を再同期
-                if self.selected_file != old_selected {
+
+                if next_selected != old_selected {
                     self.diff_cache = None;
                     self.diff_cache_receiver = None;
                     self.selected_line = 0;
@@ -1100,7 +1129,14 @@ impl App {
                     self.comment_panel_open = false;
                     self.comment_panel_scroll = 0;
                 }
-                self.file_list_scroll_offset = self.file_list_scroll_offset.min(self.selected_file);
+
+                self.selected_file = next_selected;
+                if changed_file_index.is_some() {
+                    self.file_list_scroll_offset = self.selected_file;
+                } else {
+                    self.file_list_scroll_offset =
+                        self.file_list_scroll_offset.min(self.selected_file);
+                }
                 self.diff_line_count = Self::calc_diff_line_count(&files, self.selected_file);
                 // ファイル一覧が変わるため、ハイライトキャッシュストアをクリア
                 self.highlighted_cache_store.clear();
@@ -1112,6 +1148,11 @@ impl App {
                     repo: self.repo.clone(),
                     pr_number: origin_pr,
                 };
+                let local_files_for_signature = if self.local_mode {
+                    Some(files.clone())
+                } else {
+                    None
+                };
                 self.session_cache.put_pr_data(
                     cache_key,
                     PrData {
@@ -1121,7 +1162,7 @@ impl App {
                     },
                 );
                 self.data_state = DataState::Loaded { pr, files };
-                // selected_file がクランプで変わった場合、コメント位置キャッシュを再計算
+                // selected_file が変更された場合、コメント位置キャッシュを再計算
                 if self.selected_file != old_selected {
                     self.update_file_comment_positions();
                 }
@@ -1131,6 +1172,12 @@ impl App {
                     self.start_ai_rally_on_load = false; // Clear the flag
                     self.start_ai_rally();
                 }
+                if let Some(local_files) = local_files_for_signature {
+                self.remember_local_file_signatures(&local_files);
+                }
+                // ファイル選択変更後も差分キャッシュを即座に復旧して
+                // split view 側の「Loading diff...」が発生しないようにする
+                self.ensure_diff_cache();
             }
             DataLoadResult::Error(msg) => {
                 // Loading状態の場合のみエラー表示（既にデータがある場合は無視）
@@ -1138,6 +1185,37 @@ impl App {
                     self.data_state = DataState::Error(msg);
                 }
             }
+        }
+    }
+
+    fn local_file_signature(file: &ChangedFile) -> u64 {
+        let patch = file.patch.as_deref().unwrap_or_default();
+        let signature = format!(
+            "{}|{}|{}|{}|{}",
+            file.filename, file.status, file.additions, file.deletions, patch
+        );
+        hash_string(&signature)
+    }
+
+    fn find_changed_local_file_index(&self, files: &[ChangedFile]) -> Option<usize> {
+        if self.local_file_signatures.is_empty() {
+            return None;
+        }
+
+        files.iter().enumerate().find_map(|(idx, file)| {
+            let next_signature = Self::local_file_signature(file);
+            match self.local_file_signatures.get(&file.filename) {
+                Some(signature) if *signature == next_signature => None,
+                _ => Some(idx),
+            }
+        })
+    }
+
+    fn remember_local_file_signatures(&mut self, files: &[ChangedFile]) {
+        self.local_file_signatures.clear();
+        for file in files {
+            self.local_file_signatures
+                .insert(file.filename.clone(), Self::local_file_signature(file));
         }
     }
 

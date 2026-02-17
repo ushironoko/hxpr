@@ -4,8 +4,11 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, LeaveAlternateScreen},
 };
+use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::io;
+use std::path::Path;
 use std::panic;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -34,6 +37,14 @@ struct Args {
     /// Start AI Rally mode directly
     #[arg(long, default_value = "false")]
     ai_rally: bool,
+
+    /// Show local git diff against current HEAD (no GitHub PR fetch)
+    #[arg(long, default_value = "false")]
+    local: bool,
+
+    /// Auto-focus changed file when local diff updates (for local mode)
+    #[arg(long, default_value = "false")]
+    auto_focus: bool,
 
     /// Working directory for AI agents (default: current directory)
     #[arg(long)]
@@ -87,16 +98,20 @@ async fn main() -> Result<()> {
         };
     }
 
-    // Detect or use provided repo
-    let repo = match args.repo.clone() {
-        Some(r) => r,
-        None => match github::detect_repo().await {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            }
-        },
+    let repo = if args.local {
+        args.repo.clone().unwrap_or_else(|| "local".to_string())
+    } else {
+        // Detect or use provided repo
+        match args.repo.clone() {
+            Some(r) => r,
+            None => match github::detect_repo().await {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
+            },
+        }
     };
 
     // Pre-initialize syntax highlighting in background to avoid delay on first diff view
@@ -107,14 +122,99 @@ async fn main() -> Result<()> {
 
     let config = config::Config::load()?;
 
-    // Check if we have a specific PR number
-    if let Some(pr) = args.pr {
-        // Existing flow: open specific PR
+    if args.local {
+        run_with_local_diff(&repo, &config, &args).await
+    } else if let Some(pr) = args.pr {
         run_with_pr(&repo, pr, &config, &args).await
     } else {
-        // New flow: show PR list
         run_with_pr_list(&repo, config, &args).await
     }
+}
+
+async fn run_with_local_diff(repo: &str, config: &config::Config, args: &Args) -> Result<()> {
+    let (retry_tx, mut retry_rx) = mpsc::channel::<()>(1);
+    let (mut app, tx) = app::App::new_loading(repo, 0, config.clone());
+    let working_dir = args.working_dir.clone();
+
+    app.set_retry_sender(retry_tx.clone());
+    setup_local_watch(retry_tx, working_dir.clone());
+    app.set_local_mode(true);
+    app.set_local_auto_focus(args.auto_focus);
+    setup_working_dir(&mut app, args);
+
+    if args.ai_rally {
+        app.set_start_ai_rally_on_load(true);
+    }
+
+    let cancel_token = CancellationToken::new();
+    let token_clone = cancel_token.clone();
+    let repo = repo.to_string();
+
+    loader::fetch_local_diff(repo.clone(), working_dir.clone(), tx.clone()).await;
+
+    tokio::spawn(async move {
+        tokio::select! {
+            _ = token_clone.cancelled() => {}
+            _ = async {
+                while retry_rx.recv().await.is_some() {
+                    let tx_retry = tx.clone();
+                    loader::fetch_local_diff(repo.clone(), working_dir.clone(), tx_retry).await;
+                }
+            } => {}
+        }
+    });
+
+    let result = app.run().await;
+    cancel_token.cancel();
+
+    if result.is_err() {
+        restore_terminal();
+    }
+
+    let exit_code = if result.is_ok() { 0 } else { 1 };
+    std::process::exit(exit_code);
+}
+
+fn setup_local_watch(refresh_tx: mpsc::Sender<()>, working_dir: Option<String>) {
+    let watch_dir = working_dir.unwrap_or_else(|| {
+        std::env::current_dir()
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_else(|_| ".".to_string())
+    });
+
+    let is_git_file = |path: &Path| -> bool {
+        path.components().any(|component| component.as_os_str() == ".git")
+    };
+
+    std::thread::spawn({
+        let watch_dir = watch_dir;
+        let refresh_tx = refresh_tx.clone();
+        move || {
+            let callback = move |result: notify::Result<notify::Event>| {
+                let Ok(event) = result else {
+                    return;
+                };
+
+                let should_refresh = event.paths.iter().any(|path| {
+                    !is_git_file(path) && !matches!(event.kind, EventKind::Access(_))
+                });
+
+                if should_refresh {
+                    let _ = refresh_tx.try_send(());
+                }
+            };
+
+            let Ok(mut watcher) = RecommendedWatcher::new(callback, Config::default()) else {
+                return;
+            };
+
+            let _ = watcher.watch(Path::new(&watch_dir), RecursiveMode::Recursive);
+
+            loop {
+                std::thread::sleep(Duration::from_secs(60));
+            }
+        }
+    });
 }
 
 /// Run the app with a specific PR number (existing flow)
