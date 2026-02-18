@@ -6,8 +6,8 @@ use crossterm::{
 };
 use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::io;
-use std::path::{Path, PathBuf};
 use std::panic;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -198,21 +198,17 @@ fn setup_local_watch(
     });
 
     std::thread::spawn({
-        let watch_dir = watch_dir;
         let refresh_tx = refresh_tx.clone();
         move || {
-        let callback = move |result: notify::Result<notify::Event>| {
+            let callback = move |result: notify::Result<notify::Event>| {
                 let Ok(event) = result else {
                     return;
                 };
 
-                let should_refresh =
-                    should_refresh_local_change(&event.paths, &event.kind);
+                let should_refresh = should_refresh_local_change(&event.paths, &event.kind);
 
-                if should_refresh {
-                    if !refresh_pending.swap(true, Ordering::AcqRel) {
-                        let _ = refresh_tx.try_send(());
-                    }
+                if should_refresh && !refresh_pending.swap(true, Ordering::AcqRel) {
+                    let _ = refresh_tx.try_send(());
                 }
             };
 
@@ -230,12 +226,12 @@ fn setup_local_watch(
 }
 
 fn should_refresh_local_change(paths: &[PathBuf], kind: &EventKind) -> bool {
-    !matches!(kind, EventKind::Access(_))
-        && paths.iter().any(|path| !is_git_file(path))
+    !matches!(kind, EventKind::Access(_)) && paths.iter().any(|path| !is_git_file(path))
 }
 
 fn is_git_file(path: &Path) -> bool {
-    path.components().any(|component| component.as_os_str() == ".git")
+    path.components()
+        .any(|component| component.as_os_str() == ".git")
 }
 
 /// Run the app with a specific PR number (existing flow)
@@ -367,17 +363,14 @@ mod tests {
     #[test]
     fn test_should_refresh_local_change_ignores_access_events() {
         let paths = vec![PathBuf::from("src/main.rs")];
-        let kind = EventKind::Access(AccessKind::Close(AccessMode::CloseWrite));
+        let kind = EventKind::Access(AccessKind::Close(AccessMode::Write));
 
         assert!(!should_refresh_local_change(&paths, &kind));
     }
 
     #[test]
     fn test_should_refresh_local_change_ignores_git_paths() {
-        let paths = vec![
-            PathBuf::from(".git/HEAD"),
-            PathBuf::from(".git/index.lock"),
-        ];
+        let paths = vec![PathBuf::from(".git/HEAD"), PathBuf::from(".git/index.lock")];
         let kind = EventKind::Create(CreateKind::File);
 
         assert!(!should_refresh_local_change(&paths, &kind));

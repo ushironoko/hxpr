@@ -1104,7 +1104,6 @@ impl App {
     fn handle_data_result(&mut self, origin_pr: u32, result: DataLoadResult) {
         match result {
             DataLoadResult::Success { pr, files } => {
-                let files = files;
                 let changed_file_index = if self.local_mode && self.local_auto_focus {
                     self.find_changed_local_file_index(&files, self.selected_file)
                 } else {
@@ -1141,7 +1140,8 @@ impl App {
 
                 self.selected_file = next_selected;
                 if changed_file_index.is_some() {
-                    self.file_list_scroll_offset = self.selected_file;
+                    self.file_list_scroll_offset =
+                        self.file_list_scroll_offset.min(self.selected_file);
                     if matches!(self.state, AppState::FileList | AppState::SplitViewFileList) {
                         self.state = AppState::SplitViewDiff;
                     }
@@ -1186,7 +1186,7 @@ impl App {
                     self.start_ai_rally();
                 }
                 if let Some(local_files) = local_files_for_signature {
-                self.remember_local_file_signatures(&local_files);
+                    self.remember_local_file_signatures(&local_files);
                 }
                 // ファイル選択変更後も差分キャッシュを即座に復旧して
                 // split view 側の「Loading diff...」が発生しないようにする
@@ -1250,7 +1250,10 @@ impl App {
             return changed_indices.into_iter().next();
         }
 
-        let next = changed_indices.iter().copied().find(|idx| *idx > anchor_selected);
+        let next = changed_indices
+            .iter()
+            .copied()
+            .find(|idx| *idx > anchor_selected);
         let prev = changed_indices
             .iter()
             .rev()
@@ -1258,21 +1261,11 @@ impl App {
             .find(|idx| *idx < anchor_selected);
 
         match (next, prev) {
-            (Some(next_idx), Some(prev_idx)) => {
-                let next_distance = next_idx.saturating_sub(anchor_selected);
-                let prev_distance = anchor_selected.saturating_sub(prev_idx);
-                if next_distance <= prev_distance {
-                    Some(next_idx)
-                } else {
-                    Some(prev_idx)
-                }
-            }
-            (Some(next_idx), None) => Some(next_idx),
+            (Some(next_idx), _) => Some(next_idx),
             (None, Some(prev_idx)) => Some(prev_idx),
             _ => None,
         }
     }
-
 
     fn remember_local_file_signatures(&mut self, files: &[ChangedFile]) {
         self.local_file_signatures.clear();
@@ -2374,15 +2367,9 @@ impl App {
     fn open_pr_in_browser(&self, pr_number: u32) {
         let repo = self.repo.clone();
         tokio::spawn(async move {
-            let _ = github::gh_command(&[
-                "pr",
-                "view",
-                &pr_number.to_string(),
-                "-R",
-                &repo,
-                "--web",
-            ])
-            .await;
+            let _ =
+                github::gh_command(&["pr", "view", &pr_number.to_string(), "-R", &repo, "--web"])
+                    .await;
         });
     }
 
@@ -3912,6 +3899,9 @@ impl App {
             pending_since: None,
             symbol_popup: None,
             session_cache: SessionCache::new(),
+            local_mode: false,
+            local_auto_focus: false,
+            local_file_signatures: HashMap::new(),
         }
     }
 
@@ -4422,10 +4412,11 @@ mod tests {
 
         // selected_file clamped
         assert_eq!(app.selected_file, 1);
-        // diff_cache must be invalidated (was pointing to old file index 4)
-        assert!(
-            app.diff_cache.is_none(),
-            "diff_cache should be None after selected_file changes"
+        // diff_cache must be rebuilt for the new selected file (ensure_diff_cache rebuilds it)
+        assert_eq!(
+            app.diff_cache.as_ref().map(|c| c.file_index),
+            Some(1),
+            "diff_cache should be rebuilt for the new selected file"
         );
         // selected_line and scroll_offset must be reset
         assert_eq!(app.selected_line, 0, "selected_line should be reset to 0");
@@ -4867,7 +4858,7 @@ mod tests {
                     make_file("file_b.rs", "@@ -1,1 +1,1 @@\n-old\n+new2"), // changed (index 1)
                     make_file("file_c.rs", "@@ -1,1 +1,1 @@\n-old\n+new"), // unchanged (index 2)
                     make_file("file_d.rs", "@@ -1,1 +1,1 @@\n-old\n+new2"), // changed (index 3)
-                    make_file("file_e.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),  // unchanged (index 4)
+                    make_file("file_e.rs", "@@ -1,1 +1,1 @@\n-old\n+new"), // unchanged (index 4)
                 ],
             },
         );

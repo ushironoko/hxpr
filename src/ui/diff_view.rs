@@ -1653,18 +1653,16 @@ mod tests {
         let mut comment_lines = HashSet::new();
         comment_lines.insert(2); // added 行にコメント
 
-        let lines =
-            parse_patch_to_lines(patch, 2, "test.rs", "base16-ocean.dark", &comment_lines);
+        let lines = parse_patch_to_lines(patch, 2, "test.rs", "base16-ocean.dark", &comment_lines);
 
         assert_eq!(lines.len(), 4);
 
         // selected_line=2 の行は REVERSED modifier を持つ
         let selected_line = &lines[2];
-        let has_reversed = selected_line.spans.iter().any(|s| {
-            s.style
-                .add_modifier
-                .contains(Modifier::REVERSED)
-        });
+        let has_reversed = selected_line
+            .spans
+            .iter()
+            .any(|s| s.style.add_modifier.contains(Modifier::REVERSED));
         assert!(has_reversed, "Selected line should have REVERSED modifier");
 
         // コメントマーカー（● ）が挿入されていること
@@ -1700,10 +1698,7 @@ mod tests {
         assert!(cache.lines.is_empty());
 
         let result = render_cached_lines(&cache, 0..10, 0, &HashSet::new());
-        assert!(
-            result.is_empty(),
-            "Empty cache should return empty Vec"
-        );
+        assert!(result.is_empty(), "Empty cache should return empty Vec");
     }
 }
 
@@ -1865,7 +1860,10 @@ mod priming_diff_tests {
 
         // 行数が正しいこと（header + 4 content lines = 5）
         assert_eq!(cache.lines.len(), 5);
-        assert!(cache.highlighted, "syntect path should set highlighted=true");
+        assert!(
+            cache.highlighted,
+            "syntect path should set highlighted=true"
+        );
 
         // Added 行の先頭スパンが "+" マーカー（Green）
         let added_line = &cache.lines[2]; // "+version: \"1.0\""
@@ -1920,7 +1918,8 @@ mod priming_diff_tests {
 +const y = 2;"#;
 
         let mut interner = Rodeo::default();
-        let lines = build_lines_with_syntect(patch, "Component.vue", "base16-ocean.dark", &mut interner);
+        let lines =
+            build_lines_with_syntect(patch, "Component.vue", "base16-ocean.dark", &mut interner);
 
         assert_eq!(lines.len(), 3);
 

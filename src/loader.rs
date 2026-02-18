@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::collections::HashMap;
-use tokio::sync::mpsc;
 use tokio::process::Command;
+use tokio::sync::mpsc;
 use tracing::warn;
 
 use crate::diff;
@@ -74,12 +74,7 @@ pub async fn fetch_local_diff(
     let mut files = build_changed_files(&mut patches, &file_changes);
 
     if files.is_empty() || files.len() < file_changes.len() {
-        merge_missing_local_changes(
-            current_workdir,
-            &file_changes,
-            &mut files,
-        )
-        .await;
+        merge_missing_local_changes(current_workdir, &file_changes, &mut files).await;
     }
 
     if files.is_empty() {
@@ -127,10 +122,13 @@ async fn merge_missing_local_changes(
             continue;
         }
 
-        let patch = run_git_diff_file(working_dir, filename).await.unwrap_or_default();
+        let patch = run_git_diff_file(working_dir, filename)
+            .await
+            .unwrap_or_default();
         files.push(ChangedFile {
             filename: filename.clone(),
-            status: status_from_patch(&patch).unwrap_or_else(|| infer_status(*additions, *deletions)),
+            status: status_from_patch(&patch)
+                .unwrap_or_else(|| infer_status(*additions, *deletions)),
             additions: *additions,
             deletions: *deletions,
             patch: if patch.is_empty() { None } else { Some(patch) },
@@ -152,7 +150,9 @@ async fn merge_name_only_files(working_dir: Option<&str>, files: &mut Vec<Change
             continue;
         }
 
-        let patch = run_git_diff_file(working_dir, &filename).await.unwrap_or_default();
+        let patch = run_git_diff_file(working_dir, &filename)
+            .await
+            .unwrap_or_default();
         files.push(ChangedFile {
             filename: filename.clone(),
             status: status_from_patch(&patch).unwrap_or_else(|| "modified".to_string()),
@@ -177,7 +177,9 @@ async fn merge_untracked_files(working_dir: Option<&str>, files: &mut Vec<Change
             continue;
         }
 
-        let patch = run_git_no_index_diff(working_dir, &filename).await.unwrap_or_default();
+        let patch = run_git_no_index_diff(working_dir, &filename)
+            .await
+            .unwrap_or_default();
         files.push(ChangedFile {
             filename: filename.clone(),
             status: "added".to_string(),
@@ -301,9 +303,7 @@ fn parse_numstat_output(output: Option<&str>) -> HashMap<String, (u32, u32)> {
         let deleted_raw = parts.next();
         let path = parts.next_back();
 
-        if let (Some(added_raw), Some(deleted_raw), Some(path)) =
-            (added_raw, deleted_raw, path)
-        {
+        if let (Some(added_raw), Some(deleted_raw), Some(path)) = (added_raw, deleted_raw, path) {
             let parse_count = |value: &str| -> u32 { value.parse().unwrap_or(0) };
             result.insert(
                 path.to_string(),
@@ -374,11 +374,7 @@ async fn run_git_diff_file(working_dir: Option<&str>, filename: &str) -> Result<
 }
 
 async fn run_git_untracked(working_dir: Option<&str>) -> Result<String> {
-    run_git_command(
-        working_dir,
-        &["ls-files", "--others", "--exclude-standard"],
-    )
-    .await
+    run_git_command(working_dir, &["ls-files", "--others", "--exclude-standard"]).await
 }
 
 async fn run_git_no_index_diff(working_dir: Option<&str>, filename: &str) -> Result<String> {
@@ -468,7 +464,10 @@ mod tests {
             "failed to create initial commit",
         );
 
-        write_file(&workdir.join("src/main.rs"), "fn main() { println!(\"hello\"); }\n");
+        write_file(
+            &workdir.join("src/main.rs"),
+            "fn main() { println!(\"hello\"); }\n",
+        );
         write_file(
             &workdir.join("feature/new_file.rs"),
             "pub fn feature() {}\n",
@@ -479,7 +478,12 @@ mod tests {
         );
 
         let (tx, mut rx) = mpsc::channel::<DataLoadResult>(1);
-        fetch_local_diff("local".to_string(), Some(workdir.to_string_lossy().to_string()), tx).await;
+        fetch_local_diff(
+            "local".to_string(),
+            Some(workdir.to_string_lossy().to_string()),
+            tx,
+        )
+        .await;
 
         let result = rx.recv().await.unwrap();
         let files = match result {
@@ -523,7 +527,12 @@ mod tests {
         write_file(&workdir.join("ignored/build.tmp"), "ignore\n");
 
         let (tx, mut rx) = mpsc::channel::<DataLoadResult>(1);
-        fetch_local_diff("local".to_string(), Some(workdir.to_string_lossy().to_string()), tx).await;
+        fetch_local_diff(
+            "local".to_string(),
+            Some(workdir.to_string_lossy().to_string()),
+            tx,
+        )
+        .await;
 
         let result = rx.recv().await.unwrap();
         let files = match result {
@@ -559,10 +568,18 @@ mod tests {
             "failed to commit initial file",
         );
 
-        write_file(&workdir.join("src/new_feature.rs"), "pub fn hello() {\n    1 + 1\n}\n");
+        write_file(
+            &workdir.join("src/new_feature.rs"),
+            "pub fn hello() {\n    1 + 1\n}\n",
+        );
 
         let (tx, mut rx) = mpsc::channel::<DataLoadResult>(1);
-        fetch_local_diff("local".to_string(), Some(workdir.to_string_lossy().to_string()), tx).await;
+        fetch_local_diff(
+            "local".to_string(),
+            Some(workdir.to_string_lossy().to_string()),
+            tx,
+        )
+        .await;
 
         let result = rx.recv().await.unwrap();
         let files = match result {
@@ -575,7 +592,10 @@ mod tests {
             .find(|file| file.filename == "src/new_feature.rs")
             .expect("untracked file should appear in local diff");
 
-        let patch = new_file.patch.as_deref().expect("untracked file should have a patch");
+        let patch = new_file
+            .patch
+            .as_deref()
+            .expect("untracked file should have a patch");
         assert!(patch.contains("new file mode"));
         assert!(patch.contains("+pub fn hello()"));
     }
