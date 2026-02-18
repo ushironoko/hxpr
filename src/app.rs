@@ -1838,11 +1838,11 @@ impl App {
         }
 
         // AI Rally (new rally disabled in local mode, but resume is allowed)
-        if self.matches_single_key(&key, &kb.ai_rally) {
-            if !self.local_mode || self.ai_rally_state.is_some() {
-                self.resume_or_start_ai_rally();
-                return Ok(());
-            }
+        if self.matches_single_key(&key, &kb.ai_rally)
+            && (!self.local_mode || self.ai_rally_state.is_some())
+        {
+            self.resume_or_start_ai_rally();
+            return Ok(());
         }
 
         // Open in browser (disabled in local mode)
@@ -1908,11 +1908,11 @@ impl App {
         }
 
         // AI Rally (new rally disabled in local mode, but resume is allowed)
-        if self.matches_single_key(&key, &kb.ai_rally) {
-            if !self.local_mode || self.ai_rally_state.is_some() {
-                self.resume_or_start_ai_rally();
-                return Ok(true);
-            }
+        if self.matches_single_key(&key, &kb.ai_rally)
+            && (!self.local_mode || self.ai_rally_state.is_some())
+        {
+            self.resume_or_start_ai_rally();
+            return Ok(true);
         }
 
         if !self.local_mode && self.matches_single_key(&key, &kb.open_in_browser) {
