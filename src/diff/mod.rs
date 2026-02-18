@@ -33,6 +33,12 @@ pub struct DiffLineInfo {
     pub line_type: LineType,
     /// Line number in the new file (None for removed lines and headers)
     pub new_line_number: Option<u32>,
+    /// Position within the patch (1-based). Corresponds to GitHub API's `position` parameter.
+    /// Meta lines (diff --git, ---, +++, index) are not counted.
+    /// The first `@@` header is not counted; position 1 is the first line below it.
+    /// Subsequent `@@` headers (multi-hunk) ARE counted as positions.
+    /// None for meta lines and the first `@@` header.
+    pub diff_position: Option<u32>,
 }
 
 /// Parse a hunk header to extract the starting line number for new file
@@ -67,13 +73,28 @@ pub fn get_line_info(patch: &str, line_index: usize) -> Option<DiffLineInfo> {
 
     // Track the current new file line number
     let mut new_line_number: Option<u32> = None;
+    // Track the position within the patch (1-based, skipping meta lines)
+    let mut position_counter: Option<u32> = None;
 
     for (i, line) in lines.iter().enumerate() {
         let (line_type, content) = classify_line(line);
 
-        // Update line number tracking based on hunk headers
-        if line_type == LineType::Header {
-            new_line_number = parse_hunk_header(line);
+        // Update position counter and line number BEFORE checking target
+        match line_type {
+            LineType::Meta => {
+                // Meta lines don't count toward position
+            }
+            LineType::Header => {
+                new_line_number = parse_hunk_header(line);
+                // First @@ initializes to 0 (not counted); subsequent @@ lines increment
+                position_counter = Some(position_counter.map_or(0, |p| p + 1));
+            }
+            LineType::Added | LineType::Context => {
+                position_counter = position_counter.map(|p| p + 1);
+            }
+            LineType::Removed => {
+                position_counter = position_counter.map(|p| p + 1);
+            }
         }
 
         if i == line_index {
@@ -83,14 +104,22 @@ pub fn get_line_info(patch: &str, line_index: usize) -> Option<DiffLineInfo> {
                 _ => new_line_number,
             };
 
+            let current_position = match line_type {
+                // Meta lines and the first @@ header (position 0) have no valid position
+                LineType::Meta => None,
+                LineType::Header if position_counter == Some(0) => None,
+                _ => position_counter,
+            };
+
             return Some(DiffLineInfo {
                 line_content: content.to_string(),
                 line_type,
                 new_line_number: current_new_line,
+                diff_position: current_position,
             });
         }
 
-        // Update line numbers for next iteration
+        // Update new_line_number for next iteration
         match line_type {
             LineType::Added | LineType::Context => {
                 if let Some(n) = new_line_number {
@@ -133,6 +162,45 @@ pub fn can_suggest_at_line(patch: &str, line_index: usize) -> bool {
     get_line_info(patch, line_index)
         .map(|info| matches!(info.line_type, LineType::Added | LineType::Context))
         .unwrap_or(false)
+}
+
+/// Convert a file line number (new_line_number) to a patch position.
+///
+/// Used by AI Rally to convert line numbers from reviewer output to GitHub API positions.
+/// Scans the entire patch to find the Added or Context line matching the target line number.
+/// Position counting follows the same rules as `get_line_info`: meta lines are skipped,
+/// the first `@@` is not counted (position 1 is the line below it), and subsequent `@@`
+/// headers are counted.
+///
+/// Works with both GitHub API patches (starting with `@@`) and local diff patches
+/// (starting with `diff --git` meta lines).
+pub fn line_number_to_position(patch: &str, target_line: u32) -> Option<u32> {
+    let mut new_line_number: Option<u32> = None;
+    let mut position_counter: Option<u32> = None;
+
+    for line in patch.lines() {
+        let (line_type, _) = classify_line(line);
+
+        match line_type {
+            LineType::Meta => continue,
+            LineType::Header => {
+                new_line_number = parse_hunk_header(line);
+                // First @@ initializes to 0 (not counted); subsequent @@ lines increment
+                position_counter = Some(position_counter.map_or(0, |p| p + 1));
+            }
+            LineType::Added | LineType::Context => {
+                position_counter = position_counter.map(|p| p + 1);
+                if new_line_number == Some(target_line) {
+                    return position_counter;
+                }
+                new_line_number = new_line_number.map(|n| n + 1);
+            }
+            LineType::Removed => {
+                position_counter = position_counter.map(|p| p + 1);
+            }
+        }
+    }
+    None
 }
 
 /// Parse a unified diff output into a map of filename -> patch content
@@ -558,5 +626,157 @@ Binary files /dev/null and b/image.png differ
 
         // Should match the format GitHub API returns
         assert_eq!(filename, "src/main.rs");
+    }
+
+    // ============================================
+    // diff_position tests
+    // ============================================
+
+    #[test]
+    fn test_diff_position_single_hunk() {
+        // SAMPLE_PATCH starts with @@ (no meta lines)
+        // GitHub position counts from the line BELOW the first @@:
+        // Line 0: @@ header -> None (first @@ is not counted)
+        // Line 1: context " line 1" -> position 1
+        // Line 2: removed "-old line 2" -> position 2
+        // Line 3: added "+new line 2" -> position 3
+        // Line 4: added "+added line" -> position 4
+        // Line 5: context " line 3" -> position 5
+        let info = get_line_info(SAMPLE_PATCH, 0).unwrap();
+        assert_eq!(info.diff_position, None);
+
+        let info = get_line_info(SAMPLE_PATCH, 1).unwrap();
+        assert_eq!(info.diff_position, Some(1));
+
+        let info = get_line_info(SAMPLE_PATCH, 2).unwrap();
+        assert_eq!(info.diff_position, Some(2));
+
+        let info = get_line_info(SAMPLE_PATCH, 3).unwrap();
+        assert_eq!(info.diff_position, Some(3));
+
+        let info = get_line_info(SAMPLE_PATCH, 4).unwrap();
+        assert_eq!(info.diff_position, Some(4));
+
+        let info = get_line_info(SAMPLE_PATCH, 5).unwrap();
+        assert_eq!(info.diff_position, Some(5));
+    }
+
+    #[test]
+    fn test_diff_position_with_meta_lines() {
+        // Patch with meta lines (diff --git, index, ---, +++)
+        let patch = "diff --git a/foo.rs b/foo.rs\nindex 123..456 100644\n--- a/foo.rs\n+++ b/foo.rs\n@@ -1,2 +1,3 @@\n fn main() {\n+    println!(\"hello\");\n }";
+        // Line 0: diff --git -> Meta, position None
+        // Line 1: index -> Meta, position None
+        // Line 2: --- -> Meta, position None
+        // Line 3: +++ -> Meta, position None
+        // Line 4: @@ -> Header, position None (first @@, not counted)
+        // Line 5: " fn main()" -> Context, position 1
+        // Line 6: "+    println..." -> Added, position 2
+        // Line 7: " }" -> Context, position 3
+        let info = get_line_info(patch, 0).unwrap();
+        assert_eq!(info.line_type, LineType::Meta);
+        assert_eq!(info.diff_position, None);
+
+        let info = get_line_info(patch, 3).unwrap();
+        assert_eq!(info.line_type, LineType::Meta);
+        assert_eq!(info.diff_position, None);
+
+        let info = get_line_info(patch, 4).unwrap();
+        assert_eq!(info.line_type, LineType::Header);
+        assert_eq!(info.diff_position, None);
+
+        let info = get_line_info(patch, 5).unwrap();
+        assert_eq!(info.line_type, LineType::Context);
+        assert_eq!(info.diff_position, Some(1));
+
+        let info = get_line_info(patch, 6).unwrap();
+        assert_eq!(info.line_type, LineType::Added);
+        assert_eq!(info.diff_position, Some(2));
+    }
+
+    #[test]
+    fn test_diff_position_no_meta_lines() {
+        // Patch starting with @@ (GitHub API format, no meta lines)
+        let patch = "@@ -1,2 +1,3 @@\n fn main() {\n+    println!(\"hello\");\n }";
+        let info = get_line_info(patch, 0).unwrap();
+        assert_eq!(info.diff_position, None); // first @@ not counted
+
+        let info = get_line_info(patch, 1).unwrap();
+        assert_eq!(info.diff_position, Some(1));
+    }
+
+    #[test]
+    fn test_diff_position_multi_hunk() {
+        // Multi-hunk patch: position does NOT reset across hunks
+        let patch = "@@ -1,3 +1,3 @@\n-old1\n+new1\n ctx\n@@ -10,3 +10,3 @@\n-old2\n+new2\n ctx2";
+        // Line 0: @@ -> None (first @@, not counted)
+        // Line 1: -old1 -> position 1
+        // Line 2: +new1 -> position 2
+        // Line 3: ctx -> position 3
+        // Line 4: @@ -> position 4 (subsequent @@, counted)
+        // Line 5: -old2 -> position 5
+        // Line 6: +new2 -> position 6
+        // Line 7: ctx2 -> position 7
+        let info = get_line_info(patch, 0).unwrap();
+        assert_eq!(info.diff_position, None);
+
+        let info = get_line_info(patch, 4).unwrap();
+        assert_eq!(info.line_type, LineType::Header);
+        assert_eq!(info.diff_position, Some(4));
+
+        let info = get_line_info(patch, 6).unwrap();
+        assert_eq!(info.diff_position, Some(6));
+
+        let info = get_line_info(patch, 7).unwrap();
+        assert_eq!(info.diff_position, Some(7));
+    }
+
+    // ============================================
+    // line_number_to_position tests
+    // ============================================
+
+    #[test]
+    fn test_line_number_to_position_basic() {
+        // SAMPLE_PATCH: @@ -1,4 +1,5 @@  (first @@, not counted)
+        //   " line 1"        -> new_line=1, position=1
+        //   "-old line 2"    -> removed, no new_line
+        //   "+new line 2"    -> new_line=2, position=3
+        //   "+added line"    -> new_line=3, position=4
+        //   " line 3"        -> new_line=4, position=5
+        assert_eq!(line_number_to_position(SAMPLE_PATCH, 1), Some(1));
+        assert_eq!(line_number_to_position(SAMPLE_PATCH, 2), Some(3));
+        assert_eq!(line_number_to_position(SAMPLE_PATCH, 3), Some(4));
+        assert_eq!(line_number_to_position(SAMPLE_PATCH, 4), Some(5));
+    }
+
+    #[test]
+    fn test_line_number_to_position_multi_hunk() {
+        let patch = "@@ -1,3 +1,3 @@\n-old1\n+new1\n ctx\n@@ -10,2 +10,2 @@\n-old2\n+new2";
+        // Hunk 1: new_line starts at 1 (first @@ not counted)
+        //   +new1 -> new_line=1, position=2
+        //   ctx   -> new_line=2, position=3
+        // Hunk 2: new_line starts at 10 (second @@ counted as position=4)
+        //   +new2 -> new_line=10, position=6
+        assert_eq!(line_number_to_position(patch, 1), Some(2));
+        assert_eq!(line_number_to_position(patch, 2), Some(3));
+        assert_eq!(line_number_to_position(patch, 10), Some(6));
+    }
+
+    #[test]
+    fn test_line_number_to_position_with_meta_lines() {
+        let patch = "diff --git a/foo.rs b/foo.rs\nindex 123..456 100644\n--- a/foo.rs\n+++ b/foo.rs\n@@ -1,2 +1,3 @@\n fn main() {\n+    println!(\"hello\");\n }";
+        // Meta lines skipped, first @@ not counted
+        // " fn main()" -> new_line=1, position=1
+        // "+    println..." -> new_line=2, position=2
+        // " }" -> new_line=3, position=3
+        assert_eq!(line_number_to_position(patch, 1), Some(1));
+        assert_eq!(line_number_to_position(patch, 2), Some(2));
+        assert_eq!(line_number_to_position(patch, 3), Some(3));
+    }
+
+    #[test]
+    fn test_line_number_to_position_nonexistent_line() {
+        assert_eq!(line_number_to_position(SAMPLE_PATCH, 999), None);
+        assert_eq!(line_number_to_position(SAMPLE_PATCH, 0), None);
     }
 }

@@ -122,6 +122,8 @@ pub fn hash_string(s: &str) -> u64 {
 pub struct LineInputContext {
     pub file_index: usize,
     pub line_number: u32,
+    /// patch 内の position（1始まり）。GitHub API の `position` パラメータに対応。
+    pub diff_position: u32,
 }
 
 /// 統一入力モード
@@ -1837,10 +1839,9 @@ impl App {
             return Ok(());
         }
 
-        // AI Rally (new rally disabled in local mode, but resume is allowed)
-        if self.matches_single_key(&key, &kb.ai_rally)
-            && (!self.local_mode || self.ai_rally_state.is_some())
-        {
+        // AI Rally — ローカルdiffモードでも新規起動・resumeの両方を許可する（仕様）。
+        // ローカルモードではコメント投稿等のAPI呼び出しはオーケストレーター側でスキップされる。
+        if self.matches_single_key(&key, &kb.ai_rally) {
             self.resume_or_start_ai_rally();
             return Ok(());
         }
@@ -1907,10 +1908,8 @@ impl App {
             return Ok(true);
         }
 
-        // AI Rally (new rally disabled in local mode, but resume is allowed)
-        if self.matches_single_key(&key, &kb.ai_rally)
-            && (!self.local_mode || self.ai_rally_state.is_some())
-        {
+        // AI Rally — ローカルdiffモードでも新規起動・resumeの両方を許可する（仕様）。
+        if self.matches_single_key(&key, &kb.ai_rally) {
             self.resume_or_start_ai_rally();
             return Ok(true);
         }
@@ -2714,11 +2713,15 @@ impl App {
             return;
         };
 
-        let diff = self
+        let file_patches: Vec<(String, String)> = self
             .files()
             .iter()
-            .filter_map(|f| f.patch.as_ref())
-            .cloned()
+            .filter_map(|f| f.patch.as_ref().map(|p| (f.filename.clone(), p.clone())))
+            .collect();
+
+        let diff = file_patches
+            .iter()
+            .map(|(_, p)| p.as_str())
             .collect::<Vec<_>>()
             .join("\n");
 
@@ -2740,6 +2743,7 @@ impl App {
             base_branch,
             external_comments: Vec::new(),
             local_mode: self.local_mode,
+            file_patches,
         };
 
         let (event_tx, event_rx) = mpsc::channel(100);
@@ -2913,7 +2917,8 @@ impl App {
         let filename = file.filename.clone();
         let repo = self.repo.clone();
         let pr_number = self.pr_number();
-        let line_number = ctx.line_number;
+        let position = ctx.diff_position;
+        let line = ctx.line_number;
 
         let (tx, rx) = mpsc::channel(1);
         self.comment_submit_receiver = Some((pr_number, rx));
@@ -2925,7 +2930,8 @@ impl App {
                 pr_number,
                 &commit_id,
                 &filename,
-                line_number,
+                position,
+                line,
                 &body,
             )
             .await;
@@ -2952,7 +2958,8 @@ impl App {
         let body = format!("```suggestion\n{}\n```", suggested_code.trim_end());
         let repo = self.repo.clone();
         let pr_number = self.pr_number();
-        let line_number = ctx.line_number;
+        let position = ctx.diff_position;
+        let line = ctx.line_number;
 
         let (tx, rx) = mpsc::channel(1);
         self.comment_submit_receiver = Some((pr_number, rx));
@@ -2964,7 +2971,8 @@ impl App {
                 pr_number,
                 &commit_id,
                 &filename,
-                line_number,
+                position,
+                line,
                 &body,
             )
             .await;
@@ -3037,9 +3045,14 @@ impl App {
             return;
         };
 
+        let Some(diff_position) = line_info.diff_position else {
+            return;
+        };
+
         self.input_mode = Some(InputMode::Comment(LineInputContext {
             file_index: self.selected_file,
             line_number,
+            diff_position,
         }));
         self.input_text_area.clear();
         self.preview_return_state = self.state;
@@ -3112,12 +3125,17 @@ impl App {
             return;
         };
 
+        let Some(diff_position) = line_info.diff_position else {
+            return;
+        };
+
         let original_code = line_info.line_content.clone();
 
         self.input_mode = Some(InputMode::Suggestion {
             context: LineInputContext {
                 file_index: self.selected_file,
                 line_number,
+                diff_position,
             },
             original_code: original_code.clone(),
         });
