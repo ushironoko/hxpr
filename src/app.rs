@@ -2334,8 +2334,8 @@ impl App {
             return Ok(());
         }
 
-        // Open panel
-        if self.matches_single_key(&key, &kb.open_panel) {
+        // Open panel (local mode ではコメント対象の PR がないため無効)
+        if !self.local_mode && self.matches_single_key(&key, &kb.open_panel) {
             self.comment_panel_open = true;
             self.comment_panel_scroll = 0;
             self.selected_inline_comment = 0;
