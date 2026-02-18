@@ -1805,13 +1805,13 @@ impl App {
             return Ok(());
         }
 
-        // Actions
-        if self.matches_single_key(&key, &kb.approve) {
+        // Actions (disabled in local mode - no PR to submit reviews to)
+        if !self.local_mode && self.matches_single_key(&key, &kb.approve) {
             self.submit_review(ReviewAction::Approve, terminal).await?;
             return Ok(());
         }
 
-        if self.matches_single_key(&key, &kb.request_changes) {
+        if !self.local_mode && self.matches_single_key(&key, &kb.request_changes) {
             self.submit_review(ReviewAction::RequestChanges, terminal)
                 .await?;
             return Ok(());
@@ -1819,7 +1819,7 @@ impl App {
 
         // Note: In FileList, 'comment' key triggers review comment (not inline comment)
         // Using separate check for review comment in FileList context
-        if self.matches_single_key(&key, &kb.comment) {
+        if !self.local_mode && self.matches_single_key(&key, &kb.comment) {
             self.submit_review(ReviewAction::Comment, terminal).await?;
             return Ok(());
         }
@@ -1837,14 +1837,14 @@ impl App {
             return Ok(());
         }
 
-        // AI Rally
-        if self.matches_single_key(&key, &kb.ai_rally) {
+        // AI Rally (disabled in local mode)
+        if !self.local_mode && self.matches_single_key(&key, &kb.ai_rally) {
             self.resume_or_start_ai_rally();
             return Ok(());
         }
 
-        // Open in browser
-        if self.matches_single_key(&key, &kb.open_in_browser) {
+        // Open in browser (disabled in local mode)
+        if !self.local_mode && self.matches_single_key(&key, &kb.open_in_browser) {
             if let Some(pr_number) = self.pr_number {
                 self.open_pr_in_browser(pr_number);
             }
@@ -1883,18 +1883,19 @@ impl App {
     ) -> Result<bool> {
         let kb = &self.config.keybindings;
 
-        if self.matches_single_key(&key, &kb.approve) {
+        // Review actions (disabled in local mode)
+        if !self.local_mode && self.matches_single_key(&key, &kb.approve) {
             self.submit_review(ReviewAction::Approve, terminal).await?;
             return Ok(true);
         }
 
-        if self.matches_single_key(&key, &kb.request_changes) {
+        if !self.local_mode && self.matches_single_key(&key, &kb.request_changes) {
             self.submit_review(ReviewAction::RequestChanges, terminal)
                 .await?;
             return Ok(true);
         }
 
-        if self.matches_single_key(&key, &kb.comment) {
+        if !self.local_mode && self.matches_single_key(&key, &kb.comment) {
             self.submit_review(ReviewAction::Comment, terminal).await?;
             return Ok(true);
         }
@@ -1904,12 +1905,13 @@ impl App {
             return Ok(true);
         }
 
-        if self.matches_single_key(&key, &kb.ai_rally) {
+        // AI Rally and browser open (disabled in local mode)
+        if !self.local_mode && self.matches_single_key(&key, &kb.ai_rally) {
             self.resume_or_start_ai_rally();
             return Ok(true);
         }
 
-        if self.matches_single_key(&key, &kb.open_in_browser) {
+        if !self.local_mode && self.matches_single_key(&key, &kb.open_in_browser) {
             if let Some(pr_number) = self.pr_number {
                 self.open_pr_in_browser(pr_number);
             }
