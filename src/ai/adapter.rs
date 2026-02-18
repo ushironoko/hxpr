@@ -22,6 +22,8 @@ pub struct Context {
     pub external_comments: Vec<ExternalComment>,
     /// ローカルモードかどうか（GitHub API 呼び出しをスキップ）
     pub local_mode: bool,
+    /// ファイル名 → patch のペア（position 変換用）
+    pub file_patches: Vec<(String, String)>,
 }
 
 /// Comment from external tools (bots)

@@ -218,6 +218,7 @@ mod tests {
             base_branch: "main".to_string(),
             external_comments: Vec::new(),
             local_mode: false,
+            file_patches: Vec::new(),
         }
     }
 

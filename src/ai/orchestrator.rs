@@ -806,6 +806,28 @@ impl Orchestrator {
 
         // Post inline comments with rate limit handling
         for comment in &review.comments {
+            // Convert line number to patch position
+            let patch = context
+                .file_patches
+                .iter()
+                .find(|(name, _)| name == &comment.path)
+                .map(|(_, p)| p.as_str());
+
+            let Some(patch) = patch else {
+                warn!("No patch found for {}, skipping comment", comment.path);
+                continue;
+            };
+
+            let Some(position) =
+                crate::diff::line_number_to_position(patch, comment.line)
+            else {
+                warn!(
+                    "Could not convert line {} to position for {}, skipping comment",
+                    comment.line, comment.path
+                );
+                continue;
+            };
+
             // Add prefix to inline comment
             let body_with_prefix = format!("[AI Rally - Reviewer]\n\n{}", comment.body);
             if let Err(e) = github::create_review_comment(
@@ -813,14 +835,14 @@ impl Orchestrator {
                 self.pr_number,
                 &context.head_sha,
                 &comment.path,
-                comment.line,
+                position,
                 &body_with_prefix,
             )
             .await
             {
                 warn!(
-                    "Failed to post inline comment on {}:{}: {}",
-                    comment.path, comment.line, e
+                    "Failed to post inline comment on {}:{} (position {}): {}",
+                    comment.path, comment.line, position, e
                 );
             }
             // Rate limit mitigation: small delay between API calls

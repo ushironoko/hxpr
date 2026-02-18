@@ -122,6 +122,8 @@ pub fn hash_string(s: &str) -> u64 {
 pub struct LineInputContext {
     pub file_index: usize,
     pub line_number: u32,
+    /// patch 内の position（1始まり）。GitHub API の `position` パラメータに対応。
+    pub diff_position: u32,
 }
 
 /// 統一入力モード
@@ -1805,13 +1807,13 @@ impl App {
             return Ok(());
         }
 
-        // Actions
-        if self.matches_single_key(&key, &kb.approve) {
+        // Actions (disabled in local mode - no PR to submit reviews to)
+        if !self.local_mode && self.matches_single_key(&key, &kb.approve) {
             self.submit_review(ReviewAction::Approve, terminal).await?;
             return Ok(());
         }
 
-        if self.matches_single_key(&key, &kb.request_changes) {
+        if !self.local_mode && self.matches_single_key(&key, &kb.request_changes) {
             self.submit_review(ReviewAction::RequestChanges, terminal)
                 .await?;
             return Ok(());
@@ -1819,7 +1821,7 @@ impl App {
 
         // Note: In FileList, 'comment' key triggers review comment (not inline comment)
         // Using separate check for review comment in FileList context
-        if self.matches_single_key(&key, &kb.comment) {
+        if !self.local_mode && self.matches_single_key(&key, &kb.comment) {
             self.submit_review(ReviewAction::Comment, terminal).await?;
             return Ok(());
         }
@@ -1837,14 +1839,15 @@ impl App {
             return Ok(());
         }
 
-        // AI Rally
+        // AI Rally — ローカルdiffモードでも新規起動・resumeの両方を許可する（仕様）。
+        // ローカルモードではコメント投稿等のAPI呼び出しはオーケストレーター側でスキップされる。
         if self.matches_single_key(&key, &kb.ai_rally) {
             self.resume_or_start_ai_rally();
             return Ok(());
         }
 
-        // Open in browser
-        if self.matches_single_key(&key, &kb.open_in_browser) {
+        // Open in browser (disabled in local mode)
+        if !self.local_mode && self.matches_single_key(&key, &kb.open_in_browser) {
             if let Some(pr_number) = self.pr_number {
                 self.open_pr_in_browser(pr_number);
             }
@@ -1883,18 +1886,19 @@ impl App {
     ) -> Result<bool> {
         let kb = &self.config.keybindings;
 
-        if self.matches_single_key(&key, &kb.approve) {
+        // Review actions (disabled in local mode)
+        if !self.local_mode && self.matches_single_key(&key, &kb.approve) {
             self.submit_review(ReviewAction::Approve, terminal).await?;
             return Ok(true);
         }
 
-        if self.matches_single_key(&key, &kb.request_changes) {
+        if !self.local_mode && self.matches_single_key(&key, &kb.request_changes) {
             self.submit_review(ReviewAction::RequestChanges, terminal)
                 .await?;
             return Ok(true);
         }
 
-        if self.matches_single_key(&key, &kb.comment) {
+        if !self.local_mode && self.matches_single_key(&key, &kb.comment) {
             self.submit_review(ReviewAction::Comment, terminal).await?;
             return Ok(true);
         }
@@ -1904,12 +1908,13 @@ impl App {
             return Ok(true);
         }
 
+        // AI Rally — ローカルdiffモードでも新規起動・resumeの両方を許可する（仕様）。
         if self.matches_single_key(&key, &kb.ai_rally) {
             self.resume_or_start_ai_rally();
             return Ok(true);
         }
 
-        if self.matches_single_key(&key, &kb.open_in_browser) {
+        if !self.local_mode && self.matches_single_key(&key, &kb.open_in_browser) {
             if let Some(pr_number) = self.pr_number {
                 self.open_pr_in_browser(pr_number);
             }
@@ -2334,8 +2339,8 @@ impl App {
             return Ok(());
         }
 
-        // Open panel
-        if self.matches_single_key(&key, &kb.open_panel) {
+        // Open panel (local mode ではコメント対象の PR がないため無効)
+        if !self.local_mode && self.matches_single_key(&key, &kb.open_panel) {
             self.comment_panel_open = true;
             self.comment_panel_scroll = 0;
             self.selected_inline_comment = 0;
@@ -2708,11 +2713,15 @@ impl App {
             return;
         };
 
-        let diff = self
+        let file_patches: Vec<(String, String)> = self
             .files()
             .iter()
-            .filter_map(|f| f.patch.as_ref())
-            .cloned()
+            .filter_map(|f| f.patch.as_ref().map(|p| (f.filename.clone(), p.clone())))
+            .collect();
+
+        let diff = file_patches
+            .iter()
+            .map(|(_, p)| p.as_str())
             .collect::<Vec<_>>()
             .join("\n");
 
@@ -2734,6 +2743,7 @@ impl App {
             base_branch,
             external_comments: Vec::new(),
             local_mode: self.local_mode,
+            file_patches,
         };
 
         let (event_tx, event_rx) = mpsc::channel(100);
@@ -2907,7 +2917,7 @@ impl App {
         let filename = file.filename.clone();
         let repo = self.repo.clone();
         let pr_number = self.pr_number();
-        let line_number = ctx.line_number;
+        let position = ctx.diff_position;
 
         let (tx, rx) = mpsc::channel(1);
         self.comment_submit_receiver = Some((pr_number, rx));
@@ -2919,7 +2929,7 @@ impl App {
                 pr_number,
                 &commit_id,
                 &filename,
-                line_number,
+                position,
                 &body,
             )
             .await;
@@ -2946,7 +2956,7 @@ impl App {
         let body = format!("```suggestion\n{}\n```", suggested_code.trim_end());
         let repo = self.repo.clone();
         let pr_number = self.pr_number();
-        let line_number = ctx.line_number;
+        let position = ctx.diff_position;
 
         let (tx, rx) = mpsc::channel(1);
         self.comment_submit_receiver = Some((pr_number, rx));
@@ -2958,7 +2968,7 @@ impl App {
                 pr_number,
                 &commit_id,
                 &filename,
-                line_number,
+                position,
                 &body,
             )
             .await;
@@ -3004,6 +3014,9 @@ impl App {
 
     /// コメント入力を開始（組み込みTextArea）
     fn enter_comment_input(&mut self) {
+        if self.local_mode {
+            return;
+        }
         let Some(file) = self.files().get(self.selected_file) else {
             return;
         };
@@ -3028,9 +3041,14 @@ impl App {
             return;
         };
 
+        let Some(diff_position) = line_info.diff_position else {
+            return;
+        };
+
         self.input_mode = Some(InputMode::Comment(LineInputContext {
             file_index: self.selected_file,
             line_number,
+            diff_position,
         }));
         self.input_text_area.clear();
         self.preview_return_state = self.state;
@@ -3067,7 +3085,7 @@ impl App {
         self.clear_pending_keys();
         self.symbol_popup = None;
         self.update_diff_line_count();
-        if self.review_comments.is_none() {
+        if !self.local_mode && self.review_comments.is_none() {
             self.load_review_comments();
         }
         self.update_file_comment_positions();
@@ -3076,6 +3094,9 @@ impl App {
 
     /// サジェスチョン入力を開始（組み込みTextArea）
     fn enter_suggestion_input(&mut self) {
+        if self.local_mode {
+            return;
+        }
         let Some(file) = self.files().get(self.selected_file) else {
             return;
         };
@@ -3100,12 +3121,17 @@ impl App {
             return;
         };
 
+        let Some(diff_position) = line_info.diff_position else {
+            return;
+        };
+
         let original_code = line_info.line_content.clone();
 
         self.input_mode = Some(InputMode::Suggestion {
             context: LineInputContext {
                 file_index: self.selected_file,
                 line_number,
+                diff_position,
             },
             original_code: original_code.clone(),
         });
@@ -3116,6 +3142,9 @@ impl App {
     }
 
     fn open_comment_list(&mut self) {
+        if self.local_mode {
+            return;
+        }
         self.state = AppState::CommentList;
         self.discussion_comment_detail_mode = false;
         self.discussion_comment_detail_scroll = 0;

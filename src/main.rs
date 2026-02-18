@@ -98,7 +98,7 @@ async fn main() -> Result<()> {
                 use tracing_subscriber::EnvFilter;
                 tracing_subscriber::fmt()
                     .with_writer(std::sync::Mutex::new(log_file))
-                    .with_env_filter(EnvFilter::new("octorus=debug"))
+                    .with_env_filter(EnvFilter::new("octorus=debug,or=debug"))
                     .init();
                 tracing::info!("Debug logging enabled");
             }
