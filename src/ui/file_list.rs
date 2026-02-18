@@ -99,10 +99,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     } else {
         "A: AI Rally"
     };
-    let footer_text = format!(
-        "j/k/↑↓: move | Enter/→/l: split view | O: browser | a: approve | r: request changes | c: comment | C: comments | {} | R: refresh | q: quit | ?: help",
-        ai_rally_text
-    );
+    let footer_text = if app.is_local_mode() {
+        "j/k/↑↓: move | Enter/→/l: split view | R: refresh | q: quit | ?: help".to_string()
+    } else {
+        format!(
+            "j/k/↑↓: move | Enter/→/l: split view | O: browser | a: approve | r: request changes | c: comment | C: comments | {} | R: refresh | q: quit | ?: help",
+            ai_rally_text
+        )
+    };
     let footer = Paragraph::new(footer_text).block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, chunks[footer_chunk_idx]);
 }

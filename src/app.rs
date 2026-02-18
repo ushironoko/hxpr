@@ -3070,7 +3070,7 @@ impl App {
         self.clear_pending_keys();
         self.symbol_popup = None;
         self.update_diff_line_count();
-        if self.review_comments.is_none() {
+        if !self.local_mode && self.review_comments.is_none() {
             self.load_review_comments();
         }
         self.update_file_comment_positions();
