@@ -88,6 +88,7 @@ pub async fn create_review_comment(
             ("path", FieldValue::String(path)),
             ("line", FieldValue::Raw(&line_str)),
             ("side", FieldValue::String("RIGHT")),
+            ("subject_type", FieldValue::String("line")),
         ],
     )
     .await?;

@@ -34,6 +34,7 @@ syntect-tui = "3.0.4"
 two-face = { version = "0.5.1", default-features = false, features = ["syntect-default-fancy"] }
 async-trait = "0.1.88"
 tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.22", features = ["fmt", "env-filter"] }
 chrono = "0.4.43"
 thiserror = "2.0.18"
 smallvec = "1.15.0"

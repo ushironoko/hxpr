@@ -86,6 +86,25 @@ async fn main() -> Result<()> {
     // Set up panic hook before anything else
     setup_panic_hook();
 
+    // OR_DEBUG=1 でファイルログを有効化（TUI の画面を壊さないよう stderr ではなくファイルに出力）
+    if std::env::var("OR_DEBUG").ok().as_deref() == Some("1") {
+        let log_dir = cache::cache_dir();
+        if std::fs::create_dir_all(&log_dir).is_ok() {
+            if let Ok(log_file) = std::fs::File::options()
+                .create(true)
+                .append(true)
+                .open(log_dir.join("debug.log"))
+            {
+                use tracing_subscriber::EnvFilter;
+                tracing_subscriber::fmt()
+                    .with_writer(std::sync::Mutex::new(log_file))
+                    .with_env_filter(EnvFilter::new("octorus=debug"))
+                    .init();
+                tracing::info!("Debug logging enabled");
+            }
+        }
+    }
+
     let args = Args::parse();
 
     // Handle subcommands
