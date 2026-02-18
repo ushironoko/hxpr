@@ -53,3 +53,68 @@ pub fn render_rally_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         .alignment(Alignment::Center);
     frame.render_widget(bar, area);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::App;
+    use crate::github::{Branch, PullRequest, User};
+
+    #[test]
+    fn test_build_pr_info_loaded() {
+        let mut app = App::new_for_test();
+        app.data_state = DataState::Loaded {
+            pr: Box::new(PullRequest {
+                number: 42,
+                title: "Add feature X".to_string(),
+                body: None,
+                state: "open".to_string(),
+                head: Branch {
+                    ref_name: "feature".to_string(),
+                    sha: "abc".to_string(),
+                },
+                base: Branch {
+                    ref_name: "main".to_string(),
+                    sha: "def".to_string(),
+                },
+                user: User {
+                    login: "alice".to_string(),
+                },
+                updated_at: "2024-01-01T00:00:00Z".to_string(),
+            }),
+            files: vec![],
+        };
+        assert_eq!(build_pr_info(&app), "PR #42: Add feature X by @alice");
+    }
+
+    #[test]
+    fn test_build_pr_info_loading_with_pr_number() {
+        let mut app = App::new_for_test();
+        app.data_state = DataState::Loading;
+        app.pr_number = Some(99);
+        assert_eq!(build_pr_info(&app), "PR #99");
+    }
+
+    #[test]
+    fn test_build_pr_info_loading_without_pr_number() {
+        let mut app = App::new_for_test();
+        app.data_state = DataState::Loading;
+        app.pr_number = None;
+        assert_eq!(build_pr_info(&app), "PR");
+    }
+
+    #[test]
+    fn test_build_pr_info_local_mode() {
+        let mut app = App::new_for_test();
+        app.set_local_mode(true);
+        assert_eq!(build_pr_info(&app), "[LOCAL] Local HEAD diff");
+    }
+
+    #[test]
+    fn test_build_pr_info_local_mode_with_auto_focus() {
+        let mut app = App::new_for_test();
+        app.set_local_mode(true);
+        app.set_local_auto_focus(true);
+        assert_eq!(build_pr_info(&app), "[LOCAL AF] Local HEAD diff");
+    }
+}
