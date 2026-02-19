@@ -239,6 +239,10 @@ timeout_secs = 600
 # Additional tools for reviewee (Claude only)
 # Examples: "Skill", "WebFetch", "WebSearch", "Bash(git push:*)"
 # reviewee_additional_tools = ["Skill", "Bash(git push:*)"]
+
+# Auto-post review/fix comments to PR without confirmation prompt
+# Default is false (asks for confirmation before posting)
+# auto_post = true
 ```
 
 ### Configurable Keybindings
@@ -485,6 +489,7 @@ AI Rally is an automated PR review and fix cycle that uses two AI agents:
 - **Interactive Flow**: When the AI agent needs clarification or permission, you can respond interactively
 - **Local Diff Support**: Re-review iterations prioritize local `git diff` for unpushed changes; falls back to `gh pr diff` when changes have been pushed
 - **Background Execution**: Press `b` to run rally in background while continuing to browse files
+- **Auto Post**: Set `auto_post = true` in `[ai]` config to skip confirmation prompts and automatically post review/fix comments to the PR
 
 ### Recommended Configuration
 

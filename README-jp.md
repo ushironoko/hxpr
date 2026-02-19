@@ -239,6 +239,10 @@ timeout_secs = 600
 # reviewee 用の追加ツール（Claude only）
 # 例: "Skill", "WebFetch", "WebSearch", "Bash(git push:*)"
 # reviewee_additional_tools = ["Skill", "Bash(git push:*)"]
+
+# レビュー/修正コメントを確認なしで PR に自動投稿
+# デフォルトは false（投稿前に確認プロンプトを表示）
+# auto_post = true
 ```
 
 ### 設定可能なキーバインド
@@ -485,6 +489,7 @@ AI Rally は2つの AI エージェントによる自動 PR レビュー＆修�
 - **インタラクティブフロー**: AI エージェントが確認や許可を求める際、対話的に応答可能
 - **ローカル Diff サポート**: 再レビュー時はローカルの `git diff` を優先して未プッシュの変更を検出。push 済みの場合は `gh pr diff` にフォールバック
 - **バックグラウンド実行**: `b` を押すと Rally をバックグラウンドで実行しながらファイル閲覧を継続可能
+- **自動投稿**: `[ai]` 設定で `auto_post = true` にすると、確認プロンプトをスキップしてレビュー/修正コメントを PR に自動投稿
 
 ### 推奨構成
 
