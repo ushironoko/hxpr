@@ -99,7 +99,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     } else {
         "A: AI Rally"
     };
-    let footer_text = if app.is_local_mode() {
+    let help_text = if app.is_local_mode() {
         format!(
             "j/k/↑↓: move | Enter/→/l: split view | {} | R: refresh | q: quit | ?: help",
             ai_rally_text
@@ -110,7 +110,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             ai_rally_text
         )
     };
-    let footer = Paragraph::new(footer_text).block(Block::default().borders(Borders::ALL));
+    let footer_line = super::footer::build_footer_line(app, &help_text);
+    let footer = Paragraph::new(footer_line).block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, chunks[footer_chunk_idx]);
 }
 

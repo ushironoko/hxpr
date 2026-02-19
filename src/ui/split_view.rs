@@ -137,12 +137,13 @@ fn render_file_list_pane(
     }
 
     // Footer
-    let footer_text = if is_focused {
+    let help_text = if is_focused {
         "j/k/↑↓: move | Enter/→/l: diff | O: browser | ←/h/q: back"
     } else {
         "←/h: focus files"
     };
-    let footer = Paragraph::new(footer_text).block(
+    let footer_line = super::footer::build_footer_line(app, help_text);
+    let footer = Paragraph::new(footer_line).block(
         Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color)),

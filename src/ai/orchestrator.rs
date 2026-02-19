@@ -818,9 +818,7 @@ impl Orchestrator {
                 continue;
             };
 
-            let Some(position) =
-                crate::diff::line_number_to_position(patch, comment.line)
-            else {
+            let Some(position) = crate::diff::line_number_to_position(patch, comment.line) else {
                 warn!(
                     "Could not convert line {} to position for {}, skipping comment",
                     comment.line, comment.path

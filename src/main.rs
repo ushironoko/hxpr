@@ -209,8 +209,9 @@ async fn run_with_local_diff(repo: &str, config: &config::Config, args: &Args) -
     let result = app.run().await;
     cancel_token.cancel();
 
-    if result.is_err() {
+    if let Err(ref e) = result {
         restore_terminal();
+        eprintln!("Error: {:#}", e);
     }
 
     let exit_code = if result.is_ok() { 0 } else { 1 };
@@ -326,8 +327,9 @@ async fn run_with_pr(repo: &str, pr: u32, config: &config::Config, args: &Args) 
     // Signal background tasks to stop
     cancel_token.cancel();
 
-    if result.is_err() {
+    if let Err(ref e) = result {
         restore_terminal();
+        eprintln!("Error: {:#}", e);
     }
 
     // spawn_blocking タスク（プリフェッチ等）が巨大ファイル処理中の場合、
@@ -411,8 +413,9 @@ async fn run_with_pr_list(repo: &str, config: config::Config, args: &Args) -> Re
     // Signal background tasks to stop
     cancel_token.cancel();
 
-    if result.is_err() {
+    if let Err(ref e) = result {
         restore_terminal();
+        eprintln!("Error: {:#}", e);
     }
 
     // run_with_pr と同様、spawn_blocking タスクの完了待ちによるハングを防止するため
