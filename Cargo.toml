@@ -72,6 +72,7 @@ tree-sitter-css = "0.25.0"
 tree-sitter-vue3 = { package = "octorus-tree-sitter-vue3", path = "crates/tree-sitter-vue3", version = "0.1.0" }
 # POSIX shell-compatible command splitting for editor commands
 shell-words = "1.1.1"
+which = "8.0.0"
 
 [dev-dependencies]
 assert_cmd = "2.1.2"
