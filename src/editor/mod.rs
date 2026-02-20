@@ -64,7 +64,7 @@ fn resolve_and_split_editor(configured: Option<&str>) -> Result<(String, Vec<Str
                 tracing::warn!(
                     skipped_editors = ?skipped,
                     resolved_editor = %cmd,
-                    "configured editor not found in PATH, falling back"
+                    "editor candidate not found in PATH, falling back"
                 );
             }
             return Ok(parsed);
@@ -446,20 +446,23 @@ mod tests {
     fn test_all_candidates_not_in_path() {
         let orig_visual = env::var("VISUAL").ok();
         let orig_editor = env::var("EDITOR").ok();
+        let orig_path = env::var("PATH").ok();
         env::set_var("VISUAL", "__nonexistent_visual__");
         env::set_var("EDITOR", "__nonexistent_editor__");
+        // Point PATH to an empty dir so even `vi` is not found
+        let empty_dir = tempfile::tempdir().unwrap();
+        env::set_var("PATH", empty_dir.path());
 
+        // All candidates missing from PATH → returns the first parsed one
         let (cmd, _) =
             resolve_and_split_editor(Some("__nonexistent_config__")).unwrap();
+        assert_eq!(cmd, "__nonexistent_config__");
 
-        if command_found_in_path("vi") {
-            // `vi` is always appended as the last candidate; on most systems it exists
-            assert_eq!(cmd, "vi");
-        } else {
-            // Truly all candidates missing → returns the first parsed one
-            assert_eq!(cmd, "__nonexistent_config__");
+        // Restore
+        match orig_path {
+            Some(v) => env::set_var("PATH", v),
+            None => env::remove_var("PATH"),
         }
-
         restore_env(orig_visual, orig_editor);
     }
 
