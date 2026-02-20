@@ -14,8 +14,8 @@ Please tell me what is happening.
 It's not mandatory, but optional if available.
 
 ## Platforms
- - OS: [e.g. macOS 26.3]
- - octorus version: [e.g. 0.4.0]
+- OS: [e.g. macOS 26.3]
+- octorus version: [e.g. 0.4.0]
 - terminal: [e.g. ghostty]
 - editor: [e.g. helix]
 
