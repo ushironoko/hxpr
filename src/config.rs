@@ -91,6 +91,9 @@ pub struct KeybindingsConfig {
     // Local mode
     pub toggle_local_mode: KeySequence,
     pub toggle_auto_focus: KeySequence,
+
+    // Markdown rich display
+    pub toggle_markdown_rich: KeySequence,
 }
 
 impl Default for AiConfig {
@@ -156,6 +159,9 @@ impl Default for KeybindingsConfig {
             // Local mode
             toggle_local_mode: KeySequence::single(KeyBinding::char('L')),
             toggle_auto_focus: KeySequence::single(KeyBinding::char('F')),
+
+            // Markdown rich display
+            toggle_markdown_rich: KeySequence::single(KeyBinding::char('M')),
         }
     }
 }
@@ -201,6 +207,7 @@ impl KeybindingsConfig {
             ("open_in_browser", &self.open_in_browser),
             ("toggle_local_mode", &self.toggle_local_mode),
             ("toggle_auto_focus", &self.toggle_auto_focus),
+            ("toggle_markdown_rich", &self.toggle_markdown_rich),
         ];
 
         for (name, seq) in &bindings {
@@ -333,6 +340,7 @@ impl Serialize for KeybindingsConfig {
         map.serialize_entry("open_in_browser", &seq_to_value(&self.open_in_browser))?;
         map.serialize_entry("toggle_local_mode", &seq_to_value(&self.toggle_local_mode))?;
         map.serialize_entry("toggle_auto_focus", &seq_to_value(&self.toggle_auto_focus))?;
+        map.serialize_entry("toggle_markdown_rich", &seq_to_value(&self.toggle_markdown_rich))?;
 
         map.end()
     }
@@ -517,5 +525,37 @@ mod tests {
     fn test_editor_with_args() {
         let config: Config = toml::from_str(r#"editor = "code --wait""#).unwrap();
         assert_eq!(config.editor.as_deref(), Some("code --wait"));
+    }
+
+    #[test]
+    fn test_toggle_markdown_rich_default_key() {
+        let config = KeybindingsConfig::default();
+        assert_eq!(config.toggle_markdown_rich.display(), "M");
+    }
+
+    #[test]
+    fn test_parse_toggle_markdown_rich_custom() {
+        let toml_str = r#"
+            [keybindings]
+            toggle_markdown_rich = "m"
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.keybindings.toggle_markdown_rich.display(), "m");
+    }
+
+    #[test]
+    fn test_serialize_roundtrip_includes_toggle_markdown_rich() {
+        let config = KeybindingsConfig::default();
+        let serialized = toml::to_string(&config).unwrap();
+        assert!(
+            serialized.contains("toggle_markdown_rich"),
+            "Serialized output should include toggle_markdown_rich"
+        );
+        // Roundtrip: deserialize back
+        let deserialized: KeybindingsConfig = toml::from_str(&serialized).unwrap();
+        assert_eq!(
+            deserialized.toggle_markdown_rich.display(),
+            config.toggle_markdown_rich.display()
+        );
     }
 }

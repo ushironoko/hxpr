@@ -190,9 +190,9 @@ fn render_diff_pane_normal(
     // Footer
     let footer_text = if is_focused {
         if app.is_local_mode() {
-            "j/k/↑↓: scroll | →/l: fullscreen | ←/h: files | q: back"
+            "j/k/↑↓: scroll | M: markdown rich | →/l: fullscreen | ←/h: files | q: back"
         } else {
-            "j/k/↑↓: scroll | n/N: next/prev comment | Enter: comments | →/l: fullscreen | ←/h: files | q: back"
+            "j/k/↑↓: scroll | n/N: next/prev comment | Enter: comments | M: markdown rich | →/l: fullscreen | ←/h: files | q: back"
         }
     } else {
         "Enter/→: focus diff"

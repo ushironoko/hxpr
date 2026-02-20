@@ -15,7 +15,7 @@ A TUI tool for GitHub PR review with Vim-style keybindings.
 
 - Browse changed files in a PR
 - Split view with file list and diff preview side by side
-- View diffs with syntax highlighting
+- View diffs with syntax highlighting (Markdown rich display mode with `M` key)
 - Add inline comments on specific lines
 - Add code suggestions
 - View and navigate review comments with jump-to-line
@@ -160,6 +160,7 @@ The split view shows the file list (left, 35%) and a diff preview (right, 65%). 
 | `N` | Jump to previous comment |
 | `Ctrl-d` | Page down |
 | `Ctrl-u` | Page up |
+| `M` | Toggle Markdown rich display |
 | `Enter` | Open comment panel |
 | `←` / `h` / `q` / `Esc` | Back to previous view |
 
@@ -296,6 +297,7 @@ go_to_definition = ["g", "d"]
 | `open_in_browser` | `O` | Open PR in browser |
 | `toggle_local_mode` | `L` | Toggle local diff mode |
 | `toggle_auto_focus` | `F` | Toggle auto-focus (local mode) |
+| `toggle_markdown_rich` | `M` | Toggle Markdown rich display |
 | **Diff Operations** |||
 | `go_to_definition` | `gd` | Go to definition |
 | `go_to_file` | `gf` | Open file in $EDITOR |

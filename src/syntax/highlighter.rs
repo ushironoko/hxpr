@@ -331,6 +331,7 @@ pub fn collect_line_highlights_with_injections(
     let injection_query = match parent_ext {
         "svelte" => tree_sitter_svelte_ng::INJECTIONS_QUERY,
         "vue" => tree_sitter_vue3::INJECTIONS_QUERY,
+        "md" | "markdown" => tree_sitter_md::INJECTION_QUERY_BLOCK,
         _ => return result, // No injection support for other languages yet
     };
 
@@ -375,9 +376,24 @@ pub fn collect_line_highlights_with_injections(
         let ext = match normalized_lang {
             "typescript" => "ts",
             "javascript" => "js",
-            "tsx" => "tsx", // Vue supports <script lang="tsx">
-            "jsx" => "jsx", // Vue supports <script lang="jsx">
+            "tsx" => "tsx",
+            "jsx" => "jsx",
             "css" => "css",
+            "markdown_inline" => "md_inline",
+            "rust" => "rs",
+            "python" => "py",
+            "go" => "go",
+            "ruby" => "rb",
+            "c" => "c",
+            "cpp" => "cpp",
+            "java" => "java",
+            "lua" => "lua",
+            "bash" => "sh",
+            "php" => "php",
+            "swift" => "swift",
+            "haskell" => "hs",
+            "zig" => "zig",
+            "moonbit" => "mbt",
             "html" => continue, // Skip HTML injections (handled by parent)
             _ => continue,      // Skip unsupported languages
         };
@@ -1367,5 +1383,170 @@ const count = ref(0)
             line2_captures.is_some() && !line2_captures.unwrap().is_empty(),
             "Should have highlights for const line"
         );
+    }
+
+    #[test]
+    fn test_highlighter_markdown_returns_cst() {
+        let highlighter = Highlighter::for_file("README.md", "base16-ocean.dark");
+        assert!(
+            matches!(highlighter, Highlighter::Cst { .. }),
+            "Markdown files should use CST highlighter"
+        );
+        assert!(highlighter.style_cache().is_some());
+    }
+
+    #[test]
+    fn test_highlighter_markdown_parses_source() {
+        let highlighter = Highlighter::for_file("README.md", "base16-ocean.dark");
+        let code = "# Heading\n\nSome **bold** text.\n";
+        let mut pool = ParserPool::new();
+        let result = highlighter.parse_source(code, &mut pool);
+        assert!(
+            result.is_some(),
+            "Markdown source should be parseable by tree-sitter"
+        );
+    }
+
+    #[test]
+    fn test_markdown_injection_inline_highlights() {
+        let source = "# Title\n\nSome **bold** and *italic* text.\n";
+        let mut pool = ParserPool::new();
+        let highlighter = Highlighter::for_file("test.md", "base16-ocean.dark");
+        let result = highlighter.parse_source(source, &mut pool).unwrap();
+        let style_cache = highlighter.style_cache().unwrap();
+
+        let line_highlights = collect_line_highlights_with_injections(
+            source,
+            &result.tree,
+            result.lang,
+            style_cache,
+            &mut pool,
+            "md",
+        );
+
+        // Line 0 is "# Title" — should have at least heading highlights
+        let line0 = line_highlights.get(0);
+        assert!(
+            line0.is_some(),
+            "First line (heading) should have highlights"
+        );
+    }
+
+    #[test]
+    fn test_markdown_code_fence_injection() {
+        let source = "# Title\n\n```rust\nfn main() {}\n```\n";
+        let mut pool = ParserPool::new();
+        let highlighter = Highlighter::for_file("test.md", "base16-ocean.dark");
+        let result = highlighter.parse_source(source, &mut pool).unwrap();
+        let style_cache = highlighter.style_cache().unwrap();
+
+        let line_highlights = collect_line_highlights_with_injections(
+            source,
+            &result.tree,
+            result.lang,
+            style_cache,
+            &mut pool,
+            "md",
+        );
+
+        // Line 3 is "fn main() {}" inside the code fence
+        // If injection works, it should have highlights from Rust parser
+        let code_line = line_highlights.get(3);
+        assert!(
+            code_line.is_some(),
+            "Code fence content should be reachable in line highlights"
+        );
+    }
+
+    /// Format line highlights into a readable snapshot string.
+    fn format_line_highlights(source: &str, highlights: &LineHighlights) -> String {
+        use ratatui::style::Modifier;
+
+        source
+            .lines()
+            .enumerate()
+            .map(|(i, line_content)| {
+                let hl = highlights.get(i);
+                let hl_str = match hl {
+                    Some(captures) if !captures.is_empty() => {
+                        let parts: Vec<String> = captures
+                            .iter()
+                            .map(|cap| {
+                                let start = cap.local_start.min(line_content.len());
+                                let end = cap.local_end.min(line_content.len());
+                                let text = &line_content[start..end];
+                                let mut style_parts = Vec::new();
+                                if let Some(fg) = cap.style.fg {
+                                    style_parts.push(format!("fg:{:?}", fg));
+                                }
+                                if cap.style.add_modifier.contains(Modifier::BOLD) {
+                                    style_parts.push("BOLD".to_string());
+                                }
+                                if cap.style.add_modifier.contains(Modifier::ITALIC) {
+                                    style_parts.push("ITALIC".to_string());
+                                }
+                                if cap.style.add_modifier.contains(Modifier::UNDERLINED) {
+                                    style_parts.push("UNDERLINED".to_string());
+                                }
+                                let style_str = if style_parts.is_empty() {
+                                    "default".to_string()
+                                } else {
+                                    style_parts.join(",")
+                                };
+                                format!("{:?}[{}]", text, style_str)
+                            })
+                            .collect();
+                        parts.join(", ")
+                    }
+                    _ => "(none)".to_string(),
+                };
+                format!("L{}: {:?} => {}", i, line_content, hl_str)
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn test_snapshot_markdown_inline_highlights() {
+        use insta::assert_snapshot;
+
+        let source = "# Hello World\n\nSome text here.\n";
+        let mut pool = ParserPool::new();
+        let highlighter = Highlighter::for_file("test.md", "base16-ocean.dark");
+        let result = highlighter.parse_source(source, &mut pool).unwrap();
+        let style_cache = highlighter.style_cache().unwrap();
+
+        let highlights = collect_line_highlights_with_injections(
+            source,
+            &result.tree,
+            result.lang,
+            style_cache,
+            &mut pool,
+            "md",
+        );
+
+        assert_snapshot!(format_line_highlights(source, &highlights));
+    }
+
+    #[test]
+    fn test_snapshot_markdown_code_fence_highlights() {
+        use insta::assert_snapshot;
+
+        let source = "# Title\n\n```rust\nfn main() {\n    println!(\"hello\");\n}\n```\n";
+        let mut pool = ParserPool::new();
+        let highlighter = Highlighter::for_file("doc.md", "base16-ocean.dark");
+        let result = highlighter.parse_source(source, &mut pool).unwrap();
+        let style_cache = highlighter.style_cache().unwrap();
+
+        let highlights = collect_line_highlights_with_injections(
+            source,
+            &result.tree,
+            result.lang,
+            style_cache,
+            &mut pool,
+            "md",
+        );
+
+        assert_snapshot!(format_line_highlights(source, &highlights));
     }
 }

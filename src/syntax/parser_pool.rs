@@ -218,6 +218,19 @@ mod tests {
     }
 
     #[test]
+    fn test_parser_pool_markdown() {
+        let mut pool = ParserPool::new();
+        assert!(pool.get_or_create("md").is_some());
+        assert!(pool.get_or_create("markdown").is_some());
+    }
+
+    #[test]
+    fn test_parser_pool_markdown_inline() {
+        let mut pool = ParserPool::new();
+        assert!(pool.get_or_create("md_inline").is_some());
+    }
+
+    #[test]
     fn test_parser_pool_unsupported() {
         let mut pool = ParserPool::new();
         // Vue is now supported in Phase 3c
@@ -248,8 +261,10 @@ mod tests {
         // Phase 3c: Vue is now supported
         assert!(ParserPool::supports_extension("vue"));
 
+        // Phase 4: Markdown
+        assert!(ParserPool::supports_extension("md"));
+
         assert!(!ParserPool::supports_extension("yaml"));
-        assert!(!ParserPool::supports_extension("md"));
     }
 
     #[test]
@@ -314,5 +329,36 @@ mod tests {
         // Query should have capture names for highlighting
         let capture_names = query.capture_names();
         assert!(!capture_names.is_empty(), "Query should have capture names");
+    }
+
+    #[test]
+    fn test_query_cache_markdown() {
+        let mut pool = ParserPool::new();
+        let query = pool.get_or_create_query(SupportedLanguage::Markdown);
+        assert!(query.is_some(), "Should compile Markdown block highlight query");
+    }
+
+    #[test]
+    fn test_query_cache_markdown_inline() {
+        let mut pool = ParserPool::new();
+        let query = pool.get_or_create_query(SupportedLanguage::MarkdownInline);
+        assert!(query.is_some(), "Should compile MarkdownInline highlight query");
+    }
+
+    #[test]
+    fn test_markdown_parser_can_parse() {
+        let mut pool = ParserPool::new();
+        let parser = pool.get_or_create("md").unwrap();
+
+        let code = "# Hello\n\nSome **bold** text.\n";
+        let tree = parser.parse(code, None);
+        assert!(tree.is_some(), "Should parse Markdown code");
+    }
+
+    #[test]
+    fn test_supports_extension_markdown() {
+        assert!(ParserPool::supports_extension("md"));
+        assert!(ParserPool::supports_extension("markdown"));
+        assert!(ParserPool::supports_extension("md_inline"));
     }
 }

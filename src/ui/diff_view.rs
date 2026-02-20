@@ -87,6 +87,7 @@ pub fn build_plain_diff_cache(patch: &str) -> DiffCache {
         lines,
         interner,
         highlighted: false,
+        markdown_rich: false,
     }
 }
 
@@ -100,6 +101,7 @@ pub fn build_plain_diff_cache(patch: &str) -> DiffCache {
 /// * `filename` - The filename for syntax detection
 /// * `theme_name` - The theme name for syntect fallback
 /// * `parser_pool` - Shared parser pool for tree-sitter parser reuse
+/// * `markdown_rich` - Whether to apply markdown rich display overrides
 ///
 /// Returns a complete DiffCache with file_index set to 0 (caller should update).
 pub fn build_diff_cache(
@@ -107,6 +109,7 @@ pub fn build_diff_cache(
     filename: &str,
     theme_name: &str,
     parser_pool: &mut ParserPool,
+    markdown_rich: bool,
 ) -> DiffCache {
     let mut interner = Rodeo::default();
 
@@ -138,13 +141,22 @@ pub fn build_diff_cache(
 
     let lines: Vec<CachedDiffLine> = if use_cst {
         let result = cst_result.as_ref().unwrap();
-        let style_cache = highlighter
+        let base_style_cache = highlighter
             .style_cache()
             .expect("CST highlighter should have style_cache");
 
+        // Apply markdown rich overrides when enabled for markdown files
+        let rich_cache;
+        let style_cache = if markdown_rich && (ext == "md" || ext == "markdown") {
+            rich_cache = base_style_cache.clone().with_markdown_rich_overrides();
+            &rich_cache
+        } else {
+            base_style_cache
+        };
+
         // CST path: use tree-sitter with full AST context
         // Use injection-aware highlighting for SFC languages (Svelte, Vue)
-        let line_highlights = if ext == "svelte" || ext == "vue" {
+        let line_highlights = if ext == "svelte" || ext == "vue" || ext == "md" || ext == "markdown" {
             // Injection path: query is obtained inside the function to avoid borrow conflicts
             // Note: priming_lines offset is handled when applying highlights to diff lines
             collect_line_highlights_with_injections(
@@ -187,13 +199,259 @@ pub fn build_diff_cache(
         build_lines_with_syntect(patch, filename, theme_name, &mut interner)
     };
 
+    // Post-process: hide/replace markdown syntax in rich mode
+    let mut lines = lines;
+    if markdown_rich && (ext == "md" || ext == "markdown") {
+        apply_markdown_rich_transforms(&mut lines, &mut interner);
+        apply_markdown_table_transforms(&mut lines, &mut interner);
+    }
+
     DiffCache {
         file_index: 0, // Caller should update this
         patch_hash: hash_string(patch),
         lines,
         interner,
         highlighted: true,
+        markdown_rich,
     }
+}
+
+/// Transform markdown syntax characters in rich display mode.
+///
+/// Uses sentinel colors from `ThemeStyleCache::with_markdown_rich_overrides()` to
+/// distinguish block-level punctuation (heading/list markers) from inline-level
+/// punctuation (emphasis/code delimiters).
+///
+/// - Heading markers (`#`, `##`, etc.) → removed
+/// - Emphasis/strong delimiters (`*`, `**`, `_`) → removed
+/// - List markers (`-`, `+`, `*`) → replaced with `・`
+fn apply_markdown_rich_transforms(lines: &mut [CachedDiffLine], interner: &mut Rodeo) {
+    use crate::syntax::themes::{MARKDOWN_BLOCK_PUNCT_COLOR, MARKDOWN_INLINE_PUNCT_COLOR};
+
+    let bullet_spur = interner.get_or_intern("・");
+    let bullet_space_spur = interner.get_or_intern("・ ");
+
+    for line in lines.iter_mut() {
+        if line.spans.len() <= 1 {
+            continue;
+        }
+
+        // First span is the diff marker (+, -, space). Skip non-diff lines (hunk headers, etc.)
+        let first = interner.resolve(&line.spans[0].content);
+        if first != "+" && first != "-" && first != " " {
+            continue;
+        }
+
+        let mut removals: Vec<usize> = Vec::new();
+        let mut replacements: Vec<(usize, lasso::Spur)> = Vec::new();
+
+        let span_count = line.spans.len();
+        for i in 1..span_count {
+            let content = interner.resolve(&line.spans[i].content).to_string();
+            let fg = line.spans[i].style.fg;
+
+            if fg == Some(MARKDOWN_BLOCK_PUNCT_COLOR) {
+                // Block-level punctuation: heading markers, list markers, blockquote
+                if content.chars().all(|c| c == '#') && !content.is_empty() {
+                    // Heading marker (#, ##, ###, ...) → remove
+                    removals.push(i);
+                    // Also remove the trailing space separator
+                    if i + 1 < span_count {
+                        let next = interner.resolve(&line.spans[i + 1].content);
+                        if next == " " {
+                            removals.push(i + 1);
+                        }
+                    }
+                } else if content.trim() == "-"
+                    || content.trim() == "+"
+                    || content.trim() == "*"
+                {
+                    // List marker (may include trailing space) → replace with ・
+                    let spur = if content.ends_with(' ') {
+                        bullet_space_spur
+                    } else {
+                        bullet_spur
+                    };
+                    replacements.push((i, spur));
+                }
+                // Other block punctuation (>, thematic break, etc.) left as-is
+            } else if fg == Some(MARKDOWN_INLINE_PUNCT_COLOR) {
+                // Inline-level punctuation: emphasis/strong/code delimiters
+                if content.chars().all(|c| c == '*' || c == '_') && !content.is_empty() {
+                    // Emphasis/strong delimiters (*, **, _, __) → remove
+                    removals.push(i);
+                }
+                // Code span/fence delimiters (`, ```) left as-is
+            }
+        }
+
+        // Apply replacements
+        for (i, spur) in &replacements {
+            line.spans[*i].content = *spur;
+            // Reset sentinel color to visible default
+            line.spans[*i].style = Style::default();
+        }
+
+        // Apply removals in reverse order to preserve indices
+        removals.sort_unstable();
+        removals.dedup();
+        for i in removals.into_iter().rev() {
+            line.spans.remove(i);
+        }
+    }
+}
+
+/// Transform markdown table rows to use box-drawing characters.
+///
+/// - Data/header rows: `|` → `│`
+/// - Separator rows: `|` → `├`/`┼`/`┤`, `-` → `─`
+/// - Header row (first row before separator): bold styling
+fn apply_markdown_table_transforms(lines: &mut [CachedDiffLine], interner: &mut Rodeo) {
+    // First pass: identify which lines are table lines and find header rows
+    let mut table_line_info: Vec<Option<TableLineKind>> = Vec::with_capacity(lines.len());
+    for line in lines.iter() {
+        if line.spans.len() <= 1 {
+            table_line_info.push(None);
+            continue;
+        }
+
+        let first = interner.resolve(&line.spans[0].content);
+        if first != "+" && first != "-" && first != " " {
+            table_line_info.push(None);
+            continue;
+        }
+
+        // Reconstruct content after diff marker
+        let full_content: String = line.spans[1..]
+            .iter()
+            .map(|s| interner.resolve(&s.content))
+            .collect();
+        let trimmed = full_content.trim_start();
+
+        if !trimmed.starts_with('|') {
+            table_line_info.push(None);
+            continue;
+        }
+
+        let is_separator =
+            !trimmed.is_empty() && trimmed.chars().all(|c| c == '|' || c == '-' || c == ':' || c == ' ');
+
+        if is_separator {
+            table_line_info.push(Some(TableLineKind::Separator));
+        } else {
+            table_line_info.push(Some(TableLineKind::Data));
+        }
+    }
+
+    // Mark header rows (data row immediately before a separator)
+    let mut header_indices: Vec<usize> = Vec::new();
+    for (i, info) in table_line_info.iter().enumerate() {
+        if matches!(info, Some(TableLineKind::Separator)) {
+            // Look back for the preceding data row
+            if i > 0 {
+                if let Some(TableLineKind::Data) = table_line_info[i - 1] {
+                    header_indices.push(i - 1);
+                }
+            }
+        }
+    }
+
+    // Second pass: transform spans
+    for (i, line) in lines.iter_mut().enumerate() {
+        let Some(kind) = &table_line_info[i] else {
+            continue;
+        };
+
+        match kind {
+            TableLineKind::Separator => {
+                // Reconstruct full content and replace with box-drawing separator
+                let full_content: String = line.spans[1..]
+                    .iter()
+                    .map(|s| interner.resolve(&s.content))
+                    .collect();
+
+                let separator = build_table_separator(&full_content);
+                let style = Style::default().fg(Color::DarkGray);
+
+                // Keep diff marker, replace rest with single styled span
+                line.spans.truncate(1);
+                line.spans.push(InternedSpan {
+                    content: interner.get_or_intern(&separator),
+                    style,
+                });
+            }
+            TableLineKind::Data => {
+                let is_header = header_indices.contains(&i);
+
+                // Replace | with │ in each span
+                for span in line.spans[1..].iter_mut() {
+                    let content = interner.resolve(&span.content);
+                    if content.contains('|') {
+                        let new_content = content.replace('|', "│");
+                        span.content = interner.get_or_intern(&new_content);
+                    }
+                    // Bold header cells
+                    if is_header {
+                        span.style = span.style.add_modifier(Modifier::BOLD);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+enum TableLineKind {
+    Data,
+    Separator,
+}
+
+/// Build a box-drawing separator line from a markdown table separator.
+///
+/// `| --- | --- |` → `├───┼───┤`
+fn build_table_separator(content: &str) -> String {
+    let trimmed = content.trim_start();
+    let chars: Vec<char> = trimmed.chars().collect();
+
+    if chars.is_empty() {
+        return content.to_string();
+    }
+
+    // Find pipe positions
+    let pipe_positions: Vec<usize> = chars
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| **c == '|')
+        .map(|(i, _)| i)
+        .collect();
+
+    if pipe_positions.is_empty() {
+        return content.to_string();
+    }
+
+    let first_pipe = pipe_positions[0];
+    let last_pipe = *pipe_positions.last().unwrap();
+
+    // Preserve leading whitespace from original content
+    let leading_ws: String = content.chars().take_while(|c| c.is_whitespace()).collect();
+
+    let mut result = leading_ws;
+    for (i, c) in chars.iter().enumerate() {
+        if *c == '|' {
+            if i == first_pipe {
+                result.push('├');
+            } else if i == last_pipe {
+                result.push('┤');
+            } else {
+                result.push('┼');
+            }
+        } else if *c == '-' {
+            result.push('─');
+        } else {
+            result.push(*c); // spaces, colons
+        }
+    }
+    result
 }
 
 /// Build combined source for CST highlighting by extracting code content from diff.
@@ -741,7 +999,7 @@ fn parse_patch_to_lines(
     // This ensures consistent behavior with cached path
     // Creates a temporary ParserPool - this is acceptable for this rarely-used fallback path
     let mut parser_pool = ParserPool::new();
-    let cache = build_diff_cache(patch, filename, theme_name, &mut parser_pool);
+    let cache = build_diff_cache(patch, filename, theme_name, &mut parser_pool, false);
 
     cache
         .lines
@@ -854,9 +1112,9 @@ fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let help_text = if app.comment_panel_open {
         "j/k/↑↓: scroll | n/N: jump | Tab: switch | r: reply | c: comment | s: suggest | ←/h: back | Esc/q: close"
     } else if app.is_local_mode() {
-        "j/k/↑↓: move | Ctrl-d/u: page | ←/h/q: back"
+        "j/k/↑↓: move | M: markdown rich | Ctrl-d/u: page | ←/h/q: back"
     } else {
-        "j/k/↑↓: move | n/N: next/prev comment | Enter: comments | Ctrl-d/u: page | ←/h/q: back"
+        "j/k/↑↓: move | n/N: next/prev comment | Enter: comments | M: markdown rich | Ctrl-d/u: page | ←/h/q: back"
     };
 
     let footer_line = super::footer::build_footer_line(app, help_text);
@@ -1157,7 +1415,7 @@ mod tests {
  }"#;
 
         let mut parser_pool = ParserPool::new();
-        let cache = build_diff_cache(patch, "test.rs", "Dracula", &mut parser_pool);
+        let cache = build_diff_cache(patch, "test.rs", "Dracula", &mut parser_pool, false);
 
         // Line 1 is " use std::collections::HashMap;" (Context line)
         // Find the "use" keyword span
@@ -1200,7 +1458,7 @@ mod tests {
  }"#;
 
         let mut parser_pool = ParserPool::new();
-        let cache = build_diff_cache(patch, "test.rs", "Dracula", &mut parser_pool);
+        let cache = build_diff_cache(patch, "test.rs", "Dracula", &mut parser_pool, false);
 
         // Line 4 is "-    let old_value = 100;" (Removed line)
         // Find the "let" keyword span - it should be syntax highlighted, not plain red
@@ -1256,7 +1514,7 @@ mod tests {
  export default oldValue;"#;
 
         let mut parser_pool = ParserPool::new();
-        let cache = build_diff_cache(patch, "test.ts", "Dracula", &mut parser_pool);
+        let cache = build_diff_cache(patch, "test.ts", "Dracula", &mut parser_pool, false);
 
         // Line 1 is "-const oldValue = 42;" (Removed line)
         let removed_line = &cache.lines[1];
@@ -1310,7 +1568,7 @@ mod tests {
  function increment() {"#;
 
         let mut parser_pool = ParserPool::new();
-        let cache = build_diff_cache(patch, "Component.vue", "Dracula", &mut parser_pool);
+        let cache = build_diff_cache(patch, "Component.vue", "Dracula", &mut parser_pool, false);
 
         // Line 2 is "+const doubled = computed(() => count.value * 2);" (Added line)
         let added_line = &cache.lines[2];
@@ -1517,7 +1775,7 @@ mod tests {
         let mut parser_pool = ParserPool::new();
 
         let plain = build_plain_diff_cache(patch);
-        let highlighted = build_diff_cache(patch, "foo.rs", "base16-ocean.dark", &mut parser_pool);
+        let highlighted = build_diff_cache(patch, "foo.rs", "base16-ocean.dark", &mut parser_pool, false);
 
         assert_eq!(plain.lines.len(), highlighted.lines.len());
 
@@ -1539,7 +1797,7 @@ mod tests {
         let mut parser_pool = ParserPool::new();
 
         let plain = build_plain_diff_cache(patch);
-        let highlighted = build_diff_cache(patch, "foo.rs", "base16-ocean.dark", &mut parser_pool);
+        let highlighted = build_diff_cache(patch, "foo.rs", "base16-ocean.dark", &mut parser_pool, false);
 
         assert_eq!(plain.lines.len(), highlighted.lines.len());
 
@@ -1729,6 +1987,7 @@ mod priming_diff_tests {
             "src/components/Foo.vue",
             "base16-ocean.dark",
             &mut parser_pool,
+            false,
         );
 
         // The import line should have syntax highlighting
@@ -1766,6 +2025,7 @@ mod priming_diff_tests {
             "src/components/Foo.vue",
             "base16-ocean.dark",
             &mut parser_pool,
+            false,
         );
 
         // Find import and const lines by content
@@ -1826,6 +2086,7 @@ mod priming_diff_tests {
             "src/components/Foo.vue",
             "base16-ocean.dark",
             &mut parser_pool,
+            false,
         );
 
         // Find the updated const line by content and ensure tokenized highlighting exists.
@@ -1858,7 +2119,7 @@ mod priming_diff_tests {
  author: world"#;
 
         let mut parser_pool = ParserPool::new();
-        let cache = build_diff_cache(patch, "data.yaml", "base16-ocean.dark", &mut parser_pool);
+        let cache = build_diff_cache(patch, "data.yaml", "base16-ocean.dark", &mut parser_pool, false);
 
         // 行数が正しいこと（header + 4 content lines = 5）
         assert_eq!(cache.lines.len(), 5);
@@ -1886,7 +2147,7 @@ mod priming_diff_tests {
 -old line"#;
 
         let mut parser_pool = ParserPool::new();
-        let cache = build_diff_cache(patch, "file.unknown", "base16-ocean.dark", &mut parser_pool);
+        let cache = build_diff_cache(patch, "file.unknown", "base16-ocean.dark", &mut parser_pool, false);
 
         assert_eq!(cache.lines.len(), 4);
 
@@ -1956,5 +2217,252 @@ mod priming_diff_tests {
             !looks_like_script_content(source),
             "Pure template content should not be detected as script"
         );
+    }
+
+    #[test]
+    fn test_build_diff_cache_markdown_rich_flag() {
+        let patch = r#"@@ -1,3 +1,4 @@
+ # Heading
++## New Heading
+ Some text
+ More text"#;
+
+        let mut parser_pool = ParserPool::new();
+
+        // markdown_rich = false
+        let cache_normal = build_diff_cache(patch, "README.md", "base16-ocean.dark", &mut parser_pool, false);
+        assert!(!cache_normal.markdown_rich);
+        assert!(cache_normal.highlighted);
+
+        // markdown_rich = true
+        let cache_rich = build_diff_cache(patch, "README.md", "base16-ocean.dark", &mut parser_pool, true);
+        assert!(cache_rich.markdown_rich);
+        assert!(cache_rich.highlighted);
+    }
+
+    #[test]
+    fn test_build_diff_cache_markdown_rich_non_markdown() {
+        // markdown_rich should be stored even for non-markdown files
+        let patch = r#"@@ -1,2 +1,3 @@
+ fn main() {}
++fn foo() {}
+ fn bar() {}"#;
+
+        let mut parser_pool = ParserPool::new();
+        let cache = build_diff_cache(patch, "test.rs", "base16-ocean.dark", &mut parser_pool, true);
+        // Flag is stored regardless of file type
+        assert!(cache.markdown_rich);
+    }
+
+    #[test]
+    fn test_build_diff_cache_markdown_rich_styles_differ() {
+        // Verify that markdown_rich=true actually changes styles for md files
+        let patch = r#"@@ -1,2 +1,3 @@
+ # Heading
++## New Heading
+ Some text"#;
+
+        let mut parser_pool = ParserPool::new();
+        let cache_normal = build_diff_cache(patch, "README.md", "base16-ocean.dark", &mut parser_pool, false);
+        let cache_rich = build_diff_cache(patch, "README.md", "base16-ocean.dark", &mut parser_pool, true);
+
+        // Both should be highlighted
+        assert!(cache_normal.highlighted);
+        assert!(cache_rich.highlighted);
+        assert!(!cache_normal.markdown_rich);
+        assert!(cache_rich.markdown_rich);
+
+        // They should have the same number of lines
+        assert_eq!(cache_normal.lines.len(), cache_rich.lines.len());
+    }
+
+    #[test]
+    fn test_build_diff_cache_markdown_injection_path() {
+        // This test verifies the injection path (ext == "md") is taken
+        let patch = r#"@@ -1,3 +1,5 @@
+ # Title
++
++```rust
++fn main() {}
++```"#;
+
+        let mut parser_pool = ParserPool::new();
+        let cache = build_diff_cache(patch, "test.md", "base16-ocean.dark", &mut parser_pool, false);
+        assert!(cache.highlighted);
+        assert!(!cache.lines.is_empty());
+    }
+
+    #[test]
+    fn test_build_diff_cache_markdown_extension_variant() {
+        // Test ".markdown" extension uses the same path as ".md"
+        let patch = r#"@@ -1,2 +1,3 @@
+ # Title
++Some **bold** text
+ End"#;
+
+        let mut parser_pool = ParserPool::new();
+        let cache = build_diff_cache(patch, "doc.markdown", "base16-ocean.dark", &mut parser_pool, false);
+        assert!(cache.highlighted);
+        assert!(!cache.lines.is_empty());
+    }
+
+    #[test]
+    fn test_build_plain_diff_cache_has_no_markdown_rich() {
+        let patch = r#"@@ -1,2 +1,2 @@
+ # Heading
+-old text
++new text"#;
+
+        let cache = build_plain_diff_cache(patch);
+        assert!(!cache.highlighted);
+        assert!(!cache.markdown_rich);
+    }
+
+    /// Format a DiffCache into a readable snapshot string.
+    /// Each line shows: [line_idx] span_count | "content" (style_info) ...
+    fn format_diff_cache_spans(cache: &DiffCache) -> String {
+        use ratatui::style::Modifier;
+
+        cache
+            .lines
+            .iter()
+            .enumerate()
+            .map(|(i, line)| {
+                let spans: Vec<String> = line
+                    .spans
+                    .iter()
+                    .map(|span| {
+                        let content = cache.resolve(span.content);
+                        let mut style_parts = Vec::new();
+                        if let Some(fg) = span.style.fg {
+                            style_parts.push(format!("fg:{:?}", fg));
+                        }
+                        if span.style.add_modifier.contains(Modifier::BOLD) {
+                            style_parts.push("BOLD".to_string());
+                        }
+                        if span.style.add_modifier.contains(Modifier::ITALIC) {
+                            style_parts.push("ITALIC".to_string());
+                        }
+                        if span.style.add_modifier.contains(Modifier::UNDERLINED) {
+                            style_parts.push("UNDERLINED".to_string());
+                        }
+                        let style_str = if style_parts.is_empty() {
+                            "default".to_string()
+                        } else {
+                            style_parts.join(",")
+                        };
+                        format!("{:?} [{}]", content, style_str)
+                    })
+                    .collect();
+                format!("L{}: {}", i, spans.join(" | "))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn test_snapshot_plain_diff_cache_markdown() {
+        use insta::assert_snapshot;
+
+        let patch = r#"@@ -1,3 +1,4 @@
+ # Heading
++## New Section
+ Some text
+ More text"#;
+
+        let cache = build_plain_diff_cache(patch);
+        assert_snapshot!("plain_diff_cache_markdown", format_diff_cache_spans(&cache));
+    }
+
+    #[test]
+    fn test_snapshot_highlighted_diff_cache_markdown() {
+        use insta::assert_snapshot;
+
+        let patch = r#"@@ -1,3 +1,4 @@
+ # Heading
++## New Section
+ Some text
+ More text"#;
+
+        let mut parser_pool = ParserPool::new();
+        let cache = build_diff_cache(patch, "README.md", "base16-ocean.dark", &mut parser_pool, false);
+
+        assert!(cache.highlighted);
+        assert_snapshot!("highlighted_diff_cache_markdown", format_diff_cache_spans(&cache));
+    }
+
+    #[test]
+    fn test_snapshot_markdown_rich_vs_normal() {
+        use insta::assert_snapshot;
+
+        let patch = r#"@@ -1,2 +1,3 @@
+ # Title
++**bold text**
+ plain text"#;
+
+        let mut parser_pool = ParserPool::new();
+        let cache_normal = build_diff_cache(patch, "test.md", "base16-ocean.dark", &mut parser_pool, false);
+        let cache_rich = build_diff_cache(patch, "test.md", "base16-ocean.dark", &mut parser_pool, true);
+
+        let snapshot_normal = format_diff_cache_spans(&cache_normal);
+        let snapshot_rich = format_diff_cache_spans(&cache_rich);
+
+        // Both should produce valid output
+        assert!(!snapshot_normal.is_empty());
+        assert!(!snapshot_rich.is_empty());
+
+        // Snapshot the rich mode output for regression detection
+        assert_snapshot!("markdown_rich_mode", snapshot_rich);
+    }
+
+    #[test]
+    fn test_build_table_separator() {
+        // Spaces are preserved from the original separator format
+        assert_eq!(
+            build_table_separator("| --- | --- |"),
+            "├ ─── ┼ ─── ┤"
+        );
+        assert_eq!(build_table_separator("| --- |"), "├ ─── ┤");
+        assert_eq!(
+            build_table_separator("| --- | --- | --- |"),
+            "├ ─── ┼ ─── ┼ ─── ┤"
+        );
+        // Compact format without spaces
+        assert_eq!(build_table_separator("|---|---|"), "├───┼───┤");
+    }
+
+    #[test]
+    fn test_markdown_table_transforms() {
+        use insta::assert_snapshot;
+
+        let patch = r#"@@ -1,5 +1,5 @@
++| Name | Value |
++| --- | --- |
++| foo | 123 |
++| bar | 456 |
+ plain text"#;
+
+        let mut parser_pool = ParserPool::new();
+        let cache =
+            build_diff_cache(patch, "test.md", "base16-ocean.dark", &mut parser_pool, true);
+
+        assert_snapshot!("markdown_table_rich", format_diff_cache_spans(&cache));
+    }
+
+    #[test]
+    fn test_markdown_list_markers_replaced() {
+        use insta::assert_snapshot;
+
+        let patch = r#"@@ -1,4 +1,4 @@
++- item one
++* item two
+++ item three
+ plain text"#;
+
+        let mut parser_pool = ParserPool::new();
+        let cache =
+            build_diff_cache(patch, "test.md", "base16-ocean.dark", &mut parser_pool, true);
+
+        assert_snapshot!("markdown_list_rich", format_diff_cache_spans(&cache));
     }
 }

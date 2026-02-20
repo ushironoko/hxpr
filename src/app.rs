@@ -99,6 +99,8 @@ pub struct DiffCache {
     pub interner: Rodeo,
     /// シンタックスハイライト済みかどうか（プレーンキャッシュは false）
     pub highlighted: bool,
+    /// Markdown リッチ表示モードで構築されたかどうか
+    pub markdown_rich: bool,
 }
 
 impl DiffCache {
@@ -432,6 +434,8 @@ pub struct App {
     pub symbol_popup: Option<SymbolPopupState>,
     /// インメモリセッションキャッシュ
     pub session_cache: SessionCache,
+    /// Markdown リッチ表示モード（見出し太字・斜体等を適用）
+    markdown_rich: bool,
 }
 
 impl App {
@@ -517,6 +521,7 @@ impl App {
             pending_since: None,
             symbol_popup: None,
             session_cache: SessionCache::new(),
+            markdown_rich: false,
         };
 
         (app, tx)
@@ -598,6 +603,7 @@ impl App {
             watcher_handle: None,
             refresh_pending: None,
             session_cache: SessionCache::new(),
+            markdown_rich: false,
         }
     }
 
@@ -675,6 +681,46 @@ impl App {
 
     pub fn is_local_auto_focus(&self) -> bool {
         self.local_auto_focus
+    }
+
+    pub fn is_markdown_rich(&self) -> bool {
+        self.markdown_rich
+    }
+
+    fn toggle_markdown_rich(&mut self) {
+        self.markdown_rich = !self.markdown_rich;
+
+        // 現在のファイルがmarkdownならキャッシュを無効化
+        let current_is_md = self
+            .files()
+            .get(self.selected_file)
+            .map(|f| crate::language::is_markdown_ext_from_filename(&f.filename))
+            .unwrap_or(false);
+
+        if current_is_md {
+            self.diff_cache = None;
+            self.diff_cache_receiver = None;
+        }
+
+        // ストア内のmarkdownファイルのキャッシュのみ無効化
+        let files = self.files();
+        let md_indices: Vec<usize> = self
+            .highlighted_cache_store
+            .keys()
+            .copied()
+            .filter(|idx| {
+                files
+                    .get(*idx)
+                    .map(|f| crate::language::is_markdown_ext_from_filename(&f.filename))
+                    .unwrap_or(false)
+            })
+            .collect();
+        for idx in md_indices {
+            self.highlighted_cache_store.remove(&idx);
+        }
+
+        // プリフェッチも停止（markdown_richフラグが変わったため再構築が必要）
+        self.prefetch_receiver = None;
     }
 
     fn toggle_local_mode(&mut self) {
@@ -1208,6 +1254,7 @@ impl App {
         }
 
         let theme = self.config.diff.theme.clone();
+        let markdown_rich = self.markdown_rich;
         let channel_size = files.len().min(MAX_PREFETCH_FILES);
         let (tx, rx) = mpsc::channel(channel_size);
         self.prefetch_receiver = Some(rx);
@@ -1221,6 +1268,7 @@ impl App {
                     filename,
                     &theme,
                     &mut parser_pool,
+                    markdown_rich,
                 );
                 cache.file_index = *index;
                 if tx.blocking_send(cache).is_err() {
@@ -2372,6 +2420,13 @@ impl App {
         // Previous comment
         if self.matches_single_key(&key, &kb.prev_comment) {
             self.jump_to_prev_comment();
+            return Ok(());
+        }
+
+        // Toggle markdown rich display
+        if self.matches_single_key(&key, &kb.toggle_markdown_rich) {
+            self.toggle_markdown_rich();
+            self.ensure_diff_cache();
             return Ok(());
         }
 
@@ -3939,10 +3994,11 @@ impl App {
     /// 3. キャッシュミス → プレーン構築（~1ms）+ バックグラウンドハイライト構築
     pub fn ensure_diff_cache(&mut self) {
         let file_index = self.selected_file;
+        let markdown_rich = self.markdown_rich;
 
         // 1. 現在の diff_cache が有効か確認（O(1)）
         if let Some(ref cache) = self.diff_cache {
-            if cache.file_index == file_index {
+            if cache.file_index == file_index && cache.markdown_rich == markdown_rich {
                 let Some(file) = self.files().get(file_index) else {
                     self.diff_cache = None;
                     return;
@@ -3983,7 +4039,7 @@ impl App {
         // 2. ストアにハイライト済みキャッシュがあるか確認
         if let Some(cached) = self.highlighted_cache_store.remove(&file_index) {
             let current_hash = hash_string(&patch);
-            if cached.patch_hash == current_hash {
+            if cached.patch_hash == current_hash && cached.markdown_rich == markdown_rich {
                 self.diff_cache = Some(cached);
                 return; // ストアから復元、バックグラウンド構築不要
             }
@@ -4003,8 +4059,13 @@ impl App {
 
         tokio::task::spawn_blocking(move || {
             let mut parser_pool = ParserPool::new();
-            let mut cache =
-                crate::ui::diff_view::build_diff_cache(&patch, &filename, &theme, &mut parser_pool);
+            let mut cache = crate::ui::diff_view::build_diff_cache(
+                &patch,
+                &filename,
+                &theme,
+                &mut parser_pool,
+                markdown_rich,
+            );
             cache.file_index = file_index;
             let _ = tx.try_send(cache);
         });
@@ -4459,6 +4520,7 @@ impl App {
             saved_local_snapshot: None,
             watcher_handle: None,
             refresh_pending: None,
+            markdown_rich: false,
         }
     }
 
@@ -5051,6 +5113,7 @@ mod tests {
             lines: vec![],
             interner: Rodeo::default(),
             highlighted: false,
+            markdown_rich: false,
         });
 
         // Refresh with only 2 files (selected_file will be clamped from 4 to 1)
@@ -5232,6 +5295,7 @@ mod tests {
             lines: vec![],
             interner: Rodeo::default(),
             highlighted: false,
+            markdown_rich: false,
         });
 
         // Refresh with same or more files (selected_file stays at 1)
@@ -5748,5 +5812,140 @@ mod tests {
             },
             updated_at: "".to_string(),
         }
+    }
+
+    #[test]
+    fn test_toggle_markdown_rich() {
+        let mut app = App::new_for_test();
+        // Set up loaded state with a markdown file
+        app.data_state = DataState::Loaded {
+            pr: Box::new(make_local_pr()),
+            files: vec![ChangedFile {
+                filename: "README.md".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 0,
+                patch: Some("@@ -1 +1 @@\n+test".to_string()),
+            }],
+        };
+
+        assert!(!app.is_markdown_rich());
+
+        app.toggle_markdown_rich();
+        assert!(app.is_markdown_rich());
+        assert!(
+            app.diff_cache.is_none(),
+            "Cache should be cleared for md file"
+        );
+
+        app.toggle_markdown_rich();
+        assert!(!app.is_markdown_rich());
+    }
+
+    #[test]
+    fn test_toggle_markdown_rich_clears_receivers() {
+        let mut app = App::new_for_test();
+        // Set up loaded state with a markdown file
+        app.data_state = DataState::Loaded {
+            pr: Box::new(make_local_pr()),
+            files: vec![ChangedFile {
+                filename: "README.md".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 0,
+                patch: Some("@@ -1 +1 @@\n+test".to_string()),
+            }],
+        };
+
+        // Simulate having active receivers
+        let (_tx, rx) = tokio::sync::mpsc::channel::<DiffCache>(1);
+        app.diff_cache_receiver = Some(rx);
+
+        let (_tx2, rx2) = tokio::sync::mpsc::channel::<DiffCache>(1);
+        app.prefetch_receiver = Some(rx2);
+
+        app.toggle_markdown_rich();
+        assert!(
+            app.diff_cache_receiver.is_none(),
+            "diff_cache_receiver should be cleared for md file"
+        );
+        assert!(
+            app.prefetch_receiver.is_none(),
+            "prefetch_receiver should be cleared on toggle"
+        );
+    }
+
+    #[test]
+    fn test_toggle_markdown_rich_clears_only_md_cache() {
+        let mut app = App::new_for_test();
+        // Set up loaded state with both md and non-md files
+        app.data_state = DataState::Loaded {
+            pr: Box::new(make_local_pr()),
+            files: vec![
+                ChangedFile {
+                    filename: "README.md".to_string(),
+                    status: "modified".to_string(),
+                    additions: 1,
+                    deletions: 0,
+                    patch: Some("@@ -1 +1 @@\n+test".to_string()),
+                },
+                ChangedFile {
+                    filename: "main.rs".to_string(),
+                    status: "modified".to_string(),
+                    additions: 1,
+                    deletions: 0,
+                    patch: Some("@@ -1 +1 @@\n+fn main(){}".to_string()),
+                },
+            ],
+        };
+
+        // Add cache entries for both files
+        let md_cache = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+test");
+        let mut rs_cache =
+            crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+fn main(){}");
+        rs_cache.file_index = 1;
+        app.highlighted_cache_store.insert(0, md_cache);
+        app.highlighted_cache_store.insert(1, rs_cache);
+        assert_eq!(app.highlighted_cache_store.len(), 2);
+
+        app.toggle_markdown_rich();
+
+        // Only md cache should be removed
+        assert!(
+            !app.highlighted_cache_store.contains_key(&0),
+            "md cache should be cleared"
+        );
+        assert!(
+            app.highlighted_cache_store.contains_key(&1),
+            "rs cache should be preserved"
+        );
+        assert_eq!(app.highlighted_cache_store.len(), 1);
+    }
+
+    #[test]
+    fn test_toggle_markdown_rich_preserves_non_md_diff_cache() {
+        let mut app = App::new_for_test();
+        // Current file is non-markdown
+        app.data_state = DataState::Loaded {
+            pr: Box::new(make_local_pr()),
+            files: vec![ChangedFile {
+                filename: "main.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 0,
+                patch: Some("@@ -1 +1 @@\n+fn main(){}".to_string()),
+            }],
+        };
+
+        let rs_cache =
+            crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+fn main(){}");
+        app.diff_cache = Some(rs_cache);
+
+        app.toggle_markdown_rich();
+
+        assert!(
+            app.diff_cache.is_some(),
+            "non-md diff_cache should be preserved"
+        );
     }
 }

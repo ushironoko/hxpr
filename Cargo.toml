@@ -70,6 +70,8 @@ tree-sitter-html = "0.23.2"
 tree-sitter-css = "0.25.0"
 # Phase 3c: Vue 3
 tree-sitter-vue3 = { package = "octorus-tree-sitter-vue3", path = "crates/tree-sitter-vue3", version = "0.1.0" }
+# Phase 4: Markdown
+tree-sitter-md = "0.5.2"
 # POSIX shell-compatible command splitting for editor commands
 shell-words = "1.1.1"
 

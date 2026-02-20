@@ -180,6 +180,7 @@ pub fn normalize_language_name(name: &str) -> &str {
         "swift" => "swift",
         "haskell" | "hs" => "haskell",
         "moonbit" | "mbt" => "moonbit",
+        "markdown_inline" | "markdown-inline" => "markdown_inline",
         _ => name,
     }
 }
@@ -196,6 +197,62 @@ mod tests {
         assert_eq!(normalize_language_name("js"), "javascript");
         assert_eq!(normalize_language_name("css"), "css");
         assert_eq!(normalize_language_name("scss"), "css");
+    }
+
+    #[test]
+    fn test_normalize_language_name_markdown_inline() {
+        assert_eq!(normalize_language_name("markdown_inline"), "markdown_inline");
+        assert_eq!(normalize_language_name("markdown-inline"), "markdown_inline");
+    }
+
+    #[test]
+    fn test_extract_injections_markdown_inline() {
+        // Parse a simple Markdown file
+        let code = "# Heading\n\nSome **bold** text.\n";
+
+        let mut parser = tree_sitter::Parser::new();
+        let language: Language = tree_sitter_md::LANGUAGE.into();
+        parser.set_language(&language).unwrap();
+
+        let tree = parser.parse(code, None).unwrap();
+        let injection_query = tree_sitter_md::INJECTION_QUERY_BLOCK;
+
+        let injections = extract_injections(&tree, code.as_bytes(), &language, injection_query);
+
+        // Markdown block grammar injects markdown_inline for inline content
+        let inline_injections: Vec<_> = injections
+            .iter()
+            .filter(|inj| normalize_language_name(&inj.language) == "markdown_inline")
+            .collect();
+        assert!(
+            !inline_injections.is_empty(),
+            "Markdown should have inline injections"
+        );
+    }
+
+    #[test]
+    fn test_extract_injections_markdown_code_fence() {
+        // Parse Markdown with a code fence
+        let code = "# Title\n\n```rust\nfn main() {}\n```\n";
+
+        let mut parser = tree_sitter::Parser::new();
+        let language: Language = tree_sitter_md::LANGUAGE.into();
+        parser.set_language(&language).unwrap();
+
+        let tree = parser.parse(code, None).unwrap();
+        let injection_query = tree_sitter_md::INJECTION_QUERY_BLOCK;
+
+        let injections = extract_injections(&tree, code.as_bytes(), &language, injection_query);
+
+        // Should have a "rust" injection for the code fence
+        let rust_injections: Vec<_> = injections
+            .iter()
+            .filter(|inj| inj.language == "rust")
+            .collect();
+        assert!(
+            !rust_injections.is_empty(),
+            "Markdown code fence should produce a 'rust' injection"
+        );
     }
 
     #[test]

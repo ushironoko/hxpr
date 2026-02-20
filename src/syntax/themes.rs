@@ -11,6 +11,18 @@ use ratatui::style::{Color, Modifier, Style};
 use syntect::highlighting::{FontStyle, Theme, ThemeItem};
 use syntect::parsing::{MatchPower, ScopeStack};
 
+/// Sentinel color for markdown block-level punctuation (`punctuation.special`).
+///
+/// Used to identify heading markers (#), list markers (-/+/*), blockquote markers (>)
+/// in the post-processing step of markdown rich mode.
+pub const MARKDOWN_BLOCK_PUNCT_COLOR: Color = Color::Rgb(1, 1, 1);
+
+/// Sentinel color for markdown inline-level punctuation (`punctuation.delimiter`).
+///
+/// Used to identify emphasis delimiters (*/**), code span delimiters (`),
+/// and code fence delimiters (```) in the post-processing step.
+pub const MARKDOWN_INLINE_PUNCT_COLOR: Color = Color::Rgb(2, 2, 2);
+
 /// Mapping from tree-sitter capture names to TextMate scope candidates.
 ///
 /// Each capture name maps to a list of scope candidates, tried in order.
@@ -81,6 +93,15 @@ static CAPTURE_TO_SCOPES: phf::Map<&'static str, &'static [&'static str]> = phf_
     "punctuation.delimiter" => &["punctuation.separator", "punctuation"],
     "punctuation.special" => &["punctuation.definition", "punctuation"],
 
+    // Markdown / text
+    "text.title" => &["markup.heading", "entity.name.section"],
+    "text.emphasis" => &["markup.italic"],
+    "text.strong" => &["markup.bold"],
+    "text.literal" => &["markup.raw", "markup.inline.raw"],
+    "text.uri" => &["markup.underline.link", "string.other.link"],
+    "text.reference" => &["constant.other.reference.link", "markup.underline.link"],
+    "none" => &[],
+
     // Other
     "label" => &["entity.name.label", "meta.label"],
     "tag" => &["entity.name.tag"],
@@ -95,6 +116,7 @@ static CAPTURE_TO_SCOPES: phf::Map<&'static str, &'static [&'static str]> = phf_
 /// Cache of styles for each capture name, pre-computed from a theme.
 ///
 /// This avoids repeated scope lookups during highlighting.
+#[derive(Clone)]
 pub struct ThemeStyleCache {
     cache: HashMap<&'static str, Style>,
 }
@@ -124,6 +146,60 @@ impl ThemeStyleCache {
             .get(capture)
             .copied()
             .unwrap_or_else(|| style_for_capture(capture))
+    }
+
+    /// Apply markdown rich display overrides to this cache.
+    ///
+    /// Overrides styles for markdown-specific captures (headings, emphasis, etc.)
+    /// with distinctive visual styles regardless of the theme.
+    pub fn with_markdown_rich_overrides(mut self) -> Self {
+        // Headings: bright yellow + bold for maximum visibility
+        self.cache.insert(
+            "text.title",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        );
+        // Heading/list markers (#, ##, -, +, *, >, etc.) from block grammar
+        // Uses MARKDOWN_BLOCK_PUNCT_COLOR for identification in post-processing
+        self.cache.insert(
+            "punctuation.special",
+            Style::default().fg(MARKDOWN_BLOCK_PUNCT_COLOR),
+        );
+        // Emphasis (*text*): magenta + italic
+        self.cache.insert(
+            "text.emphasis",
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::ITALIC),
+        );
+        // Strong (**text**): bright red + bold
+        self.cache.insert(
+            "text.strong",
+            Style::default()
+                .fg(Color::LightRed)
+                .add_modifier(Modifier::BOLD),
+        );
+        // Code spans and code blocks: green (stands out against diff)
+        self.cache
+            .insert("text.literal", Style::default().fg(Color::Green));
+        // Emphasis/code delimiters (*, **, `, ```) from inline grammar
+        // Uses MARKDOWN_INLINE_PUNCT_COLOR for identification in post-processing
+        self.cache.insert(
+            "punctuation.delimiter",
+            Style::default().fg(MARKDOWN_INLINE_PUNCT_COLOR),
+        );
+        // URIs: bright blue + underline
+        self.cache.insert(
+            "text.uri",
+            Style::default()
+                .fg(Color::LightBlue)
+                .add_modifier(Modifier::UNDERLINED),
+        );
+        // References ([link text]): blue
+        self.cache
+            .insert("text.reference", Style::default().fg(Color::LightBlue));
+        self
     }
 }
 
@@ -265,6 +341,19 @@ pub fn style_for_capture(capture_name: &str) -> Style {
         // Embedded content (for interpolation, etc.)
         "embedded" => Style::default(),
 
+        // Markdown / text
+        "text.title" => Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+        "text.emphasis" => Style::default().add_modifier(Modifier::ITALIC),
+        "text.strong" => Style::default().add_modifier(Modifier::BOLD),
+        "text.literal" => Style::default().fg(Color::Green),
+        "text.uri" => Style::default()
+            .fg(Color::Blue)
+            .add_modifier(Modifier::UNDERLINED),
+        "text.reference" => Style::default().fg(Color::Blue),
+        "none" => Style::default(),
+
         // Default: no special styling
         _ => Style::default(),
     }
@@ -274,6 +363,29 @@ pub fn style_for_capture(capture_name: &str) -> Style {
 mod tests {
     use super::*;
     use crate::syntax::get_theme;
+    use insta::assert_snapshot;
+
+    /// Format a Style into a readable string for snapshot testing.
+    fn format_style(style: &Style) -> String {
+        let mut parts = Vec::new();
+        if let Some(fg) = style.fg {
+            parts.push(format!("fg:{:?}", fg));
+        }
+        if style.add_modifier.contains(Modifier::BOLD) {
+            parts.push("BOLD".to_string());
+        }
+        if style.add_modifier.contains(Modifier::ITALIC) {
+            parts.push("ITALIC".to_string());
+        }
+        if style.add_modifier.contains(Modifier::UNDERLINED) {
+            parts.push("UNDERLINED".to_string());
+        }
+        if parts.is_empty() {
+            "default".to_string()
+        } else {
+            parts.join(", ")
+        }
+    }
 
     #[test]
     fn test_keyword_styles() {
@@ -455,6 +567,14 @@ mod tests {
             "constructor",
             "include",
             "embedded",
+            // Markdown / text
+            "text.title",
+            "text.emphasis",
+            "text.strong",
+            "text.literal",
+            "text.uri",
+            "text.reference",
+            "none",
         ];
 
         for capture in hardcoded_captures {
@@ -464,5 +584,170 @@ mod tests {
                 capture
             );
         }
+    }
+
+    #[test]
+    fn test_markdown_rich_overrides() {
+        let theme = get_theme("Dracula");
+        let cache = ThemeStyleCache::new(theme).with_markdown_rich_overrides();
+
+        // text.title should be Yellow + Bold
+        let title_style = cache.get("text.title");
+        assert_eq!(title_style.fg, Some(Color::Yellow));
+        assert!(title_style.add_modifier.contains(Modifier::BOLD));
+
+        // text.emphasis should have Magenta + ITALIC
+        let emphasis_style = cache.get("text.emphasis");
+        assert_eq!(emphasis_style.fg, Some(Color::Magenta));
+        assert!(emphasis_style.add_modifier.contains(Modifier::ITALIC));
+
+        // text.strong should have LightRed + BOLD
+        let strong_style = cache.get("text.strong");
+        assert_eq!(strong_style.fg, Some(Color::LightRed));
+        assert!(strong_style.add_modifier.contains(Modifier::BOLD));
+
+        // text.literal should be Green
+        let literal_style = cache.get("text.literal");
+        assert_eq!(literal_style.fg, Some(Color::Green));
+
+        // text.uri should be LightBlue + Underlined
+        let uri_style = cache.get("text.uri");
+        assert_eq!(uri_style.fg, Some(Color::LightBlue));
+        assert!(uri_style.add_modifier.contains(Modifier::UNDERLINED));
+
+        // text.reference should be LightBlue
+        let ref_style = cache.get("text.reference");
+        assert_eq!(ref_style.fg, Some(Color::LightBlue));
+
+        // punctuation.special should use block sentinel color
+        let punct_style = cache.get("punctuation.special");
+        assert_eq!(punct_style.fg, Some(MARKDOWN_BLOCK_PUNCT_COLOR));
+
+        // punctuation.delimiter should use inline sentinel color
+        let delim_style = cache.get("punctuation.delimiter");
+        assert_eq!(delim_style.fg, Some(MARKDOWN_INLINE_PUNCT_COLOR));
+    }
+
+    #[test]
+    fn test_markdown_rich_overrides_override_theme() {
+        let theme = get_theme("Dracula");
+        let base_cache = ThemeStyleCache::new(theme);
+        let rich_cache = base_cache.clone().with_markdown_rich_overrides();
+
+        // The rich overrides should always produce the same styles
+        // regardless of the base theme
+        let title_style = rich_cache.get("text.title");
+        assert_eq!(title_style.fg, Some(Color::Yellow));
+        assert!(title_style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn test_markdown_rich_overrides_preserves_non_markdown_styles() {
+        let theme = get_theme("Dracula");
+        let base_cache = ThemeStyleCache::new(theme);
+        let rich_cache = base_cache.clone().with_markdown_rich_overrides();
+
+        // Non-markdown captures should remain unchanged
+        let keyword_base = base_cache.get("keyword");
+        let keyword_rich = rich_cache.get("keyword");
+        assert_eq!(
+            keyword_base, keyword_rich,
+            "keyword style should not be affected by markdown rich overrides"
+        );
+
+        let func_base = base_cache.get("function");
+        let func_rich = rich_cache.get("function");
+        assert_eq!(
+            func_base, func_rich,
+            "function style should not be affected by markdown rich overrides"
+        );
+    }
+
+    #[test]
+    fn test_markdown_rich_overrides_idempotent() {
+        let theme = get_theme("base16-ocean.dark");
+        let once = ThemeStyleCache::new(theme)
+            .with_markdown_rich_overrides();
+        let twice = once.clone().with_markdown_rich_overrides();
+
+        assert_eq!(once.get("text.title"), twice.get("text.title"));
+        assert_eq!(once.get("text.emphasis"), twice.get("text.emphasis"));
+        assert_eq!(once.get("text.strong"), twice.get("text.strong"));
+        assert_eq!(once.get("text.literal"), twice.get("text.literal"));
+        assert_eq!(once.get("text.uri"), twice.get("text.uri"));
+        assert_eq!(once.get("text.reference"), twice.get("text.reference"));
+    }
+
+    #[test]
+    fn test_markdown_rich_overrides_differ_from_base() {
+        // Rich overrides should produce visually distinct styles from the base theme
+        let theme = get_theme("base16-ocean.dark");
+        let base_cache = ThemeStyleCache::new(theme);
+        let rich_cache = base_cache.clone().with_markdown_rich_overrides();
+
+        // text.title: rich should use Yellow (not the theme's markup.heading color)
+        let base_title = base_cache.get("text.title");
+        let rich_title = rich_cache.get("text.title");
+        assert_ne!(base_title, rich_title, "Rich title should differ from base theme");
+        assert_eq!(rich_title.fg, Some(Color::Yellow));
+    }
+
+    #[test]
+    fn test_snapshot_markdown_rich_overrides() {
+        let theme = get_theme("base16-ocean.dark");
+        let cache = ThemeStyleCache::new(theme).with_markdown_rich_overrides();
+
+        let captures = [
+            "text.title",
+            "text.emphasis",
+            "text.strong",
+            "text.literal",
+            "text.uri",
+            "text.reference",
+            "none",
+        ];
+
+        let output: String = captures
+            .iter()
+            .map(|c| format!("{}: {}", c, format_style(&cache.get(c))))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert_snapshot!(output, @r#"
+        text.title: fg:Yellow, BOLD
+        text.emphasis: fg:Magenta, ITALIC
+        text.strong: fg:LightRed, BOLD
+        text.literal: fg:Green
+        text.uri: fg:LightBlue, UNDERLINED
+        text.reference: fg:LightBlue
+        none: default
+        "#);
+    }
+
+    #[test]
+    fn test_snapshot_markdown_fallback_styles() {
+        let output: String = [
+            "text.title",
+            "text.emphasis",
+            "text.strong",
+            "text.literal",
+            "text.uri",
+            "text.reference",
+            "none",
+        ]
+        .iter()
+        .map(|c| format!("{}: {}", c, format_style(&style_for_capture(c))))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+        assert_snapshot!(output, @r#"
+        text.title: fg:Cyan, BOLD
+        text.emphasis: ITALIC
+        text.strong: BOLD
+        text.literal: fg:Green
+        text.uri: fg:Blue, UNDERLINED
+        text.reference: fg:Blue
+        none: default
+        "#);
     }
 }

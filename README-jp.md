@@ -15,7 +15,7 @@ Vim スタイルのキーバインドで操作する GitHub PR レビュー用 T
 
 - PR の変更ファイル一覧を閲覧
 - ファイル一覧と diff プレビューの分割表示（Split View）
-- シンタックスハイライト付きで diff を表示
+- シンタックスハイライト付きで diff を表示（`M` キーで Markdown リッチ表示モード）
 - 特定の行にインラインコメントを追加
 - コードサジェスチョンを追加
 - レビューコメントの一覧表示と該当行へのジャンプ
@@ -160,6 +160,7 @@ Split View はファイル一覧（左 35%）と diff プレビュー（右 65%�
 | `N` | 前のコメントにジャンプ |
 | `Ctrl-d` | ページダウン |
 | `Ctrl-u` | ページアップ |
+| `M` | Markdown リッチ表示の切替 |
 | `Enter` | コメントパネルを開く |
 | `←` / `h` / `q` / `Esc` | 前の画面に戻る |
 
@@ -296,6 +297,7 @@ go_to_definition = ["g", "d"]
 | `open_in_browser` | `O` | PR をブラウザで開く |
 | `toggle_local_mode` | `L` | Local Diff Mode の切替 |
 | `toggle_auto_focus` | `F` | Auto-focus の切替（Local Mode 時） |
+| `toggle_markdown_rich` | `M` | Markdown リッチ表示の切替 |
 | **Diff 操作** |||
 | `go_to_definition` | `gd` | 定義へジャンプ |
 | `go_to_file` | `gf` | $EDITOR でファイルを開く |

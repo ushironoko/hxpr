@@ -45,6 +45,9 @@ pub enum SupportedLanguage {
     Vue,
     // Phase 3: CSS (for injection support in Svelte/Vue)
     Css,
+    // Phase 4: Markdown (block + inline dual parser)
+    Markdown,
+    MarkdownInline,
 }
 
 /// Combined TypeScript highlights query (JavaScript base + TypeScript-specific).
@@ -170,6 +173,9 @@ impl SupportedLanguage {
             "vue" => Some(Self::Vue),
             // Phase 3: CSS (for injection support)
             "css" => Some(Self::Css),
+            // Phase 4: Markdown (mdx excluded — contains JSX)
+            "md" | "markdown" => Some(Self::Markdown),
+            "md_inline" => Some(Self::MarkdownInline),
             _ => None,
         }
     }
@@ -206,6 +212,9 @@ impl SupportedLanguage {
             Self::Svelte => "svelte",
             Self::Vue => "vue",
             Self::Css => "css",
+            // Phase 4: Markdown
+            Self::Markdown => "md",
+            Self::MarkdownInline => "md_inline",
         }
     }
 
@@ -238,6 +247,9 @@ impl SupportedLanguage {
             Self::Vue => tree_sitter_vue3::LANGUAGE.into(),
             // Phase 3: CSS (for injection support)
             Self::Css => tree_sitter_css::LANGUAGE.into(),
+            // Phase 4: Markdown (dual parser)
+            Self::Markdown => tree_sitter_md::LANGUAGE.into(),
+            Self::MarkdownInline => tree_sitter_md::INLINE_LANGUAGE.into(),
         }
     }
 
@@ -287,6 +299,9 @@ impl SupportedLanguage {
             Self::Vue => VUE_COMBINED_QUERY.as_str(),
             // Phase 3: CSS (for injection support)
             Self::Css => tree_sitter_css::HIGHLIGHTS_QUERY,
+            // Phase 4: Markdown (block + inline)
+            Self::Markdown => tree_sitter_md::HIGHLIGHT_QUERY_BLOCK,
+            Self::MarkdownInline => tree_sitter_md::HIGHLIGHT_QUERY_INLINE,
         }
     }
 
@@ -432,6 +447,8 @@ impl SupportedLanguage {
             ],
             // Phase 3: CSS (for injection support)
             Self::Css => &[],
+            // Phase 4: Markdown (no definition prefixes)
+            Self::Markdown | Self::MarkdownInline => &[],
         }
     }
 
@@ -1100,6 +1117,8 @@ impl SupportedLanguage {
                 "transparent",
                 "currentColor",
             ],
+            // Phase 4: Markdown (no keywords)
+            Self::Markdown | Self::MarkdownInline => &[],
         }
     }
 
@@ -1147,9 +1166,25 @@ impl SupportedLanguage {
             Self::Vue,
             // Phase 3: CSS (for injection)
             Self::Css,
+            // Phase 4: Markdown (block + inline)
+            Self::Markdown,
+            Self::MarkdownInline,
         ]
         .into_iter()
     }
+}
+
+/// Check if a file extension is a markdown extension.
+pub fn is_markdown_ext(ext: &str) -> bool {
+    matches!(ext, "md" | "markdown")
+}
+
+/// Check if a filename has a markdown extension.
+pub fn is_markdown_ext_from_filename(filename: &str) -> bool {
+    filename
+        .rsplit('.')
+        .next()
+        .is_some_and(is_markdown_ext)
 }
 
 #[cfg(test)]
@@ -1298,9 +1333,8 @@ mod tests {
 
     #[test]
     fn test_from_extension_unsupported() {
-        // Vue is now supported in Phase 3c
+        // Vue is now supported in Phase 3c, md is now supported in Phase 4
         assert_eq!(SupportedLanguage::from_extension("yaml"), None);
-        assert_eq!(SupportedLanguage::from_extension("md"), None);
         assert_eq!(SupportedLanguage::from_extension("toml"), None);
         assert_eq!(SupportedLanguage::from_extension(""), None);
     }
@@ -1339,8 +1373,11 @@ mod tests {
         // Phase 2: MoonBit is now supported
         assert!(SupportedLanguage::is_supported("mbt"));
 
+        // Phase 4: Markdown
+        assert!(SupportedLanguage::is_supported("md"));
+        assert!(SupportedLanguage::is_supported("markdown"));
+
         assert!(!SupportedLanguage::is_supported("yaml"));
-        assert!(!SupportedLanguage::is_supported("md"));
     }
 
     #[test]
@@ -1416,7 +1453,13 @@ mod tests {
     fn test_definition_prefixes_not_empty() {
         for lang in SupportedLanguage::all() {
             // CSS is injection-only and has no definition prefixes
-            if lang == SupportedLanguage::Css {
+            // Markdown/MarkdownInline are prose languages with no definition prefixes
+            if matches!(
+                lang,
+                SupportedLanguage::Css
+                    | SupportedLanguage::Markdown
+                    | SupportedLanguage::MarkdownInline
+            ) {
                 continue;
             }
             let prefixes = lang.definition_prefixes();
@@ -1431,6 +1474,13 @@ mod tests {
     #[test]
     fn test_keywords_not_empty() {
         for lang in SupportedLanguage::all() {
+            // Markdown/MarkdownInline are prose languages with no keywords
+            if matches!(
+                lang,
+                SupportedLanguage::Markdown | SupportedLanguage::MarkdownInline
+            ) {
+                continue;
+            }
             let keywords = lang.keywords();
             assert!(!keywords.is_empty(), "{:?} should have keywords", lang);
         }
@@ -1509,7 +1559,7 @@ mod tests {
     #[test]
     fn test_all_iterator() {
         let langs: Vec<_> = SupportedLanguage::all().collect();
-        assert_eq!(langs.len(), 22); // +1 for Vue
+        assert_eq!(langs.len(), 24); // +2 for Markdown/MarkdownInline
         assert!(langs.contains(&SupportedLanguage::Rust));
         assert!(langs.contains(&SupportedLanguage::TypeScript));
         assert!(langs.contains(&SupportedLanguage::TypeScriptReact));
@@ -1539,5 +1589,55 @@ mod tests {
         assert_eq!(map.get(&SupportedLanguage::TypeScript), Some(&"typescript"));
         assert_eq!(map.get(&SupportedLanguage::Ruby), Some(&"ruby"));
         assert_eq!(map.get(&SupportedLanguage::Python), None);
+    }
+
+    #[test]
+    fn test_is_markdown_ext() {
+        assert!(is_markdown_ext("md"));
+        assert!(is_markdown_ext("markdown"));
+        assert!(!is_markdown_ext("mdx"));
+        assert!(!is_markdown_ext(""));
+        assert!(!is_markdown_ext("MD"));
+        assert!(!is_markdown_ext("txt"));
+    }
+
+    #[test]
+    fn test_is_markdown_ext_from_filename() {
+        assert!(is_markdown_ext_from_filename("README.md"));
+        assert!(is_markdown_ext_from_filename("doc.markdown"));
+        assert!(is_markdown_ext_from_filename("path/to/file.md"));
+        assert!(!is_markdown_ext_from_filename("doc.mdx"));
+        assert!(!is_markdown_ext_from_filename("noext"));
+        assert!(!is_markdown_ext_from_filename(""));
+        assert!(!is_markdown_ext_from_filename("doc.md.bak"));
+    }
+
+    #[test]
+    fn test_from_extension_markdown() {
+        assert_eq!(
+            SupportedLanguage::from_extension("md"),
+            Some(SupportedLanguage::Markdown)
+        );
+        assert_eq!(
+            SupportedLanguage::from_extension("markdown"),
+            Some(SupportedLanguage::Markdown)
+        );
+        assert_eq!(
+            SupportedLanguage::from_extension("md_inline"),
+            Some(SupportedLanguage::MarkdownInline)
+        );
+    }
+
+    #[test]
+    fn test_markdown_default_extension() {
+        assert_eq!(SupportedLanguage::Markdown.default_extension(), "md");
+        assert_eq!(SupportedLanguage::MarkdownInline.default_extension(), "md_inline");
+    }
+
+    #[test]
+    fn test_all_iterator_contains_markdown() {
+        let langs: Vec<_> = SupportedLanguage::all().collect();
+        assert!(langs.contains(&SupportedLanguage::Markdown));
+        assert!(langs.contains(&SupportedLanguage::MarkdownInline));
     }
 }
