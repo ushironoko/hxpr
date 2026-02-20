@@ -11,6 +11,27 @@ struct EditorTemplate<'a> {
     initial_content: Option<Cow<'a, str>>,
 }
 
+/// Check whether a command can be found in PATH and is executable.
+fn command_found_in_path(cmd: &str) -> bool {
+    which::which(cmd).is_ok()
+}
+
+/// Generate editor candidates in priority order.
+/// Resolution order (same as git): config → $VISUAL → $EDITOR → vi
+fn editor_candidates(configured: Option<&str>) -> Vec<String> {
+    [
+        configured
+            .filter(|s| !s.trim().is_empty())
+            .map(String::from),
+        env::var("VISUAL").ok().filter(|s| !s.trim().is_empty()),
+        env::var("EDITOR").ok().filter(|s| !s.trim().is_empty()),
+        Some("vi".to_string()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
 /// Resolve editor command and split into program + arguments.
 ///
 /// Resolution order (same as git):
@@ -19,22 +40,42 @@ struct EditorTemplate<'a> {
 ///   3. `$EDITOR`
 ///   4. `"vi"` (fallback)
 ///
+/// Each candidate is checked for PATH availability. If not found, the next
+/// candidate is tried. If no candidate is found in PATH, the first candidate
+/// is returned (will produce a user-friendly error at execution time).
+///
 /// Supports quoted arguments (e.g. `emacsclient -c -a ""`) via `shell_words::split`.
 fn resolve_and_split_editor(configured: Option<&str>) -> Result<(String, Vec<String>)> {
-    let raw = configured
-        .filter(|s| !s.trim().is_empty())
-        .map(String::from)
-        .or_else(|| env::var("VISUAL").ok().filter(|s| !s.trim().is_empty()))
-        .or_else(|| env::var("EDITOR").ok().filter(|s| !s.trim().is_empty()))
-        .unwrap_or_else(|| "vi".to_string());
+    let candidates = editor_candidates(configured);
+    let mut first_parsed: Option<(String, Vec<String>)> = None;
+    let mut skipped: Vec<String> = Vec::new();
 
-    let parts = shell_words::split(&raw)?;
-    let cmd = parts
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("empty editor command"))?
-        .clone();
-    let args = parts[1..].to_vec();
-    Ok((cmd, args))
+    for raw in &candidates {
+        let parts = shell_words::split(raw)?;
+        let Some(cmd) = parts.first() else { continue };
+        let parsed = (cmd.clone(), parts[1..].to_vec());
+
+        if first_parsed.is_none() {
+            first_parsed = Some(parsed.clone());
+        }
+
+        if command_found_in_path(cmd) {
+            if !skipped.is_empty() {
+                tracing::warn!(
+                    skipped_editors = ?skipped,
+                    resolved_editor = %cmd,
+                    "editor candidate not found in PATH, falling back"
+                );
+            }
+            return Ok(parsed);
+        }
+
+        skipped.push(cmd.clone());
+    }
+
+    // All candidates missing from PATH – return the first one
+    // (will produce a NotFound error at execution time)
+    Ok(first_parsed.unwrap_or_else(|| ("vi".to_string(), vec![])))
 }
 
 /// Run a `Command`, converting `NotFound` into a user-friendly error message.
@@ -42,8 +83,8 @@ fn run_editor_command(cmd: &str, mut command: Command) -> Result<std::process::E
     command.status().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             anyhow::anyhow!(
-                "Editor '{}' not found. Set $VISUAL or $EDITOR environment variable, \
-                 or set 'editor' in ~/.config/octorus/config.toml",
+                "Editor '{}' not found (also checked $VISUAL and $EDITOR). \
+                 Set 'editor' in ~/.config/octorus/config.toml to an installed editor.",
                 cmd
             )
         } else {
@@ -190,170 +231,242 @@ mod tests {
     use super::*;
     use serial_test::serial;
 
-    #[test]
-    fn test_resolve_explicit_config() {
-        let (cmd, args) = resolve_and_split_editor(Some("vim")).unwrap();
-        assert_eq!(cmd, "vim");
-        assert!(args.is_empty());
-    }
+    // ── command_found_in_path tests ──
 
     #[test]
-    fn test_resolve_with_args() {
-        let (cmd, args) = resolve_and_split_editor(Some("code --wait")).unwrap();
-        assert_eq!(cmd, "code");
-        assert_eq!(args, vec!["--wait"]);
+    fn test_command_found_in_path_basic() {
+        // `sh` exists on every Unix system
+        assert!(command_found_in_path("sh"));
+        assert!(!command_found_in_path("__nonexistent__"));
     }
 
-    #[test]
-    fn test_resolve_with_quoted_args() {
-        let (cmd, args) =
-            resolve_and_split_editor(Some(r#"emacsclient -c -a """#)).unwrap();
-        assert_eq!(cmd, "emacsclient");
-        assert_eq!(args, vec!["-c", "-a", ""]);
-    }
+    // ── editor_candidates tests (PATH-independent, pure logic) ──
 
     #[test]
-    fn test_resolve_extra_whitespace() {
-        let (cmd, args) = resolve_and_split_editor(Some("  vim   --noplugin  ")).unwrap();
-        assert_eq!(cmd, "vim");
-        assert_eq!(args, vec!["--noplugin"]);
-    }
+    #[serial]
+    fn test_candidates_explicit_config() {
+        let orig_visual = env::var("VISUAL").ok();
+        let orig_editor = env::var("EDITOR").ok();
+        env::remove_var("VISUAL");
+        env::remove_var("EDITOR");
 
-    #[test]
-    fn test_resolve_empty_string_falls_through() {
-        let result = resolve_and_split_editor(Some(""));
-        assert!(result.is_ok());
-    }
+        let candidates = editor_candidates(Some("vim"));
+        assert_eq!(candidates[0], "vim");
 
-    #[test]
-    fn test_resolve_whitespace_only_falls_through() {
-        // Whitespace-only should be treated as unset, not cause "empty editor command"
-        let result = resolve_and_split_editor(Some("   "));
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_resolve_none_falls_through() {
-        // None should fall through to env vars / "vi" default
-        let result = resolve_and_split_editor(None);
-        assert!(result.is_ok());
+        restore_env(orig_visual, orig_editor);
     }
 
     #[test]
     #[serial]
-    fn test_resolve_visual_env_var() {
-        // Save and clear
+    fn test_candidates_empty_string_falls_through() {
+        let orig_visual = env::var("VISUAL").ok();
+        let orig_editor = env::var("EDITOR").ok();
+        env::remove_var("VISUAL");
+        env::remove_var("EDITOR");
+
+        let candidates = editor_candidates(Some(""));
+        // Empty config is skipped, only "vi" remains
+        assert_eq!(candidates, vec!["vi"]);
+
+        restore_env(orig_visual, orig_editor);
+    }
+
+    #[test]
+    #[serial]
+    fn test_candidates_whitespace_only_falls_through() {
+        let orig_visual = env::var("VISUAL").ok();
+        let orig_editor = env::var("EDITOR").ok();
+        env::remove_var("VISUAL");
+        env::remove_var("EDITOR");
+
+        let candidates = editor_candidates(Some("   "));
+        assert_eq!(candidates, vec!["vi"]);
+
+        restore_env(orig_visual, orig_editor);
+    }
+
+    #[test]
+    #[serial]
+    fn test_candidates_none_falls_through() {
+        let orig_visual = env::var("VISUAL").ok();
+        let orig_editor = env::var("EDITOR").ok();
+        env::remove_var("VISUAL");
+        env::remove_var("EDITOR");
+
+        let candidates = editor_candidates(None);
+        assert_eq!(candidates, vec!["vi"]);
+
+        restore_env(orig_visual, orig_editor);
+    }
+
+    #[test]
+    #[serial]
+    fn test_candidates_visual_env_var() {
         let orig_visual = env::var("VISUAL").ok();
         let orig_editor = env::var("EDITOR").ok();
         env::set_var("VISUAL", "nano");
         env::remove_var("EDITOR");
 
-        let (cmd, args) = resolve_and_split_editor(None).unwrap();
-        assert_eq!(cmd, "nano");
-        assert!(args.is_empty());
+        let candidates = editor_candidates(None);
+        assert_eq!(candidates, vec!["nano", "vi"]);
 
-        // Restore
-        match orig_visual {
-            Some(v) => env::set_var("VISUAL", v),
-            None => env::remove_var("VISUAL"),
-        }
-        match orig_editor {
-            Some(v) => env::set_var("EDITOR", v),
-            None => env::remove_var("EDITOR"),
-        }
+        restore_env(orig_visual, orig_editor);
     }
 
     #[test]
     #[serial]
-    fn test_resolve_editor_env_var() {
+    fn test_candidates_editor_env_var() {
         let orig_visual = env::var("VISUAL").ok();
         let orig_editor = env::var("EDITOR").ok();
         env::remove_var("VISUAL");
         env::set_var("EDITOR", "emacs");
 
-        let (cmd, args) = resolve_and_split_editor(None).unwrap();
-        assert_eq!(cmd, "emacs");
-        assert!(args.is_empty());
+        let candidates = editor_candidates(None);
+        assert_eq!(candidates, vec!["emacs", "vi"]);
 
-        // Restore
-        match orig_visual {
-            Some(v) => env::set_var("VISUAL", v),
-            None => env::remove_var("VISUAL"),
-        }
-        match orig_editor {
-            Some(v) => env::set_var("EDITOR", v),
-            None => env::remove_var("EDITOR"),
-        }
+        restore_env(orig_visual, orig_editor);
     }
 
     #[test]
     #[serial]
-    fn test_resolve_visual_takes_priority_over_editor() {
+    fn test_candidates_visual_takes_priority_over_editor() {
         let orig_visual = env::var("VISUAL").ok();
         let orig_editor = env::var("EDITOR").ok();
         env::set_var("VISUAL", "code --wait");
         env::set_var("EDITOR", "vim");
 
-        let (cmd, args) = resolve_and_split_editor(None).unwrap();
-        assert_eq!(cmd, "code");
-        assert_eq!(args, vec!["--wait"]);
+        let candidates = editor_candidates(None);
+        assert_eq!(candidates, vec!["code --wait", "vim", "vi"]);
 
-        // Restore
-        match orig_visual {
-            Some(v) => env::set_var("VISUAL", v),
-            None => env::remove_var("VISUAL"),
-        }
-        match orig_editor {
-            Some(v) => env::set_var("EDITOR", v),
-            None => env::remove_var("EDITOR"),
-        }
+        restore_env(orig_visual, orig_editor);
     }
 
     #[test]
     #[serial]
-    fn test_resolve_config_takes_priority_over_env() {
+    fn test_candidates_config_takes_priority_over_env() {
         let orig_visual = env::var("VISUAL").ok();
         let orig_editor = env::var("EDITOR").ok();
         env::set_var("VISUAL", "nano");
         env::set_var("EDITOR", "emacs");
 
-        let (cmd, args) = resolve_and_split_editor(Some("hx")).unwrap();
-        assert_eq!(cmd, "hx");
-        assert!(args.is_empty());
+        let candidates = editor_candidates(Some("hx"));
+        assert_eq!(candidates[0], "hx");
+        assert_eq!(candidates[1], "nano");
+        assert_eq!(candidates[2], "emacs");
 
-        // Restore
-        match orig_visual {
-            Some(v) => env::set_var("VISUAL", v),
-            None => env::remove_var("VISUAL"),
-        }
-        match orig_editor {
-            Some(v) => env::set_var("EDITOR", v),
-            None => env::remove_var("EDITOR"),
-        }
+        restore_env(orig_visual, orig_editor);
     }
 
     #[test]
     #[serial]
-    fn test_resolve_fallback_to_vi() {
+    fn test_candidates_fallback_to_vi() {
         let orig_visual = env::var("VISUAL").ok();
         let orig_editor = env::var("EDITOR").ok();
         env::remove_var("VISUAL");
         env::remove_var("EDITOR");
 
-        let (cmd, args) = resolve_and_split_editor(None).unwrap();
-        assert_eq!(cmd, "vi");
+        let candidates = editor_candidates(None);
+        assert_eq!(candidates, vec!["vi"]);
+
+        restore_env(orig_visual, orig_editor);
+    }
+
+    // ── shell_words parsing tests (PATH-independent) ──
+
+    #[test]
+    fn test_parse_with_args() {
+        let parts = shell_words::split("code --wait").unwrap();
+        assert_eq!(parts, vec!["code", "--wait"]);
+    }
+
+    #[test]
+    fn test_parse_with_quoted_args() {
+        let parts = shell_words::split(r#"emacsclient -c -a """#).unwrap();
+        assert_eq!(parts, vec!["emacsclient", "-c", "-a", ""]);
+    }
+
+    #[test]
+    fn test_parse_extra_whitespace() {
+        let parts = shell_words::split("  vim   --noplugin  ").unwrap();
+        assert_eq!(parts, vec!["vim", "--noplugin"]);
+    }
+
+    // ── resolve_and_split_editor tests (uses `sh` which exists on all Unix) ──
+
+    #[test]
+    #[serial]
+    fn test_resolve_finds_sh() {
+        let orig_visual = env::var("VISUAL").ok();
+        let orig_editor = env::var("EDITOR").ok();
+        env::remove_var("VISUAL");
+        env::remove_var("EDITOR");
+
+        let (cmd, args) = resolve_and_split_editor(Some("sh")).unwrap();
+        assert_eq!(cmd, "sh");
         assert!(args.is_empty());
 
-        // Restore
-        match orig_visual {
-            Some(v) => env::set_var("VISUAL", v),
-            None => env::remove_var("VISUAL"),
-        }
-        match orig_editor {
-            Some(v) => env::set_var("EDITOR", v),
-            None => env::remove_var("EDITOR"),
-        }
+        restore_env(orig_visual, orig_editor);
     }
+
+    #[test]
+    #[serial]
+    fn test_fallback_when_configured_not_in_path() {
+        let orig_visual = env::var("VISUAL").ok();
+        let orig_editor = env::var("EDITOR").ok();
+        env::remove_var("VISUAL");
+        env::set_var("EDITOR", "sh");
+
+        // Configured editor doesn't exist, should fall back to $EDITOR=sh
+        let (cmd, args) = resolve_and_split_editor(Some("__nonexistent__")).unwrap();
+        assert_eq!(cmd, "sh");
+        assert!(args.is_empty());
+
+        restore_env(orig_visual, orig_editor);
+    }
+
+    #[test]
+    #[serial]
+    fn test_fallback_with_args_not_inherited() {
+        let orig_visual = env::var("VISUAL").ok();
+        let orig_editor = env::var("EDITOR").ok();
+        env::remove_var("VISUAL");
+        env::set_var("EDITOR", "sh");
+
+        // Args from the non-existent editor should NOT carry over
+        let (cmd, args) =
+            resolve_and_split_editor(Some("__nonexistent__ --flag")).unwrap();
+        assert_eq!(cmd, "sh");
+        assert!(args.is_empty());
+
+        restore_env(orig_visual, orig_editor);
+    }
+
+    #[test]
+    #[serial]
+    fn test_all_candidates_not_in_path() {
+        let orig_visual = env::var("VISUAL").ok();
+        let orig_editor = env::var("EDITOR").ok();
+        let orig_path = env::var("PATH").ok();
+        env::set_var("VISUAL", "__nonexistent_visual__");
+        env::set_var("EDITOR", "__nonexistent_editor__");
+        // Point PATH to an empty dir so even `vi` is not found
+        let empty_dir = tempfile::tempdir().unwrap();
+        env::set_var("PATH", empty_dir.path());
+
+        // All candidates missing from PATH → returns the first parsed one
+        let (cmd, _) =
+            resolve_and_split_editor(Some("__nonexistent_config__")).unwrap();
+        assert_eq!(cmd, "__nonexistent_config__");
+
+        // Restore
+        match orig_path {
+            Some(v) => env::set_var("PATH", v),
+            None => env::remove_var("PATH"),
+        }
+        restore_env(orig_visual, orig_editor);
+    }
+
+    // ── run_editor_command error message test ──
 
     #[test]
     fn test_run_editor_command_not_found() {
@@ -369,5 +482,18 @@ mod tests {
         assert!(msg.contains("$VISUAL"));
         assert!(msg.contains("$EDITOR"));
         assert!(msg.contains("config.toml"));
+    }
+
+    // ── helpers ──
+
+    fn restore_env(orig_visual: Option<String>, orig_editor: Option<String>) {
+        match orig_visual {
+            Some(v) => env::set_var("VISUAL", v),
+            None => env::remove_var("VISUAL"),
+        }
+        match orig_editor {
+            Some(v) => env::set_var("EDITOR", v),
+            None => env::remove_var("EDITOR"),
+        }
     }
 }
