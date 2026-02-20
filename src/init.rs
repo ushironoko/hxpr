@@ -4,7 +4,10 @@ use std::path::PathBuf;
 use xdg::BaseDirectories;
 
 /// Default config.toml content
-const DEFAULT_CONFIG: &str = r#"editor = "vi"
+const DEFAULT_CONFIG: &str = r#"# Editor for writing review body.
+# Resolved in order: this value → $VISUAL → $EDITOR → vi
+# Supports arguments: editor = "code --wait"
+# editor = "vim"
 
 [diff]
 theme = "base16-ocean.dark"
@@ -184,7 +187,7 @@ mod tests {
         );
 
         let config_content = fs::read_to_string(&config_path).unwrap();
-        assert!(config_content.contains("editor = \"vi\""));
+        assert!(config_content.contains("# editor = \"vim\""));
         assert!(config_content.contains("[ai]"));
     }
 
@@ -221,7 +224,7 @@ mod tests {
 
         // Verify content was overwritten
         let content = fs::read_to_string(&config_path).unwrap();
-        assert!(content.contains("editor = \"vi\""));
+        assert!(content.contains("# editor = \"vim\""));
         assert!(!content.contains("custom = true"));
     }
 }

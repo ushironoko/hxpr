@@ -7,10 +7,10 @@ use xdg::BaseDirectories;
 
 use crate::keybinding::{KeyBinding, KeySequence, NamedKey};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    pub editor: String,
+    pub editor: Option<String>,
     pub diff: DiffConfig,
     pub keybindings: KeybindingsConfig,
     pub ai: AiConfig,
@@ -91,17 +91,6 @@ pub struct KeybindingsConfig {
     // Local mode
     pub toggle_local_mode: KeySequence,
     pub toggle_auto_focus: KeySequence,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            editor: "vi".to_owned(),
-            diff: DiffConfig::default(),
-            keybindings: KeybindingsConfig::default(),
-            ai: AiConfig::default(),
-        }
-    }
 }
 
 impl Default for AiConfig {
@@ -510,5 +499,23 @@ mod tests {
     fn test_parse_ai_config_auto_post_default() {
         let config: Config = toml::from_str("").unwrap();
         assert!(!config.ai.auto_post);
+    }
+
+    #[test]
+    fn test_editor_default_is_none() {
+        let config: Config = toml::from_str("").unwrap();
+        assert!(config.editor.is_none());
+    }
+
+    #[test]
+    fn test_editor_explicit_value() {
+        let config: Config = toml::from_str(r#"editor = "vim""#).unwrap();
+        assert_eq!(config.editor.as_deref(), Some("vim"));
+    }
+
+    #[test]
+    fn test_editor_with_args() {
+        let config: Config = toml::from_str(r#"editor = "code --wait""#).unwrap();
+        assert_eq!(config.editor.as_deref(), Some("code --wait"));
     }
 }

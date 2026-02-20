@@ -2699,7 +2699,7 @@ impl App {
         ui::restore_terminal(terminal)?;
 
         // Open editor (blocking)
-        let answer = crate::editor::open_clarification_editor(&self.config.editor, question)?;
+        let answer = crate::editor::open_clarification_editor(self.config.editor.as_deref(), question)?;
 
         // Re-setup terminal after editor closes
         *terminal = ui::setup_terminal()?;
@@ -3121,7 +3121,7 @@ impl App {
         tracing::debug!(?action, "submit_review: start");
         ui::restore_terminal(terminal)?;
 
-        let editor_result = crate::editor::open_review_editor(&self.config.editor);
+        let editor_result = crate::editor::open_review_editor(self.config.editor.as_deref());
         tracing::debug!(?editor_result, "submit_review: editor returned");
 
         // エディタの成否に関わらずターミナルを再セットアップ
@@ -3874,7 +3874,7 @@ impl App {
 
             // ターミナルを一時停止して外部エディタを開く
             crate::ui::restore_terminal(terminal)?;
-            let _ = crate::editor::open_file_at_line(&self.config.editor, &path_str, line_number);
+            let _ = crate::editor::open_file_at_line(self.config.editor.as_deref(), &path_str, line_number);
             *terminal = crate::ui::setup_terminal()?;
         }
 
@@ -3922,7 +3922,7 @@ impl App {
         // TUI 一時停止 → エディタ → TUI 復帰
         crate::ui::restore_terminal(terminal)?;
         let _ = crate::editor::open_file_at_line(
-            &self.config.editor,
+            self.config.editor.as_deref(),
             &full_path,
             line_number.unwrap_or(1) as usize,
         );

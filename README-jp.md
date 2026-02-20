@@ -202,8 +202,10 @@ Split View はファイル一覧（左 35%）と diff プレビュー（右 65%�
 `or init` を実行してデフォルト設定ファイルを作成するか、手動で `~/.config/octorus/config.toml` を作成:
 
 ```toml
-# レビュー本文（Approve/Request Changes/Comment）入力に使用するエディタ
-editor = "vi"
+# レビュー本文入力に使用するエディタ
+# 解決順序: この設定値 → $VISUAL → $EDITOR → vi
+# 引数付きも可: editor = "code --wait"
+# editor = "vim"
 
 [diff]
 # diff 画面のシンタックスハイライトテーマ

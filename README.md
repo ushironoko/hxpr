@@ -202,8 +202,10 @@ Multi-line input is supported. Press `Enter` to insert a newline.
 Run `or init` to create default config files, or create `~/.config/octorus/config.toml` manually:
 
 ```toml
-# Editor to use for writing review body (Approve/Request Changes/Comment)
-editor = "vi"
+# Editor for writing review body.
+# Resolved in order: this value → $VISUAL → $EDITOR → vi
+# Supports arguments: editor = "code --wait"
+# editor = "vim"
 
 [diff]
 # Syntax highlighting theme for diff view
