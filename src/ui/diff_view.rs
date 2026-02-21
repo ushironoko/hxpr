@@ -220,7 +220,10 @@ pub fn build_diff_cache(
 ///
 /// Uses sentinel colors from `ThemeStyleCache::with_markdown_rich_overrides()` to
 /// distinguish block-level punctuation (heading/list markers) from inline-level
-/// punctuation (emphasis/code delimiters).
+/// punctuation (emphasis/code delimiters) for added/context lines.
+///
+/// For removed lines (which go through the syntect fallback and lack sentinel colors),
+/// applies text-based pattern matching to ensure consistent rendering.
 ///
 /// - Heading markers (`#`, `##`, etc.) → removed
 /// - Emphasis/strong delimiters (`*`, `**`, `_`) → removed
@@ -238,65 +241,241 @@ fn apply_markdown_rich_transforms(lines: &mut [CachedDiffLine], interner: &mut R
 
         // First span is the diff marker (+, -, space). Skip non-diff lines (hunk headers, etc.)
         let first = interner.resolve(&line.spans[0].content);
+        let is_removed = first == "-";
         if first != "+" && first != "-" && first != " " {
             continue;
         }
 
-        let mut removals: Vec<usize> = Vec::new();
-        let mut replacements: Vec<(usize, lasso::Spur)> = Vec::new();
+        if is_removed {
+            // Removed lines go through syntect fallback and don't have sentinel colors.
+            // Apply text-based transforms for consistent rendering with added/context lines.
+            apply_markdown_rich_transforms_text_based(line, interner, bullet_spur, bullet_space_spur);
+        } else {
+            // Added/context lines have sentinel colors from CST highlighting.
+            apply_markdown_rich_transforms_sentinel(
+                line,
+                interner,
+                bullet_spur,
+                bullet_space_spur,
+                MARKDOWN_BLOCK_PUNCT_COLOR,
+                MARKDOWN_INLINE_PUNCT_COLOR,
+            );
+        }
+    }
+}
 
-        let span_count = line.spans.len();
-        for i in 1..span_count {
-            let content = interner.resolve(&line.spans[i].content).to_string();
-            let fg = line.spans[i].style.fg;
+/// Apply markdown rich transforms using sentinel colors (for added/context lines).
+fn apply_markdown_rich_transforms_sentinel(
+    line: &mut CachedDiffLine,
+    interner: &mut Rodeo,
+    bullet_spur: lasso::Spur,
+    bullet_space_spur: lasso::Spur,
+    block_punct_color: Color,
+    inline_punct_color: Color,
+) {
+    let mut removals: Vec<usize> = Vec::new();
+    let mut replacements: Vec<(usize, lasso::Spur)> = Vec::new();
 
-            if fg == Some(MARKDOWN_BLOCK_PUNCT_COLOR) {
-                // Block-level punctuation: heading markers, list markers, blockquote
-                if content.chars().all(|c| c == '#') && !content.is_empty() {
-                    // Heading marker (#, ##, ###, ...) → remove
-                    removals.push(i);
-                    // Also remove the trailing space separator
-                    if i + 1 < span_count {
-                        let next = interner.resolve(&line.spans[i + 1].content);
-                        if next == " " {
-                            removals.push(i + 1);
-                        }
+    let span_count = line.spans.len();
+    for i in 1..span_count {
+        let content = interner.resolve(&line.spans[i].content).to_string();
+        let fg = line.spans[i].style.fg;
+
+        if fg == Some(block_punct_color) {
+            // Block-level punctuation: heading markers, list markers, blockquote
+            if content.chars().all(|c| c == '#') && !content.is_empty() {
+                // Heading marker (#, ##, ###, ...) → remove
+                removals.push(i);
+                // Also remove the trailing space separator
+                if i + 1 < span_count {
+                    let next = interner.resolve(&line.spans[i + 1].content);
+                    if next == " " {
+                        removals.push(i + 1);
                     }
-                } else if content.trim() == "-"
-                    || content.trim() == "+"
-                    || content.trim() == "*"
-                {
-                    // List marker (may include trailing space) → replace with ・
-                    let spur = if content.ends_with(' ') {
-                        bullet_space_spur
+                }
+            } else if content.trim() == "-"
+                || content.trim() == "+"
+                || content.trim() == "*"
+            {
+                // List marker (may include trailing space) → replace with ・
+                let spur = if content.ends_with(' ') {
+                    bullet_space_spur
+                } else {
+                    bullet_spur
+                };
+                replacements.push((i, spur));
+            }
+            // Other block punctuation (>, thematic break, etc.) left as-is
+        } else if fg == Some(inline_punct_color) {
+            // Inline-level punctuation: emphasis/strong/code delimiters
+            if content.chars().all(|c| c == '*' || c == '_') && !content.is_empty() {
+                // Emphasis/strong delimiters (*, **, _, __) → remove
+                removals.push(i);
+            }
+            // Code span/fence delimiters (`, ```) left as-is
+        }
+    }
+
+    // Apply replacements
+    for (i, spur) in &replacements {
+        line.spans[*i].content = *spur;
+        // Reset sentinel color to visible default
+        line.spans[*i].style = Style::default();
+    }
+
+    // Apply removals in reverse order to preserve indices
+    removals.sort_unstable();
+    removals.dedup();
+    for i in removals.into_iter().rev() {
+        line.spans.remove(i);
+    }
+
+    // Normalize any remaining sentinel-colored spans back to a visible style.
+    // Spans intentionally left as-is (backticks, code-fence delimiters, blockquote
+    // markers, etc.) still carry sentinel colors which are nearly invisible.
+    for span in line.spans[1..].iter_mut() {
+        if span.style.fg == Some(block_punct_color)
+            || span.style.fg == Some(inline_punct_color)
+        {
+            span.style = span.style.fg(Color::DarkGray);
+        }
+    }
+}
+
+/// Apply markdown rich transforms using text-based pattern matching (for removed lines).
+///
+/// Removed lines go through syntect and don't carry sentinel colors, so we detect
+/// markdown patterns by examining the text content directly. This ensures removed
+/// lines get the same visual treatment as added/context lines.
+fn apply_markdown_rich_transforms_text_based(
+    line: &mut CachedDiffLine,
+    interner: &mut Rodeo,
+    bullet_spur: lasso::Spur,
+    bullet_space_spur: lasso::Spur,
+) {
+    // Reconstruct the full content (after the diff marker) to detect line-level patterns
+    let full_content: String = line.spans[1..]
+        .iter()
+        .map(|s| interner.resolve(&s.content))
+        .collect();
+    let trimmed = full_content.trim_start();
+
+    // Detect and apply heading marker removal (# at start of line)
+    if let Some(rest) = trimmed.strip_prefix('#') {
+        // Count consecutive # characters
+        let hash_count = 1 + rest.chars().take_while(|c| *c == '#').count();
+        let after_hashes = &trimmed[hash_count..];
+        // Valid heading: # followed by space (or end of line)
+        if after_hashes.is_empty() || after_hashes.starts_with(' ') {
+            let prefix_to_remove = if after_hashes.starts_with(' ') {
+                hash_count + 1 // hashes + space
+            } else {
+                hash_count
+            };
+            remove_leading_chars_from_spans(line, interner, prefix_to_remove);
+        }
+    }
+    // Detect and apply list marker replacement (- / + / * at start of line)
+    else if let Some(first_char) = trimmed.chars().next() {
+        if (first_char == '-' || first_char == '+' || first_char == '*')
+            && trimmed.len() > 1
+            && trimmed.chars().nth(1) == Some(' ')
+        {
+            replace_leading_marker_with_bullet(
+                line,
+                interner,
+                bullet_spur,
+                bullet_space_spur,
+            );
+        }
+    }
+
+    // Remove inline emphasis/strong delimiters (* / ** / _ / __)
+    remove_inline_emphasis_delimiters(line, interner);
+}
+
+/// Remove a given number of leading content characters from spans (after diff marker).
+fn remove_leading_chars_from_spans(
+    line: &mut CachedDiffLine,
+    interner: &mut Rodeo,
+    chars_to_remove: usize,
+) {
+    let mut remaining = chars_to_remove;
+    let mut removals: Vec<usize> = Vec::new();
+
+    for i in 1..line.spans.len() {
+        if remaining == 0 {
+            break;
+        }
+        let content = interner.resolve(&line.spans[i].content).to_string();
+        // Skip leading whitespace spans (they are indentation, not heading markers)
+        if removals.is_empty() && content.chars().all(|c| c.is_whitespace()) && !content.is_empty() {
+            continue;
+        }
+        let char_count = content.chars().count();
+        if char_count <= remaining {
+            removals.push(i);
+            remaining -= char_count;
+        } else {
+            // Partial removal: trim the beginning of this span
+            let new_content: String = content.chars().skip(remaining).collect();
+            line.spans[i].content = interner.get_or_intern(&new_content);
+            remaining = 0;
+        }
+    }
+
+    for i in removals.into_iter().rev() {
+        line.spans.remove(i);
+    }
+}
+
+/// Replace the leading list marker (- / + / *) with a bullet character.
+fn replace_leading_marker_with_bullet(
+    line: &mut CachedDiffLine,
+    interner: &mut Rodeo,
+    bullet_spur: lasso::Spur,
+    bullet_space_spur: lasso::Spur,
+) {
+    for i in 1..line.spans.len() {
+        let content = interner.resolve(&line.spans[i].content).to_string();
+        // Skip whitespace-only spans (indentation)
+        if content.chars().all(|c| c.is_whitespace()) && !content.is_empty() {
+            continue;
+        }
+        let trimmed = content.trim_start();
+        if let Some(first) = trimmed.chars().next() {
+            if first == '-' || first == '+' || first == '*' {
+                // Replace marker character(s) with bullet
+                if trimmed.starts_with("- ") || trimmed.starts_with("+ ") || trimmed.starts_with("* ") {
+                    let leading_ws: String = content.chars().take_while(|c| c.is_whitespace()).collect();
+                    let after_marker: String = trimmed.chars().skip(2).collect();
+                    if leading_ws.is_empty() && after_marker.is_empty() {
+                        line.spans[i].content = bullet_space_spur;
                     } else {
-                        bullet_spur
-                    };
-                    replacements.push((i, spur));
+                        let new_content = format!("{}・ {}", leading_ws, after_marker);
+                        line.spans[i].content = interner.get_or_intern(&new_content);
+                    }
+                } else {
+                    line.spans[i].content = bullet_spur;
                 }
-                // Other block punctuation (>, thematic break, etc.) left as-is
-            } else if fg == Some(MARKDOWN_INLINE_PUNCT_COLOR) {
-                // Inline-level punctuation: emphasis/strong/code delimiters
-                if content.chars().all(|c| c == '*' || c == '_') && !content.is_empty() {
-                    // Emphasis/strong delimiters (*, **, _, __) → remove
-                    removals.push(i);
-                }
-                // Code span/fence delimiters (`, ```) left as-is
             }
         }
+        break; // Only process the first non-whitespace span
+    }
+}
 
-        // Apply replacements
-        for (i, spur) in &replacements {
-            line.spans[*i].content = *spur;
-            // Reset sentinel color to visible default
-            line.spans[*i].style = Style::default();
-        }
-
-        // Apply removals in reverse order to preserve indices
-        removals.sort_unstable();
-        removals.dedup();
-        for i in removals.into_iter().rev() {
-            line.spans.remove(i);
+/// Remove inline emphasis/strong delimiters (* / ** / _ / __) from spans.
+fn remove_inline_emphasis_delimiters(line: &mut CachedDiffLine, interner: &mut Rodeo) {
+    for span in line.spans[1..].iter_mut() {
+        let content = interner.resolve(&span.content).to_string();
+        // Only process spans that contain emphasis delimiters mixed with content
+        if content.contains('*') || content.contains('_') {
+            // Remove standalone * or ** or _ or __ delimiters
+            // Be careful not to remove * in content like "pointer *p" or underscores in identifiers
+            if content.chars().all(|c| c == '*' || c == '_') && !content.is_empty() {
+                // Pure delimiter span (e.g., "**", "*", "__", "_") → remove content
+                span.content = interner.get_or_intern("");
+            }
         }
     }
 }
@@ -409,6 +588,7 @@ enum TableLineKind {
 /// Build a box-drawing separator line from a markdown table separator.
 ///
 /// `| --- | --- |` → `├───┼───┤`
+/// `| --- | ---`   → `├───┼───`  (no trailing pipe → no `┤`)
 fn build_table_separator(content: &str) -> String {
     let trimmed = content.trim_start();
     let chars: Vec<char> = trimmed.chars().collect();
@@ -432,6 +612,10 @@ fn build_table_separator(content: &str) -> String {
     let first_pipe = pipe_positions[0];
     let last_pipe = *pipe_positions.last().unwrap();
 
+    // Only treat the last pipe as a closing border (┤) if it's actually at the end
+    // of the content (only whitespace after it). Otherwise it's a column separator (┼).
+    let has_trailing_pipe = chars[last_pipe + 1..].iter().all(|c| c.is_whitespace());
+
     // Preserve leading whitespace from original content
     let leading_ws: String = content.chars().take_while(|c| c.is_whitespace()).collect();
 
@@ -440,7 +624,7 @@ fn build_table_separator(content: &str) -> String {
         if *c == '|' {
             if i == first_pipe {
                 result.push('├');
-            } else if i == last_pipe {
+            } else if i == last_pipe && has_trailing_pipe {
                 result.push('┤');
             } else {
                 result.push('┼');
@@ -2429,6 +2613,14 @@ mod priming_diff_tests {
         );
         // Compact format without spaces
         assert_eq!(build_table_separator("|---|---|"), "├───┼───┤");
+        // No trailing pipe: last pipe is a column separator, not a closing border
+        assert_eq!(
+            build_table_separator("| --- | ---"),
+            "├ ─── ┼ ───"
+        );
+        assert_eq!(build_table_separator("|---|---"), "├───┼───");
+        // Single column, no trailing pipe
+        assert_eq!(build_table_separator("| ---"), "├ ───");
     }
 
     #[test]
