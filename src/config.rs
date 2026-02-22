@@ -43,6 +43,7 @@ pub struct AiConfig {
 #[serde(default)]
 pub struct DiffConfig {
     pub theme: String,
+    pub tab_width: u8,
 }
 
 /// Configurable keybindings
@@ -115,6 +116,7 @@ impl Default for DiffConfig {
     fn default() -> Self {
         Self {
             theme: "base16-ocean.dark".to_owned(),
+            tab_width: 4,
         }
     }
 }

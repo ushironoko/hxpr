@@ -1255,6 +1255,7 @@ impl App {
 
         let theme = self.config.diff.theme.clone();
         let markdown_rich = self.markdown_rich;
+        let tab_width = self.config.diff.tab_width;
         let channel_size = files.len().min(MAX_PREFETCH_FILES);
         let (tx, rx) = mpsc::channel(channel_size);
         self.prefetch_receiver = Some(rx);
@@ -1269,6 +1270,7 @@ impl App {
                     &theme,
                     &mut parser_pool,
                     markdown_rich,
+                    tab_width,
                 );
                 cache.file_index = *index;
                 if tx.blocking_send(cache).is_err() {
@@ -4047,7 +4049,8 @@ impl App {
         }
 
         // 3. キャッシュミス: プレーンキャッシュを即座に構築（~1ms）
-        let mut plain_cache = crate::ui::diff_view::build_plain_diff_cache(&patch);
+        let tab_width = self.config.diff.tab_width;
+        let mut plain_cache = crate::ui::diff_view::build_plain_diff_cache(&patch, tab_width);
         plain_cache.file_index = file_index;
         self.diff_cache = Some(plain_cache);
 
@@ -4065,6 +4068,7 @@ impl App {
                 &theme,
                 &mut parser_pool,
                 markdown_rich,
+                tab_width,
             );
             cache.file_index = file_index;
             let _ = tx.try_send(cache);
@@ -5900,9 +5904,9 @@ mod tests {
         };
 
         // Add cache entries for both files
-        let md_cache = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+test");
+        let md_cache = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+test", 4);
         let mut rs_cache =
-            crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+fn main(){}");
+            crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+fn main(){}", 4);
         rs_cache.file_index = 1;
         app.highlighted_cache_store.insert(0, md_cache);
         app.highlighted_cache_store.insert(1, rs_cache);
@@ -5938,7 +5942,7 @@ mod tests {
         };
 
         let rs_cache =
-            crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+fn main(){}");
+            crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+fn main(){}", 4);
         app.diff_cache = Some(rs_cache);
 
         app.toggle_markdown_rich();

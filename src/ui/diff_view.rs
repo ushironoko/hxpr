@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashSet;
 
 use lasso::Rodeo;
@@ -20,6 +21,19 @@ use crate::syntax::{
     get_theme, highlight_code_line, syntax_for_file, Highlighter, ParserPool,
 };
 
+/// Expand tab characters to spaces with fixed width.
+///
+/// Returns `Cow::Borrowed` when the input contains no tabs (zero allocation).
+/// Returns `Cow::Owned` when tabs are found, replacing each `\t` with `tab_width` spaces.
+pub fn expand_tabs(s: &str, tab_width: u8) -> Cow<'_, str> {
+    if !s.contains('\t') {
+        Cow::Borrowed(s)
+    } else {
+        let spaces = " ".repeat(tab_width as usize);
+        Cow::Owned(s.replace('\t', &spaces))
+    }
+}
+
 /// Build a plain DiffCache without syntax highlighting (diff coloring only).
 ///
 /// This is a fast path (~1ms) used to provide immediate visual feedback while
@@ -27,11 +41,14 @@ use crate::syntax::{
 ///
 /// # Arguments
 /// * `patch` - The diff patch content
+/// * `tab_width` - Number of spaces to replace each tab character with
 ///
 /// Returns a DiffCache with file_index set to 0 (caller should update).
-pub fn build_plain_diff_cache(patch: &str) -> DiffCache {
+pub fn build_plain_diff_cache(patch: &str, tab_width: u8) -> DiffCache {
+    let patch_hash = hash_string(patch);
+    let expanded = expand_tabs(patch, tab_width);
     let mut interner = Rodeo::default();
-    let lines: Vec<CachedDiffLine> = patch
+    let lines: Vec<CachedDiffLine> = expanded
         .lines()
         .map(|line| {
             let (line_type, content) = classify_line(line);
@@ -83,7 +100,7 @@ pub fn build_plain_diff_cache(patch: &str) -> DiffCache {
 
     DiffCache {
         file_index: 0,
-        patch_hash: hash_string(patch),
+        patch_hash,
         lines,
         interner,
         highlighted: false,
@@ -110,7 +127,11 @@ pub fn build_diff_cache(
     theme_name: &str,
     parser_pool: &mut ParserPool,
     markdown_rich: bool,
+    tab_width: u8,
 ) -> DiffCache {
+    let patch_hash = hash_string(patch);
+    let expanded = expand_tabs(patch, tab_width);
+    let patch = expanded.as_ref();
     let mut interner = Rodeo::default();
 
     // Get file extension for injection support check
@@ -208,7 +229,7 @@ pub fn build_diff_cache(
 
     DiffCache {
         file_index: 0, // Caller should update this
-        patch_hash: hash_string(patch),
+        patch_hash,
         lines,
         interner,
         highlighted: true,
@@ -1183,7 +1204,7 @@ fn parse_patch_to_lines(
     // This ensures consistent behavior with cached path
     // Creates a temporary ParserPool - this is acceptable for this rarely-used fallback path
     let mut parser_pool = ParserPool::new();
-    let cache = build_diff_cache(patch, filename, theme_name, &mut parser_pool, false);
+    let cache = build_diff_cache(patch, filename, theme_name, &mut parser_pool, false, 4);
 
     cache
         .lines
@@ -1599,7 +1620,7 @@ mod tests {
  }"#;
 
         let mut parser_pool = ParserPool::new();
-        let cache = build_diff_cache(patch, "test.rs", "Dracula", &mut parser_pool, false);
+        let cache = build_diff_cache(patch, "test.rs", "Dracula", &mut parser_pool, false, 4);
 
         // Line 1 is " use std::collections::HashMap;" (Context line)
         // Find the "use" keyword span
@@ -1642,7 +1663,7 @@ mod tests {
  }"#;
 
         let mut parser_pool = ParserPool::new();
-        let cache = build_diff_cache(patch, "test.rs", "Dracula", &mut parser_pool, false);
+        let cache = build_diff_cache(patch, "test.rs", "Dracula", &mut parser_pool, false, 4);
 
         // Line 4 is "-    let old_value = 100;" (Removed line)
         // Find the "let" keyword span - it should be syntax highlighted, not plain red
@@ -1698,7 +1719,7 @@ mod tests {
  export default oldValue;"#;
 
         let mut parser_pool = ParserPool::new();
-        let cache = build_diff_cache(patch, "test.ts", "Dracula", &mut parser_pool, false);
+        let cache = build_diff_cache(patch, "test.ts", "Dracula", &mut parser_pool, false, 4);
 
         // Line 1 is "-const oldValue = 42;" (Removed line)
         let removed_line = &cache.lines[1];
@@ -1752,7 +1773,7 @@ mod tests {
  function increment() {"#;
 
         let mut parser_pool = ParserPool::new();
-        let cache = build_diff_cache(patch, "Component.vue", "Dracula", &mut parser_pool, false);
+        let cache = build_diff_cache(patch, "Component.vue", "Dracula", &mut parser_pool, false, 4);
 
         // Line 2 is "+const doubled = computed(() => count.value * 2);" (Added line)
         let added_line = &cache.lines[2];
@@ -1958,8 +1979,8 @@ mod tests {
         let patch = "diff --git a/foo.rs b/foo.rs\n--- a/foo.rs\n+++ b/foo.rs\n@@ -1,3 +1,3 @@\n fn main() {\n-    println!(\"hello\");\n+    println!(\"world\");\n }";
         let mut parser_pool = ParserPool::new();
 
-        let plain = build_plain_diff_cache(patch);
-        let highlighted = build_diff_cache(patch, "foo.rs", "base16-ocean.dark", &mut parser_pool, false);
+        let plain = build_plain_diff_cache(patch, 4);
+        let highlighted = build_diff_cache(patch, "foo.rs", "base16-ocean.dark", &mut parser_pool, false, 4);
 
         assert_eq!(plain.lines.len(), highlighted.lines.len());
 
@@ -1980,8 +2001,8 @@ mod tests {
         comment_lines.insert(6); // 行インデックス6（added行）
         let mut parser_pool = ParserPool::new();
 
-        let plain = build_plain_diff_cache(patch);
-        let highlighted = build_diff_cache(patch, "foo.rs", "base16-ocean.dark", &mut parser_pool, false);
+        let plain = build_plain_diff_cache(patch, 4);
+        let highlighted = build_diff_cache(patch, "foo.rs", "base16-ocean.dark", &mut parser_pool, false, 4);
 
         assert_eq!(plain.lines.len(), highlighted.lines.len());
 
@@ -2038,7 +2059,7 @@ mod tests {
     fn test_build_plain_diff_cache_line_styles() {
         // 全 LineType を含むパッチ
         let patch = "diff --git a/foo.rs b/foo.rs\n@@ -1,3 +1,3 @@\n context\n+added\n-removed";
-        let cache = build_plain_diff_cache(patch);
+        let cache = build_plain_diff_cache(patch, 4);
 
         assert_eq!(cache.lines.len(), 5);
 
@@ -2125,7 +2146,7 @@ mod tests {
     #[test]
     fn test_render_cached_lines_out_of_bounds_range() {
         let patch = "@@ -1,2 +1,2 @@\n context\n+added\n-removed";
-        let cache = build_plain_diff_cache(patch);
+        let cache = build_plain_diff_cache(patch, 4);
         assert_eq!(cache.lines.len(), 4);
 
         // range が完全に範囲外 → 空の Vec
@@ -2138,7 +2159,7 @@ mod tests {
 
     #[test]
     fn test_render_cached_lines_empty_cache() {
-        let cache = build_plain_diff_cache("");
+        let cache = build_plain_diff_cache("", 4);
         assert!(cache.lines.is_empty());
 
         let result = render_cached_lines(&cache, 0..10, 0, &HashSet::new());
@@ -2172,6 +2193,7 @@ mod priming_diff_tests {
             "base16-ocean.dark",
             &mut parser_pool,
             false,
+            4,
         );
 
         // The import line should have syntax highlighting
@@ -2210,6 +2232,7 @@ mod priming_diff_tests {
             "base16-ocean.dark",
             &mut parser_pool,
             false,
+            4,
         );
 
         // Find import and const lines by content
@@ -2271,6 +2294,7 @@ mod priming_diff_tests {
             "base16-ocean.dark",
             &mut parser_pool,
             false,
+            4,
         );
 
         // Find the updated const line by content and ensure tokenized highlighting exists.
@@ -2303,7 +2327,7 @@ mod priming_diff_tests {
  author: world"#;
 
         let mut parser_pool = ParserPool::new();
-        let cache = build_diff_cache(patch, "data.yaml", "base16-ocean.dark", &mut parser_pool, false);
+        let cache = build_diff_cache(patch, "data.yaml", "base16-ocean.dark", &mut parser_pool, false, 4);
 
         // 行数が正しいこと（header + 4 content lines = 5）
         assert_eq!(cache.lines.len(), 5);
@@ -2331,7 +2355,7 @@ mod priming_diff_tests {
 -old line"#;
 
         let mut parser_pool = ParserPool::new();
-        let cache = build_diff_cache(patch, "file.unknown", "base16-ocean.dark", &mut parser_pool, false);
+        let cache = build_diff_cache(patch, "file.unknown", "base16-ocean.dark", &mut parser_pool, false, 4);
 
         assert_eq!(cache.lines.len(), 4);
 
@@ -2414,12 +2438,12 @@ mod priming_diff_tests {
         let mut parser_pool = ParserPool::new();
 
         // markdown_rich = false
-        let cache_normal = build_diff_cache(patch, "README.md", "base16-ocean.dark", &mut parser_pool, false);
+        let cache_normal = build_diff_cache(patch, "README.md", "base16-ocean.dark", &mut parser_pool, false, 4);
         assert!(!cache_normal.markdown_rich);
         assert!(cache_normal.highlighted);
 
         // markdown_rich = true
-        let cache_rich = build_diff_cache(patch, "README.md", "base16-ocean.dark", &mut parser_pool, true);
+        let cache_rich = build_diff_cache(patch, "README.md", "base16-ocean.dark", &mut parser_pool, true, 4);
         assert!(cache_rich.markdown_rich);
         assert!(cache_rich.highlighted);
     }
@@ -2433,7 +2457,7 @@ mod priming_diff_tests {
  fn bar() {}"#;
 
         let mut parser_pool = ParserPool::new();
-        let cache = build_diff_cache(patch, "test.rs", "base16-ocean.dark", &mut parser_pool, true);
+        let cache = build_diff_cache(patch, "test.rs", "base16-ocean.dark", &mut parser_pool, true, 4);
         // Flag is stored regardless of file type
         assert!(cache.markdown_rich);
     }
@@ -2447,8 +2471,8 @@ mod priming_diff_tests {
  Some text"#;
 
         let mut parser_pool = ParserPool::new();
-        let cache_normal = build_diff_cache(patch, "README.md", "base16-ocean.dark", &mut parser_pool, false);
-        let cache_rich = build_diff_cache(patch, "README.md", "base16-ocean.dark", &mut parser_pool, true);
+        let cache_normal = build_diff_cache(patch, "README.md", "base16-ocean.dark", &mut parser_pool, false, 4);
+        let cache_rich = build_diff_cache(patch, "README.md", "base16-ocean.dark", &mut parser_pool, true, 4);
 
         // Both should be highlighted
         assert!(cache_normal.highlighted);
@@ -2471,7 +2495,7 @@ mod priming_diff_tests {
 +```"#;
 
         let mut parser_pool = ParserPool::new();
-        let cache = build_diff_cache(patch, "test.md", "base16-ocean.dark", &mut parser_pool, false);
+        let cache = build_diff_cache(patch, "test.md", "base16-ocean.dark", &mut parser_pool, false, 4);
         assert!(cache.highlighted);
         assert!(!cache.lines.is_empty());
     }
@@ -2485,7 +2509,7 @@ mod priming_diff_tests {
  End"#;
 
         let mut parser_pool = ParserPool::new();
-        let cache = build_diff_cache(patch, "doc.markdown", "base16-ocean.dark", &mut parser_pool, false);
+        let cache = build_diff_cache(patch, "doc.markdown", "base16-ocean.dark", &mut parser_pool, false, 4);
         assert!(cache.highlighted);
         assert!(!cache.lines.is_empty());
     }
@@ -2497,7 +2521,7 @@ mod priming_diff_tests {
 -old text
 +new text"#;
 
-        let cache = build_plain_diff_cache(patch);
+        let cache = build_plain_diff_cache(patch, 4);
         assert!(!cache.highlighted);
         assert!(!cache.markdown_rich);
     }
@@ -2554,7 +2578,7 @@ mod priming_diff_tests {
  Some text
  More text"#;
 
-        let cache = build_plain_diff_cache(patch);
+        let cache = build_plain_diff_cache(patch, 4);
         assert_snapshot!("plain_diff_cache_markdown", format_diff_cache_spans(&cache));
     }
 
@@ -2569,7 +2593,7 @@ mod priming_diff_tests {
  More text"#;
 
         let mut parser_pool = ParserPool::new();
-        let cache = build_diff_cache(patch, "README.md", "base16-ocean.dark", &mut parser_pool, false);
+        let cache = build_diff_cache(patch, "README.md", "base16-ocean.dark", &mut parser_pool, false, 4);
 
         assert!(cache.highlighted);
         assert_snapshot!("highlighted_diff_cache_markdown", format_diff_cache_spans(&cache));
@@ -2585,8 +2609,8 @@ mod priming_diff_tests {
  plain text"#;
 
         let mut parser_pool = ParserPool::new();
-        let cache_normal = build_diff_cache(patch, "test.md", "base16-ocean.dark", &mut parser_pool, false);
-        let cache_rich = build_diff_cache(patch, "test.md", "base16-ocean.dark", &mut parser_pool, true);
+        let cache_normal = build_diff_cache(patch, "test.md", "base16-ocean.dark", &mut parser_pool, false, 4);
+        let cache_rich = build_diff_cache(patch, "test.md", "base16-ocean.dark", &mut parser_pool, true, 4);
 
         let snapshot_normal = format_diff_cache_spans(&cache_normal);
         let snapshot_rich = format_diff_cache_spans(&cache_rich);
@@ -2636,7 +2660,7 @@ mod priming_diff_tests {
 
         let mut parser_pool = ParserPool::new();
         let cache =
-            build_diff_cache(patch, "test.md", "base16-ocean.dark", &mut parser_pool, true);
+            build_diff_cache(patch, "test.md", "base16-ocean.dark", &mut parser_pool, true, 4);
 
         assert_snapshot!("markdown_table_rich", format_diff_cache_spans(&cache));
     }
@@ -2653,8 +2677,106 @@ mod priming_diff_tests {
 
         let mut parser_pool = ParserPool::new();
         let cache =
-            build_diff_cache(patch, "test.md", "base16-ocean.dark", &mut parser_pool, true);
+            build_diff_cache(patch, "test.md", "base16-ocean.dark", &mut parser_pool, true, 4);
 
         assert_snapshot!("markdown_list_rich", format_diff_cache_spans(&cache));
+    }
+
+    #[test]
+    fn test_expand_tabs() {
+        // No tabs → Cow::Borrowed (zero allocation)
+        let no_tabs = "hello world";
+        let result = expand_tabs(no_tabs, 4);
+        assert!(matches!(result, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(result, "hello world");
+
+        // With tabs → Cow::Owned
+        let with_tabs = "\thello\tworld";
+        let result = expand_tabs(with_tabs, 4);
+        assert!(matches!(result, std::borrow::Cow::Owned(_)));
+        assert_eq!(result, "    hello    world");
+
+        // Custom tab width
+        let result = expand_tabs("\tx", 2);
+        assert_eq!(result, "  x");
+
+        // Empty string
+        let result = expand_tabs("", 4);
+        assert!(matches!(result, std::borrow::Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn test_build_plain_diff_cache_with_tabs() {
+        let patch = "@@ -1 +1 @@\n+\tindented\n+\t\tdouble";
+        let cache = build_plain_diff_cache(patch, 4);
+
+        // Tab characters should be expanded to spaces
+        let line1_content: String = cache.lines[1]
+            .spans
+            .iter()
+            .map(|s| cache.resolve(s.content))
+            .collect();
+        assert!(
+            line1_content.contains("    indented"),
+            "Tab should be expanded to 4 spaces, got: {:?}",
+            line1_content
+        );
+
+        let line2_content: String = cache.lines[2]
+            .spans
+            .iter()
+            .map(|s| cache.resolve(s.content))
+            .collect();
+        assert!(
+            line2_content.contains("        double"),
+            "Double tab should be expanded to 8 spaces, got: {:?}",
+            line2_content
+        );
+    }
+
+    #[test]
+    fn test_build_diff_cache_with_tabs() {
+        let patch = "@@ -1 +1 @@\n+\tindented";
+        let mut parser_pool = ParserPool::new();
+        let cache = build_diff_cache(patch, "test.rs", "base16-ocean.dark", &mut parser_pool, false, 4);
+
+        // Tab characters should be expanded to spaces in highlighted path too
+        let line_content: String = cache.lines[1]
+            .spans
+            .iter()
+            .map(|s| cache.resolve(s.content))
+            .collect();
+        assert!(
+            line_content.contains("    indented"),
+            "Tab should be expanded to 4 spaces in highlighted cache, got: {:?}",
+            line_content
+        );
+    }
+
+    #[test]
+    fn test_patch_hash_uses_original() {
+        // patch_hash should be computed from the original patch (before tab expansion)
+        let patch_with_tabs = "@@ -1 +1 @@\n+\tindented";
+        let expected_hash = hash_string(patch_with_tabs);
+
+        let cache = build_plain_diff_cache(patch_with_tabs, 4);
+        assert_eq!(
+            cache.patch_hash, expected_hash,
+            "patch_hash should match hash of original patch"
+        );
+
+        let mut parser_pool = ParserPool::new();
+        let cache = build_diff_cache(
+            patch_with_tabs,
+            "test.rs",
+            "base16-ocean.dark",
+            &mut parser_pool,
+            false,
+            4,
+        );
+        assert_eq!(
+            cache.patch_hash, expected_hash,
+            "patch_hash in highlighted cache should match hash of original patch"
+        );
     }
 }
