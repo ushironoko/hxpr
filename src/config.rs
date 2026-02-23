@@ -45,6 +45,13 @@ pub struct DiffConfig {
     pub theme: String,
     #[serde(deserialize_with = "deserialize_tab_width")]
     pub tab_width: u8,
+    /// 追加/削除行に背景色を表示するかどうか
+    #[serde(default = "default_true")]
+    pub bg_color: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Deserialize tab_width with clamping: values below 1 are clamped to 1.
@@ -127,6 +134,7 @@ impl Default for DiffConfig {
         Self {
             theme: "base16-ocean.dark".to_owned(),
             tab_width: 4,
+            bg_color: true,
         }
     }
 }

@@ -94,7 +94,7 @@ pub fn build_plain_diff_cache(patch: &str, tab_width: u8) -> DiffCache {
                 ],
             };
 
-            CachedDiffLine { spans }
+            CachedDiffLine { spans, line_type }
         })
         .collect();
 
@@ -911,7 +911,7 @@ fn build_lines_with_cst(
                 }
             };
 
-            CachedDiffLine { spans }
+            CachedDiffLine { spans, line_type }
         })
         .collect()
 }
@@ -945,7 +945,7 @@ fn build_lines_with_syntect(
 
             let spans = build_line_spans(line_type, line, content, &mut highlighter, interner);
 
-            CachedDiffLine { spans }
+            CachedDiffLine { spans, line_type }
         })
         .collect()
 }
@@ -965,6 +965,7 @@ pub fn render_cached_lines<'a>(
     range: std::ops::Range<usize>,
     selected_line: usize,
     comment_lines: &HashSet<usize>,
+    bg_color: bool,
 ) -> Vec<Line<'a>> {
     // Clamp range to valid bounds to prevent out-of-bounds panic
     let len = cache.lines.len();
@@ -991,10 +992,18 @@ pub fn render_cached_lines<'a>(
                 .map(|s| Span::styled(cache.resolve(s.content), s.style));
             let all_spans: Vec<Span<'_>> = marker.into_iter().chain(base).collect();
 
+            let line = Line::from(all_spans);
+            // 選択行: REVERSED のみ（背景色 + REVERSED は fg/bg 反転で視認性が低下するため省略）
             if is_selected {
-                Line::from(all_spans).style(Style::default().add_modifier(Modifier::REVERSED))
+                line.style(Style::default().add_modifier(Modifier::REVERSED))
+            } else if bg_color {
+                match cached.line_type {
+                    LineType::Added => line.style(Style::default().bg(Color::Rgb(0, 60, 0))),
+                    LineType::Removed => line.style(Style::default().bg(Color::Rgb(60, 0, 0))),
+                    _ => line,
+                }
             } else {
-                Line::from(all_spans)
+                line
             }
         })
         .collect()
@@ -1115,6 +1124,7 @@ pub(crate) fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::l
             visible_start..visible_end,
             app.selected_line,
             &app.file_comment_lines,
+            app.config.diff.bg_color,
         )
     } else {
         // Fallback: parse without cache (should rarely happen)
@@ -2016,9 +2026,9 @@ mod tests {
         );
 
         // render_cached_lines でコメントマーカーが挿入されること
-        let plain_rendered = render_cached_lines(&plain, 0..plain.lines.len(), 0, &comment_lines);
+        let plain_rendered = render_cached_lines(&plain, 0..plain.lines.len(), 0, &comment_lines, false);
         let hl_rendered =
-            render_cached_lines(&highlighted, 0..highlighted.lines.len(), 0, &comment_lines);
+            render_cached_lines(&highlighted, 0..highlighted.lines.len(), 0, &comment_lines, false);
 
         for &line_idx in &[4usize, 6] {
             let plain_line_text: String = plain_rendered[line_idx]
@@ -2069,17 +2079,20 @@ mod tests {
         let meta = &cache.lines[0];
         assert_eq!(meta.spans.len(), 1);
         assert_eq!(meta.spans[0].style.fg, Some(Color::Yellow));
+        assert_eq!(meta.line_type, LineType::Meta);
 
         // Header 行 (@@): Cyan, 単一スパン
         let header = &cache.lines[1];
         assert_eq!(header.spans.len(), 1);
         assert_eq!(header.spans[0].style.fg, Some(Color::Cyan));
+        assert_eq!(header.line_type, LineType::Header);
 
         // Context 行: " " マーカー + コンテンツ, default style
         let context = &cache.lines[2];
         assert_eq!(context.spans.len(), 2);
         assert_eq!(cache.resolve(context.spans[0].content), " ");
         assert_eq!(context.spans[0].style.fg, None);
+        assert_eq!(context.line_type, LineType::Context);
 
         // Added 行: "+" マーカー + コンテンツ, Green
         let added = &cache.lines[3];
@@ -2087,6 +2100,7 @@ mod tests {
         assert_eq!(cache.resolve(added.spans[0].content), "+");
         assert_eq!(added.spans[0].style.fg, Some(Color::Green));
         assert_eq!(added.spans[1].style.fg, Some(Color::Green));
+        assert_eq!(added.line_type, LineType::Added);
 
         // Removed 行: "-" マーカー + コンテンツ, Red
         let removed = &cache.lines[4];
@@ -2094,6 +2108,7 @@ mod tests {
         assert_eq!(cache.resolve(removed.spans[0].content), "-");
         assert_eq!(removed.spans[0].style.fg, Some(Color::Red));
         assert_eq!(removed.spans[1].style.fg, Some(Color::Red));
+        assert_eq!(removed.line_type, LineType::Removed);
     }
 
     #[test]
@@ -2183,7 +2198,7 @@ mod tests {
         assert_eq!(cache.lines.len(), 4);
 
         // range が完全に範囲外 → 空の Vec
-        let result = render_cached_lines(&cache, 100..200, 0, &HashSet::new());
+        let result = render_cached_lines(&cache, 100..200, 0, &HashSet::new(), false);
         assert!(
             result.is_empty(),
             "Out-of-bounds range should return empty Vec"
@@ -2195,7 +2210,7 @@ mod tests {
         let cache = build_plain_diff_cache("", 4);
         assert!(cache.lines.is_empty());
 
-        let result = render_cached_lines(&cache, 0..10, 0, &HashSet::new());
+        let result = render_cached_lines(&cache, 0..10, 0, &HashSet::new(), false);
         assert!(result.is_empty(), "Empty cache should return empty Vec");
     }
 }

@@ -17,6 +17,7 @@ use crate::ai::orchestrator::{OrchestratorCommand, RallyEvent};
 use crate::ai::{Context, Orchestrator, RallyState};
 use crate::cache::{PrCacheKey, PrData, SessionCache};
 use crate::config::Config;
+use crate::diff::LineType;
 use crate::github::comment::{DiscussionComment, ReviewComment};
 use crate::github::{self, ChangedFile, PrStateFilter, PullRequest, PullRequestSummary};
 use crate::keybinding::{
@@ -85,6 +86,8 @@ pub struct InternedSpan {
 pub struct CachedDiffLine {
     /// 基本の Span（REVERSED なし）
     pub spans: Vec<InternedSpan>,
+    /// 行の種類（背景色の決定に使用）
+    pub line_type: LineType,
 }
 
 /// Diff表示のキャッシュ

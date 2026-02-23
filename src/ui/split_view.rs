@@ -358,6 +358,7 @@ fn render_diff_body(
             visible_start..visible_end,
             app.selected_line,
             &app.file_comment_lines,
+            app.config.diff.bg_color,
         )
     } else {
         let file = app.files().get(app.selected_file);
