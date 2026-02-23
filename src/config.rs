@@ -43,7 +43,17 @@ pub struct AiConfig {
 #[serde(default)]
 pub struct DiffConfig {
     pub theme: String,
+    #[serde(deserialize_with = "deserialize_tab_width")]
     pub tab_width: u8,
+}
+
+/// Deserialize tab_width with clamping: values below 1 are clamped to 1.
+fn deserialize_tab_width<'de, D>(deserializer: D) -> Result<u8, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = u8::deserialize(deserializer)?;
+    Ok(value.max(1))
 }
 
 /// Configurable keybindings
@@ -543,6 +553,35 @@ mod tests {
         "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.keybindings.toggle_markdown_rich.display(), "m");
+    }
+
+    #[test]
+    fn test_diff_tab_width_default() {
+        let config: Config = toml::from_str("").unwrap();
+        assert_eq!(config.diff.tab_width, 4);
+    }
+
+    #[test]
+    fn test_diff_tab_width_custom() {
+        let toml_str = r#"
+            [diff]
+            tab_width = 8
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.diff.tab_width, 8);
+    }
+
+    #[test]
+    fn test_diff_tab_width_zero_clamped_to_one() {
+        let toml_str = r#"
+            [diff]
+            tab_width = 0
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.diff.tab_width, 1,
+            "tab_width = 0 should be clamped to 1"
+        );
     }
 
     #[test]

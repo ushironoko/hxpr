@@ -1129,6 +1129,7 @@ pub(crate) fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::l
                     &f.filename,
                     theme_name,
                     &app.file_comment_lines,
+                    app.config.diff.tab_width,
                 ),
                 None => vec![Line::from("No diff available")],
             },
@@ -1199,12 +1200,13 @@ fn parse_patch_to_lines(
     filename: &str,
     theme_name: &str,
     comment_lines: &HashSet<usize>,
+    tab_width: u8,
 ) -> Vec<Line<'static>> {
     // Build DiffCache and then convert to Lines
     // This ensures consistent behavior with cached path
     // Creates a temporary ParserPool - this is acceptable for this rarely-used fallback path
     let mut parser_pool = ParserPool::new();
-    let cache = build_diff_cache(patch, filename, theme_name, &mut parser_pool, false, 4);
+    let cache = build_diff_cache(patch, filename, theme_name, &mut parser_pool, false, tab_width);
 
     cache
         .lines
@@ -2102,7 +2104,7 @@ mod tests {
 +added line"#;
 
         let comment_lines = HashSet::new();
-        let lines = parse_patch_to_lines(patch, 0, "test.rs", "base16-ocean.dark", &comment_lines);
+        let lines = parse_patch_to_lines(patch, 0, "test.rs", "base16-ocean.dark", &comment_lines, 4);
 
         // 4行: header, context, removed, added
         assert_eq!(lines.len(), 4);
@@ -2118,7 +2120,7 @@ mod tests {
         let mut comment_lines = HashSet::new();
         comment_lines.insert(2); // added 行にコメント
 
-        let lines = parse_patch_to_lines(patch, 2, "test.rs", "base16-ocean.dark", &comment_lines);
+        let lines = parse_patch_to_lines(patch, 2, "test.rs", "base16-ocean.dark", &comment_lines, 4);
 
         assert_eq!(lines.len(), 4);
 
@@ -2141,6 +2143,37 @@ mod tests {
             "Comment line should have ● marker, got: {:?}",
             comment_line_text
         );
+    }
+
+    #[test]
+    fn test_parse_patch_to_lines_respects_tab_width() {
+        let patch = "@@ -1 +1 @@\n+\tindented";
+        let comment_lines = HashSet::new();
+
+        // tab_width = 2: tab should expand to 2 spaces
+        let lines = parse_patch_to_lines(patch, 0, "test.rs", "base16-ocean.dark", &comment_lines, 2);
+        let line_text: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            line_text.contains("  indented"),
+            "tab_width=2 should expand tab to 2 spaces, got: {:?}",
+            line_text
+        );
+
+        // tab_width = 8: tab should expand to 8 spaces
+        let lines = parse_patch_to_lines(patch, 0, "test.rs", "base16-ocean.dark", &comment_lines, 8);
+        let line_text: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            line_text.contains("        indented"),
+            "tab_width=8 should expand tab to 8 spaces, got: {:?}",
+            line_text
+        );
+    }
+
+    #[test]
+    fn test_expand_tabs_tab_width_one() {
+        // tab_width = 1 should replace tabs with single spaces
+        let result = expand_tabs("\thello", 1);
+        assert_eq!(result, " hello");
     }
 
     #[test]
