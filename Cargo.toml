@@ -92,3 +92,7 @@ harness = false
 [[bench]]
 name = "diff_parsing"
 harness = false
+
+[profile.release]
+strip = true
+lto = "thin"
