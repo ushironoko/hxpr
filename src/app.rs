@@ -1987,6 +1987,25 @@ impl App {
             return Ok(());
         }
 
+        // Page down (Ctrl-d by default, also J)
+        if self.matches_single_key(&key, &kb.page_down) || Self::is_shift_char_shortcut(&key, 'j') {
+            if !self.files().is_empty() {
+                let page_step = terminal.size()?.height.saturating_sub(8) as usize;
+                let step = page_step.max(1);
+                self.selected_file =
+                    (self.selected_file + step).min(self.files().len().saturating_sub(1));
+            }
+            return Ok(());
+        }
+
+        // Page up (Ctrl-u by default, also K)
+        if self.matches_single_key(&key, &kb.page_up) || Self::is_shift_char_shortcut(&key, 'k') {
+            let page_step = terminal.size()?.height.saturating_sub(8) as usize;
+            let step = page_step.max(1);
+            self.selected_file = self.selected_file.saturating_sub(step);
+            return Ok(());
+        }
+
         // Open split view (Enter, Right arrow, or l)
         if self.matches_single_key(&key, &kb.open_panel)
             || self.matches_single_key(&key, &kb.move_right)
@@ -2287,6 +2306,27 @@ impl App {
                 self.selected_file = self.selected_file.saturating_sub(1);
                 self.sync_diff_to_selected_file();
             }
+            return Ok(());
+        }
+
+        // Page down (Ctrl-d by default, also J)
+        if self.matches_single_key(&key, &kb.page_down) || Self::is_shift_char_shortcut(&key, 'j') {
+            if !self.files().is_empty() {
+                let page_step = terminal.size()?.height.saturating_sub(8) as usize;
+                let step = page_step.max(1);
+                self.selected_file =
+                    (self.selected_file + step).min(self.files().len().saturating_sub(1));
+                self.sync_diff_to_selected_file();
+            }
+            return Ok(());
+        }
+
+        // Page up (Ctrl-u by default, also K)
+        if self.matches_single_key(&key, &kb.page_up) || Self::is_shift_char_shortcut(&key, 'k') {
+            let page_step = terminal.size()?.height.saturating_sub(8) as usize;
+            let step = page_step.max(1);
+            self.selected_file = self.selected_file.saturating_sub(step);
+            self.sync_diff_to_selected_file();
             return Ok(());
         }
 
@@ -2637,7 +2677,7 @@ impl App {
         }
 
         // Page down
-        if self.matches_single_key(&key, &kb.page_down) {
+        if self.matches_single_key(&key, &kb.page_down) || Self::is_shift_char_shortcut(&key, 'j') {
             if self.diff_line_count > 0 {
                 self.selected_line =
                     (self.selected_line + 20).min(self.diff_line_count.saturating_sub(1));
@@ -2647,7 +2687,7 @@ impl App {
         }
 
         // Page up
-        if self.matches_single_key(&key, &kb.page_up) {
+        if self.matches_single_key(&key, &kb.page_up) || Self::is_shift_char_shortcut(&key, 'k') {
             self.selected_line = self.selected_line.saturating_sub(20);
             self.adjust_scroll(visible_lines);
             return Ok(());
@@ -2902,6 +2942,36 @@ impl App {
                     rally_state.selected_log_index = Some(new_index);
 
                     // Auto-scroll to keep selection visible
+                    self.adjust_log_scroll_to_selection();
+                }
+            }
+            KeyCode::Char('J') => {
+                if let Some(ref mut rally_state) = self.ai_rally_state {
+                    let total_logs = rally_state.logs.len();
+                    if total_logs == 0 {
+                        return Ok(());
+                    }
+
+                    let page_step = rally_state.last_visible_log_height.saturating_sub(1).max(1);
+                    let current = rally_state.selected_log_index.unwrap_or(0);
+                    let new_index = (current + page_step).min(total_logs.saturating_sub(1));
+                    rally_state.selected_log_index = Some(new_index);
+                    self.adjust_log_scroll_to_selection();
+                }
+            }
+            KeyCode::Char('K') => {
+                if let Some(ref mut rally_state) = self.ai_rally_state {
+                    let total_logs = rally_state.logs.len();
+                    if total_logs == 0 {
+                        return Ok(());
+                    }
+
+                    let page_step = rally_state.last_visible_log_height.saturating_sub(1).max(1);
+                    let current = rally_state
+                        .selected_log_index
+                        .unwrap_or(total_logs.saturating_sub(1));
+                    let new_index = current.saturating_sub(page_step);
+                    rally_state.selected_log_index = Some(new_index);
                     self.adjust_log_scroll_to_selection();
                 }
             }
@@ -3698,6 +3768,40 @@ impl App {
                         self.selected_discussion_comment.saturating_sub(1);
                 }
             },
+            KeyCode::Char('J') => {
+                let step = visible_lines.max(1);
+                match self.comment_tab {
+                    CommentTab::Review => {
+                        if let Some(ref comments) = self.review_comments {
+                            if !comments.is_empty() {
+                                self.selected_comment =
+                                    (self.selected_comment + step).min(comments.len() - 1);
+                            }
+                        }
+                    }
+                    CommentTab::Discussion => {
+                        if let Some(ref comments) = self.discussion_comments {
+                            if !comments.is_empty() {
+                                self.selected_discussion_comment =
+                                    (self.selected_discussion_comment + step)
+                                        .min(comments.len() - 1);
+                            }
+                        }
+                    }
+                }
+            }
+            KeyCode::Char('K') => {
+                let step = visible_lines.max(1);
+                match self.comment_tab {
+                    CommentTab::Review => {
+                        self.selected_comment = self.selected_comment.saturating_sub(step);
+                    }
+                    CommentTab::Discussion => {
+                        self.selected_discussion_comment =
+                            self.selected_discussion_comment.saturating_sub(step);
+                    }
+                }
+            }
             KeyCode::Enter => match self.comment_tab {
                 CommentTab::Review => {
                     self.jump_to_comment();
@@ -3737,6 +3841,16 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => {
                 self.discussion_comment_detail_scroll =
                     self.discussion_comment_detail_scroll.saturating_sub(1);
+            }
+            KeyCode::Char('J') => {
+                self.discussion_comment_detail_scroll = self
+                    .discussion_comment_detail_scroll
+                    .saturating_add(visible_lines.max(1));
+            }
+            KeyCode::Char('K') => {
+                self.discussion_comment_detail_scroll = self
+                    .discussion_comment_detail_scroll
+                    .saturating_sub(visible_lines.max(1));
             }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.discussion_comment_detail_scroll = self
@@ -4359,6 +4473,22 @@ impl App {
         }
     }
 
+    /// True for uppercase shortcuts like `J`/`K` without Ctrl/Alt modifiers.
+    fn is_shift_char_shortcut(event: &KeyEvent, lower: char) -> bool {
+        if event.modifiers.contains(KeyModifiers::CONTROL)
+            || event.modifiers.contains(KeyModifiers::ALT)
+        {
+            return false;
+        }
+
+        let upper = lower.to_ascii_uppercase();
+        match event.code {
+            KeyCode::Char(c) if c == upper => true,
+            KeyCode::Char(c) if c == lower && event.modifiers.contains(KeyModifiers::SHIFT) => true,
+            _ => false,
+        }
+    }
+
     /// Try to match pending keys against a sequence.
     /// Returns SequenceMatch::Full if fully matched, Partial if prefix matches, None otherwise.
     fn try_match_sequence(&self, seq: &KeySequence) -> SequenceMatch {
@@ -4456,6 +4586,27 @@ impl App {
         // Move up (k or Up arrow)
         if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
             self.selected_pr = self.selected_pr.saturating_sub(1);
+            return Ok(());
+        }
+
+        // Page down (Ctrl-d by default, also J)
+        if self.matches_single_key(&key, &kb.page_down) || Self::is_shift_char_shortcut(&key, 'j') {
+            if pr_count > 0 {
+                let step = 20usize;
+                self.selected_pr = (self.selected_pr + step).min(pr_count.saturating_sub(1));
+                if self.pr_list_has_more
+                    && !self.pr_list_loading
+                    && self.selected_pr + 5 >= pr_count
+                {
+                    self.load_more_prs();
+                }
+            }
+            return Ok(());
+        }
+
+        // Page up (Ctrl-u by default, also K)
+        if self.matches_single_key(&key, &kb.page_up) || Self::is_shift_char_shortcut(&key, 'k') {
+            self.selected_pr = self.selected_pr.saturating_sub(20);
             return Ok(());
         }
 
@@ -4785,6 +4936,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::{KeyEventKind, KeyEventState};
 
     #[test]
     fn test_find_diff_line_index_basic() {
@@ -6025,6 +6177,36 @@ mod tests {
         app.retry_load();
         let req = rx.try_recv().unwrap();
         assert!(matches!(req, RefreshRequest::LocalRefresh));
+    }
+
+    #[test]
+    fn test_is_shift_char_shortcut_accepts_uppercase() {
+        let key = KeyEvent {
+            code: KeyCode::Char('J'),
+            modifiers: KeyModifiers::SHIFT,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        };
+        assert!(App::is_shift_char_shortcut(&key, 'j'));
+    }
+
+    #[test]
+    fn test_is_shift_char_shortcut_rejects_ctrl_or_alt() {
+        let ctrl = KeyEvent {
+            code: KeyCode::Char('J'),
+            modifiers: KeyModifiers::SHIFT | KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        };
+        let alt = KeyEvent {
+            code: KeyCode::Char('K'),
+            modifiers: KeyModifiers::SHIFT | KeyModifiers::ALT,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        };
+
+        assert!(!App::is_shift_char_shortcut(&ctrl, 'j'));
+        assert!(!App::is_shift_char_shortcut(&alt, 'k'));
     }
 
     #[test]

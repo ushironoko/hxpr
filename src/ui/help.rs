@@ -149,7 +149,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             )
         )),
         Line::from(format!(
-            "{}  Page scroll",
+            "{}  Page scroll (also J/K)",
             fmt_key(
                 &format!("{}/{}", kb.page_down.display(), kb.page_up.display()),
                 key_width
@@ -237,11 +237,11 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             fmt_key(&kb.open_panel.display(), key_width)
         )),
         Line::from(format!(
-            "{}  Page down",
+            "{}  Page down (also J)",
             fmt_key(&kb.page_down.display(), key_width)
         )),
         Line::from(format!(
-            "{}  Page up",
+            "{}  Page up (also K)",
             fmt_key(&kb.page_up.display(), key_width)
         )),
         Line::from(format!(
