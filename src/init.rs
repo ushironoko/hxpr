@@ -11,6 +11,8 @@ const DEFAULT_CONFIG: &str = r#"# Editor for writing review body.
 
 [diff]
 theme = "base16-ocean.dark"
+# Number of spaces per tab character in diff view (minimum: 1)
+tab_width = 4
 
 [keybindings]
 approve = 'a'
