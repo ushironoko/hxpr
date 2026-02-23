@@ -212,6 +212,7 @@ mod tests {
     fn make_test_pr(title: &str, updated_at: &str) -> PullRequest {
         PullRequest {
             number: 1,
+            node_id: None,
             title: title.to_string(),
             body: None,
             state: "open".to_string(),

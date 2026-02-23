@@ -85,6 +85,7 @@ pub async fn fetch_local_diff(
 
     let pr = PullRequest {
         number: 0,
+        node_id: None,
         title: "Local HEAD diff".to_string(),
         body: Some("Current working tree diff from HEAD".to_string()),
         state: "local".to_string(),
@@ -132,6 +133,7 @@ async fn merge_missing_local_changes(
             additions: *additions,
             deletions: *deletions,
             patch: if patch.is_empty() { None } else { Some(patch) },
+            viewed: false,
         });
     }
 
@@ -159,6 +161,7 @@ async fn merge_name_only_files(working_dir: Option<&str>, files: &mut Vec<Change
             additions: 0,
             deletions: 0,
             patch: if patch.is_empty() { None } else { Some(patch) },
+            viewed: false,
         });
     }
 
@@ -186,6 +189,7 @@ async fn merge_untracked_files(working_dir: Option<&str>, files: &mut Vec<Change
             additions: 0,
             deletions: 0,
             patch: if patch.is_empty() { None } else { Some(patch) },
+            viewed: false,
         });
     }
 
@@ -198,6 +202,20 @@ async fn fetch_and_send(repo: &str, pr_number: u32, tx: mpsc::Sender<DataLoadRes
         github::fetch_changed_files(repo, pr_number)
     ) {
         Ok((pr, mut files)) => {
+            if let Some(pr_node_id) = pr.node_id.as_deref() {
+                match github::fetch_files_viewed_state(repo, pr_node_id).await {
+                    Ok(viewed_state) => {
+                        for file in files.iter_mut() {
+                            file.viewed =
+                                viewed_state.get(&file.filename).copied().unwrap_or(false);
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to fetch viewed-state for PR files: {}", e);
+                    }
+                }
+            }
+
             // Check if any files have missing patches (large file limitation)
             let has_missing_patches = files.iter().any(|f| f.patch.is_none());
 
@@ -362,6 +380,7 @@ fn build_changed_files(
                 additions,
                 deletions,
                 patch: Some(patch),
+                viewed: false,
             });
         }
     }

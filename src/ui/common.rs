@@ -67,6 +67,7 @@ mod tests {
         app.data_state = DataState::Loaded {
             pr: Box::new(PullRequest {
                 number: 42,
+                node_id: None,
                 title: "Add feature X".to_string(),
                 body: None,
                 state: "open".to_string(),

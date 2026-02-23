@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
-use super::client::{gh_api, gh_api_paginate, gh_command};
+use super::client::{gh_api, gh_api_graphql, gh_api_paginate, gh_command, FieldValue};
 use crate::app::ReviewAction;
 
 /// PR状態フィルタ（型安全）
@@ -60,6 +61,8 @@ pub struct Label {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PullRequest {
     pub number: u32,
+    #[serde(default, rename = "node_id")]
+    pub node_id: Option<String>,
     pub title: String,
     pub body: Option<String>,
     pub state: String,
@@ -88,6 +91,8 @@ pub struct ChangedFile {
     pub additions: u32,
     pub deletions: u32,
     pub patch: Option<String>,
+    #[serde(default)]
+    pub viewed: bool,
 }
 
 pub async fn fetch_pr(repo: &str, pr_number: u32) -> Result<PullRequest> {
@@ -132,6 +137,135 @@ pub async fn submit_review(
 /// Fetch the raw diff for a PR using `gh pr diff`
 pub async fn fetch_pr_diff(repo: &str, pr_number: u32) -> Result<String> {
     gh_command(&["pr", "diff", &pr_number.to_string(), "-R", repo]).await
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphqlPageInfo {
+    #[serde(rename = "hasNextPage")]
+    has_next_page: bool,
+    #[serde(rename = "endCursor")]
+    end_cursor: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphqlPrFileNode {
+    path: String,
+    #[serde(rename = "viewerViewedState")]
+    viewer_viewed_state: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphqlPrFilesConnection {
+    nodes: Vec<GraphqlPrFileNode>,
+    #[serde(rename = "pageInfo")]
+    page_info: GraphqlPageInfo,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphqlPrNode {
+    files: GraphqlPrFilesConnection,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphqlFilesViewedStateData {
+    node: Option<GraphqlPrNode>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphqlFilesViewedStateResponse {
+    data: Option<GraphqlFilesViewedStateData>,
+}
+
+pub async fn fetch_files_viewed_state(
+    _repo: &str,
+    pr_node_id: &str,
+) -> Result<HashMap<String, bool>> {
+    let query = r#"
+query($pullRequestId: ID!, $after: String) {
+  node(id: $pullRequestId) {
+    ... on PullRequest {
+      files(first: 100, after: $after) {
+        nodes {
+          path
+          viewerViewedState
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+    }
+  }
+}
+"#;
+
+    let mut viewed_state = HashMap::new();
+    let mut after: Option<String> = None;
+
+    loop {
+        let mut fields = vec![("pullRequestId", FieldValue::String(pr_node_id))];
+        if let Some(cursor) = after.as_deref() {
+            fields.push(("after", FieldValue::String(cursor)));
+        }
+
+        let response = gh_api_graphql(query, &fields).await?;
+
+        if let Some(errors) = response.get("errors") {
+            anyhow::bail!("GitHub GraphQL returned errors: {}", errors);
+        }
+
+        let parsed: GraphqlFilesViewedStateResponse = serde_json::from_value(response)
+            .context("Failed to parse files viewed-state GraphQL response")?;
+        let Some(data) = parsed.data else {
+            anyhow::bail!("GitHub GraphQL response missing data");
+        };
+        let Some(node) = data.node else {
+            anyhow::bail!("Pull request node not found for viewed-state query");
+        };
+
+        for file in node.files.nodes {
+            viewed_state.insert(
+                file.path,
+                matches!(file.viewer_viewed_state.as_deref(), Some("VIEWED")),
+            );
+        }
+
+        if node.files.page_info.has_next_page {
+            let Some(next_cursor) = node.files.page_info.end_cursor else {
+                anyhow::bail!("GitHub GraphQL pageInfo missing endCursor");
+            };
+            after = Some(next_cursor);
+        } else {
+            break;
+        }
+    }
+
+    Ok(viewed_state)
+}
+
+pub async fn mark_file_as_viewed(_repo: &str, pr_node_id: &str, path: &str) -> Result<()> {
+    let query = r#"
+mutation($pullRequestId: ID!, $path: String!) {
+  markFileAsViewed(input: { pullRequestId: $pullRequestId, path: $path }) {
+    clientMutationId
+  }
+}
+"#;
+
+    let response = gh_api_graphql(
+        query,
+        &[
+            ("pullRequestId", FieldValue::String(pr_node_id)),
+            ("path", FieldValue::String(path)),
+        ],
+    )
+    .await?;
+
+    if let Some(errors) = response.get("errors") {
+        anyhow::bail!("GitHub GraphQL returned errors: {}", errors);
+    }
+
+    Ok(())
 }
 
 /// ページネーション結果
