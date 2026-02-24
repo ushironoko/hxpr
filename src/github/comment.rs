@@ -96,6 +96,40 @@ pub async fn create_review_comment(
     serde_json::from_value(json).context("Failed to parse created comment response")
 }
 
+/// 複数行レビューコメントを作成する。
+///
+/// GitHub API の `line`/`start_line`/`side`/`start_side` パラメータを使用。
+/// `start_line` < `line` であること。単一行の場合は `create_review_comment` を使用。
+pub async fn create_multiline_review_comment(
+    repo: &str,
+    pr_number: u32,
+    commit_id: &str,
+    path: &str,
+    start_line: u32,
+    end_line: u32,
+    side: &str,
+    body: &str,
+) -> Result<ReviewComment> {
+    let endpoint = format!("repos/{}/pulls/{}/comments", repo, pr_number);
+    let start_line_str = start_line.to_string();
+    let end_line_str = end_line.to_string();
+    let json = gh_api_post(
+        &endpoint,
+        &[
+            ("body", FieldValue::String(body)),
+            ("commit_id", FieldValue::String(commit_id)),
+            ("path", FieldValue::String(path)),
+            ("start_line", FieldValue::Raw(&start_line_str)),
+            ("line", FieldValue::Raw(&end_line_str)),
+            ("start_side", FieldValue::String(side)),
+            ("side", FieldValue::String(side)),
+            ("subject_type", FieldValue::String("line")),
+        ],
+    )
+    .await?;
+    serde_json::from_value(json).context("Failed to parse created multiline comment response")
+}
+
 pub async fn create_reply_comment(
     repo: &str,
     pr_number: u32,

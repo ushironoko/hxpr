@@ -122,6 +122,27 @@ pub fn hash_string(s: &str) -> u64 {
     hasher.finish()
 }
 
+/// 複数行選択の状態
+#[derive(Debug, Clone)]
+pub struct MultilineSelection {
+    /// 選択開始行（diff内のインデックス）。Shift+Enter押下時の行。
+    pub anchor_line: usize,
+    /// 選択終了行（diff内のインデックス）。カーソル移動で更新。
+    pub cursor_line: usize,
+}
+
+impl MultilineSelection {
+    /// 選択範囲の先頭行（小さい方）
+    pub fn start(&self) -> usize {
+        self.anchor_line.min(self.cursor_line)
+    }
+
+    /// 選択範囲の末尾行（大きい方）
+    pub fn end(&self) -> usize {
+        self.anchor_line.max(self.cursor_line)
+    }
+}
+
 /// 行ベース入力のコンテキスト（コメント/サジェスチョン共通）
 #[derive(Debug, Clone)]
 pub struct LineInputContext {
@@ -129,6 +150,8 @@ pub struct LineInputContext {
     pub line_number: u32,
     /// patch 内の position（1始まり）。GitHub API の `position` パラメータに対応。
     pub diff_position: u32,
+    /// 複数行選択時の開始行番号（new file の行番号）
+    pub start_line_number: Option<u32>,
 }
 
 /// 統一入力モード
@@ -374,6 +397,8 @@ pub struct App {
     pub selected_line: usize,
     pub diff_line_count: usize,
     pub scroll_offset: usize,
+    /// 複数行選択モードの状態（None = 非選択モード）
+    pub multiline_selection: Option<MultilineSelection>,
     /// 統一入力モード
     pub input_mode: Option<InputMode>,
     /// 統一入力テキストエリア
@@ -492,6 +517,7 @@ impl App {
             selected_line: 0,
             diff_line_count: 0,
             scroll_offset: 0,
+            multiline_selection: None,
             input_mode: None,
             input_text_area: TextArea::with_submit_key(config.keybindings.submit.clone()),
             config,
@@ -567,6 +593,7 @@ impl App {
             selected_line: 0,
             diff_line_count: 0,
             scroll_offset: 0,
+            multiline_selection: None,
             input_mode: None,
             input_text_area: TextArea::with_submit_key(config.keybindings.submit.clone()),
             config,
@@ -2436,6 +2463,55 @@ impl App {
         // Clone keybindings to avoid borrow issues with self
         let kb = self.config.keybindings.clone();
 
+        // 複数行選択モード中
+        if self.multiline_selection.is_some() {
+            // Move down: カーソルを下に移動
+            if self.matches_single_key(&key, &kb.move_down) || key.code == KeyCode::Down {
+                if self.diff_line_count > 0 {
+                    let new_cursor =
+                        (self.selected_line + 1).min(self.diff_line_count.saturating_sub(1));
+                    self.selected_line = new_cursor;
+                    if let Some(ref mut sel) = self.multiline_selection {
+                        sel.cursor_line = new_cursor;
+                    }
+                    self.adjust_scroll(visible_lines);
+                }
+                return Ok(());
+            }
+
+            // Move up: カーソルを上に移動
+            if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
+                let new_cursor = self.selected_line.saturating_sub(1);
+                self.selected_line = new_cursor;
+                if let Some(ref mut sel) = self.multiline_selection {
+                    sel.cursor_line = new_cursor;
+                }
+                self.adjust_scroll(visible_lines);
+                return Ok(());
+            }
+
+            // Enter / c: 選択範囲でコメント入力を開始
+            if key.code == KeyCode::Enter || self.matches_single_key(&key, &kb.comment) {
+                self.enter_multiline_comment_input();
+                return Ok(());
+            }
+
+            // s: 選択範囲でサジェスチョン入力を開始
+            if self.matches_single_key(&key, &kb.suggestion) {
+                self.enter_multiline_suggestion_input();
+                return Ok(());
+            }
+
+            // Esc / q: 選択モードをキャンセル
+            if self.matches_single_key(&key, &kb.quit) || key.code == KeyCode::Esc {
+                self.multiline_selection = None;
+                return Ok(());
+            }
+
+            // その他のキーは無視（選択モード中は限定操作のみ）
+            return Ok(());
+        }
+
         // コメントパネルフォーカス中
         if self.comment_panel_open {
             // Move down in panel
@@ -2674,6 +2750,12 @@ impl App {
         }
 
         // Common single-key bindings
+
+        // Shift+Enter: 複数行選択モードに入る
+        if key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::SHIFT) {
+            self.enter_multiline_selection();
+            return Ok(());
+        }
 
         // Move down
         if self.matches_single_key(&key, &kb.move_down) || key.code == KeyCode::Down {
@@ -3385,16 +3467,25 @@ impl App {
         let repo = self.repo.clone();
         let pr_number = self.pr_number();
         let position = ctx.diff_position;
+        let start_line = ctx.start_line_number;
+        let end_line = ctx.line_number;
 
         let (tx, rx) = mpsc::channel(1);
         self.comment_submit_receiver = Some((pr_number, rx));
         self.comment_submitting = true;
 
         tokio::spawn(async move {
-            let result = github::create_review_comment(
-                &repo, pr_number, &commit_id, &filename, position, &body,
-            )
-            .await;
+            let result = if let Some(start) = start_line {
+                github::create_multiline_review_comment(
+                    &repo, pr_number, &commit_id, &filename, start, end_line, "RIGHT", &body,
+                )
+                .await
+            } else {
+                github::create_review_comment(
+                    &repo, pr_number, &commit_id, &filename, position, &body,
+                )
+                .await
+            };
 
             let _ = tx
                 .send(match result {
@@ -3419,16 +3510,25 @@ impl App {
         let repo = self.repo.clone();
         let pr_number = self.pr_number();
         let position = ctx.diff_position;
+        let start_line = ctx.start_line_number;
+        let end_line = ctx.line_number;
 
         let (tx, rx) = mpsc::channel(1);
         self.comment_submit_receiver = Some((pr_number, rx));
         self.comment_submitting = true;
 
         tokio::spawn(async move {
-            let result = github::create_review_comment(
-                &repo, pr_number, &commit_id, &filename, position, &body,
-            )
-            .await;
+            let result = if let Some(start) = start_line {
+                github::create_multiline_review_comment(
+                    &repo, pr_number, &commit_id, &filename, start, end_line, "RIGHT", &body,
+                )
+                .await
+            } else {
+                github::create_review_comment(
+                    &repo, pr_number, &commit_id, &filename, position, &body,
+                )
+                .await
+            };
 
             let _ = tx
                 .send(match result {
@@ -3506,6 +3606,7 @@ impl App {
             file_index: self.selected_file,
             line_number,
             diff_position,
+            start_line_number: None,
         }));
         self.input_text_area.clear();
         self.preview_return_state = self.state;
@@ -3572,6 +3673,7 @@ impl App {
     fn sync_diff_to_selected_file(&mut self) {
         self.selected_line = 0;
         self.scroll_offset = 0;
+        self.multiline_selection = None;
         self.comment_panel_open = false;
         self.comment_panel_scroll = 0;
         self.clear_pending_keys();
@@ -3624,10 +3726,176 @@ impl App {
                 file_index: self.selected_file,
                 line_number,
                 diff_position,
+                start_line_number: None,
             },
             original_code: original_code.clone(),
         });
         // サジェスチョンは元コードを初期値として設定
+        self.input_text_area.set_content(&original_code);
+        self.preview_return_state = self.state;
+        self.state = AppState::TextInput;
+    }
+
+    /// 複数行選択モードを開始する（Shift+Enter）
+    fn enter_multiline_selection(&mut self) {
+        if self.local_mode {
+            return;
+        }
+        // 現在の行がコメント可能な行であることを確認
+        let Some(file) = self.files().get(self.selected_file) else {
+            return;
+        };
+        let Some(patch) = file.patch.as_ref() else {
+            return;
+        };
+        let Some(line_info) = crate::diff::get_line_info(patch, self.selected_line) else {
+            return;
+        };
+        if !matches!(
+            line_info.line_type,
+            crate::diff::LineType::Added | crate::diff::LineType::Context
+        ) {
+            return;
+        }
+        self.multiline_selection = Some(MultilineSelection {
+            anchor_line: self.selected_line,
+            cursor_line: self.selected_line,
+        });
+    }
+
+    /// 複数行選択範囲からコメント入力を開始
+    fn enter_multiline_comment_input(&mut self) {
+        if self.local_mode {
+            return;
+        }
+        let Some(selection) = self.multiline_selection.take() else {
+            return;
+        };
+        let Some(file) = self.files().get(self.selected_file) else {
+            return;
+        };
+        let Some(patch) = file.patch.as_ref() else {
+            return;
+        };
+
+        let start = selection.start();
+        let end = selection.end();
+
+        // 終了行の情報を取得（GitHub API の line パラメータ）
+        let Some(end_info) = crate::diff::get_line_info(patch, end) else {
+            return;
+        };
+        if !matches!(
+            end_info.line_type,
+            crate::diff::LineType::Added | crate::diff::LineType::Context
+        ) {
+            return;
+        }
+        let Some(end_line_number) = end_info.new_line_number else {
+            return;
+        };
+        let Some(diff_position) = end_info.diff_position else {
+            return;
+        };
+
+        // 開始行の情報を取得（GitHub API の start_line パラメータ）
+        let Some(start_info) = crate::diff::get_line_info(patch, start) else {
+            return;
+        };
+        let Some(start_line_number) = start_info.new_line_number else {
+            return;
+        };
+
+        // 単一行の場合は start_line_number を None にする
+        let start_line = if start_line_number < end_line_number {
+            Some(start_line_number)
+        } else {
+            None
+        };
+
+        self.input_mode = Some(InputMode::Comment(LineInputContext {
+            file_index: self.selected_file,
+            line_number: end_line_number,
+            diff_position,
+            start_line_number: start_line,
+        }));
+        self.input_text_area.clear();
+        self.preview_return_state = self.state;
+        self.state = AppState::TextInput;
+    }
+
+    /// 複数行選択範囲からサジェスチョン入力を開始
+    fn enter_multiline_suggestion_input(&mut self) {
+        if self.local_mode {
+            return;
+        }
+        let Some(selection) = self.multiline_selection.take() else {
+            return;
+        };
+        let Some(file) = self.files().get(self.selected_file) else {
+            return;
+        };
+        let Some(patch) = file.patch.as_ref() else {
+            return;
+        };
+
+        let start = selection.start();
+        let end = selection.end();
+
+        // 終了行の情報を取得
+        let Some(end_info) = crate::diff::get_line_info(patch, end) else {
+            return;
+        };
+        if !matches!(
+            end_info.line_type,
+            crate::diff::LineType::Added | crate::diff::LineType::Context
+        ) {
+            return;
+        }
+        let Some(end_line_number) = end_info.new_line_number else {
+            return;
+        };
+        let Some(diff_position) = end_info.diff_position else {
+            return;
+        };
+
+        // 開始行の情報を取得
+        let Some(start_info) = crate::diff::get_line_info(patch, start) else {
+            return;
+        };
+        let Some(start_line_number) = start_info.new_line_number else {
+            return;
+        };
+
+        // 選択範囲のコードを収集
+        let mut original_lines = Vec::new();
+        for line_idx in start..=end {
+            if let Some(info) = crate::diff::get_line_info(patch, line_idx) {
+                if matches!(
+                    info.line_type,
+                    crate::diff::LineType::Added | crate::diff::LineType::Context
+                ) {
+                    original_lines.push(info.line_content.clone());
+                }
+            }
+        }
+        let original_code = original_lines.join("\n");
+
+        let start_line = if start_line_number < end_line_number {
+            Some(start_line_number)
+        } else {
+            None
+        };
+
+        self.input_mode = Some(InputMode::Suggestion {
+            context: LineInputContext {
+                file_index: self.selected_file,
+                line_number: end_line_number,
+                diff_position,
+                start_line_number: start_line,
+            },
+            original_code: original_code.clone(),
+        });
         self.input_text_area.set_content(&original_code);
         self.preview_return_state = self.state;
         self.state = AppState::TextInput;
@@ -4899,6 +5167,7 @@ impl App {
             selected_line: 0,
             diff_line_count: 0,
             scroll_offset: 0,
+            multiline_selection: None,
             input_mode: None,
             input_text_area: TextArea::with_submit_key(config.keybindings.submit.clone()),
             config,
