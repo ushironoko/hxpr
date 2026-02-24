@@ -286,6 +286,7 @@ enum MarkViewedResult {
         marked_paths: Vec<String>,
         total_targets: usize,
         error: Option<String>,
+        set_viewed: bool,
     },
 }
 
@@ -429,7 +430,7 @@ pub struct App {
     // Comment submission state
     comment_submit_receiver: PrReceiver<CommentSubmitResult>,
     // File viewed-state mutation results
-    mark_viewed_receiver: Option<mpsc::Receiver<MarkViewedResult>>,
+    mark_viewed_receiver: PrReceiver<MarkViewedResult>,
     comment_submitting: bool,
     /// Last submission result: (success, message)
     pub submission_result: Option<(bool, String)>,
@@ -1442,7 +1443,7 @@ impl App {
     }
 
     fn poll_mark_viewed_updates(&mut self) {
-        let Some(ref mut rx) = self.mark_viewed_receiver else {
+        let Some((origin_pr, ref mut rx)) = self.mark_viewed_receiver else {
             return;
         };
 
@@ -1451,22 +1452,30 @@ impl App {
                 marked_paths,
                 total_targets,
                 error,
+                set_viewed,
             }) => {
                 self.mark_viewed_receiver = None;
-                self.apply_viewed_state_to_files(&marked_paths);
 
+                if self.pr_number == Some(origin_pr) {
+                    self.apply_viewed_state_to_files(&marked_paths, set_viewed);
+                }
+
+                let action_label = if set_viewed { "viewed" } else { "unviewed" };
                 match error {
                     Some(err) => {
                         if marked_paths.is_empty() {
-                            self.submission_result =
-                                Some((false, format!("Mark viewed failed: {}", err)));
+                            self.submission_result = Some((
+                                false,
+                                format!("Mark {} failed: {}", action_label, err),
+                            ));
                         } else {
                             self.submission_result = Some((
                                 false,
                                 format!(
-                                    "Marked {}/{} files, then failed: {}",
+                                    "Marked {}/{} files as {}, then failed: {}",
                                     marked_paths.len(),
                                     total_targets,
+                                    action_label,
                                     err
                                 ),
                             ));
@@ -1475,7 +1484,11 @@ impl App {
                     None => {
                         self.submission_result = Some((
                             true,
-                            format!("Marked {} file(s) as viewed", marked_paths.len()),
+                            format!(
+                                "Marked {} file(s) as {}",
+                                marked_paths.len(),
+                                action_label
+                            ),
                         ));
                     }
                 }
@@ -1488,7 +1501,7 @@ impl App {
         }
     }
 
-    fn apply_viewed_state_to_files(&mut self, marked_paths: &[String]) {
+    fn apply_viewed_state_to_files(&mut self, marked_paths: &[String], set_viewed: bool) {
         if marked_paths.is_empty() {
             return;
         }
@@ -1497,7 +1510,7 @@ impl App {
         if let DataState::Loaded { files, .. } = &mut self.data_state {
             for file in files.iter_mut() {
                 if marked_set.contains(file.filename.as_str()) {
-                    file.viewed = true;
+                    file.viewed = set_viewed;
                 }
             }
         }
@@ -2193,13 +2206,9 @@ impl App {
         let Some(file) = self.files().get(self.selected_file) else {
             return;
         };
-        if file.viewed {
-            self.submission_result = Some((true, "File is already marked as viewed".to_string()));
-            self.submission_result_time = Some(Instant::now());
-            return;
-        }
+        let set_viewed = !file.viewed;
 
-        self.start_mark_paths_as_viewed(vec![file.filename.clone()]);
+        self.start_mark_paths_as_viewed(vec![file.filename.clone()], set_viewed);
     }
 
     fn start_mark_selected_directory_as_viewed(&mut self) {
@@ -2211,15 +2220,20 @@ impl App {
             return;
         }
 
-        self.start_mark_paths_as_viewed(target_paths);
+        self.start_mark_paths_as_viewed(target_paths, true);
     }
 
-    fn start_mark_paths_as_viewed(&mut self, paths: Vec<String>) {
+    fn start_mark_paths_as_viewed(&mut self, paths: Vec<String>, set_viewed: bool) {
         let total_targets = paths.len();
         if total_targets == 0 {
             return;
         }
 
+        let Some(pr_number) = self.pr_number else {
+            self.submission_result = Some((false, "PR number not set".to_string()));
+            self.submission_result_time = Some(Instant::now());
+            return;
+        };
         let Some(pr) = self.pr() else {
             self.submission_result = Some((false, "PR metadata not loaded".to_string()));
             self.submission_result_time = Some(Instant::now());
@@ -2233,10 +2247,11 @@ impl App {
 
         let repo = self.repo.clone();
         let (tx, rx) = mpsc::channel(1);
-        self.mark_viewed_receiver = Some(rx);
+        self.mark_viewed_receiver = Some((pr_number, rx));
+        let action_label = if set_viewed { "viewed" } else { "unviewed" };
         self.submission_result = Some((
             true,
-            format!("Marking {} file(s) as viewed...", total_targets),
+            format!("Marking {} file(s) as {}...", total_targets, action_label),
         ));
         self.submission_result_time = Some(Instant::now());
 
@@ -2245,7 +2260,12 @@ impl App {
             let mut error = None;
 
             for path in paths {
-                match github::mark_file_as_viewed(&repo, &pr_node_id, &path).await {
+                let result = if set_viewed {
+                    github::mark_file_as_viewed(&repo, &pr_node_id, &path).await
+                } else {
+                    github::unmark_file_as_viewed(&repo, &pr_node_id, &path).await
+                };
+                match result {
                     Ok(()) => marked_paths.push(path),
                     Err(e) => {
                         error = Some(format!("{}: {}", path, e));
@@ -2259,6 +2279,7 @@ impl App {
                     marked_paths,
                     total_targets,
                     error,
+                    set_viewed,
                 })
                 .await;
         });
@@ -2281,7 +2302,14 @@ impl App {
 
         files
             .iter()
-            .filter(|file| file.filename.starts_with(&directory_prefix) && !file.viewed)
+            .filter(|file| {
+                let in_scope = if directory_prefix.is_empty() {
+                    !file.filename.contains('/')
+                } else {
+                    file.filename.starts_with(&directory_prefix)
+                };
+                in_scope && !file.viewed
+            })
             .map(|file| file.filename.clone())
             .collect()
     }
@@ -5200,7 +5228,7 @@ mod tests {
         let (_submit_tx, submit_rx) = mpsc::channel(1);
         app.comment_submit_receiver = Some((1, submit_rx));
         let (_mark_tx, mark_rx) = mpsc::channel(1);
-        app.mark_viewed_receiver = Some(mark_rx);
+        app.mark_viewed_receiver = Some((1, mark_rx));
         app.comment_submitting = true;
         app.comments_loading = true;
         app.discussion_comments_loading = true;
@@ -6257,7 +6285,7 @@ mod tests {
     }
 
     #[test]
-    fn test_collect_unviewed_directory_paths_root_prefix_matches_all() {
+    fn test_collect_unviewed_directory_paths_root_prefix_matches_only_root_files() {
         let files = vec![
             ChangedFile {
                 filename: "README.md".to_string(),
@@ -6286,10 +6314,134 @@ mod tests {
         ];
 
         let paths = App::collect_unviewed_directory_paths(&files, 0);
-        assert_eq!(
-            paths,
-            vec!["README.md".to_string(), "src/main.rs".to_string()]
-        );
+        assert_eq!(paths, vec!["README.md".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_poll_mark_viewed_applies_unmark() {
+        let mut app = App::new_for_test();
+        app.pr_number = Some(1);
+        app.data_state = DataState::Loaded {
+            pr: Box::new(PullRequest {
+                number: 1,
+                node_id: Some("PR_node1".to_string()),
+                title: "Test PR".to_string(),
+                body: None,
+                state: "open".to_string(),
+                head: crate::github::Branch {
+                    ref_name: "feature".to_string(),
+                    sha: "abc".to_string(),
+                },
+                base: crate::github::Branch {
+                    ref_name: "main".to_string(),
+                    sha: "def".to_string(),
+                },
+                user: crate::github::User {
+                    login: "user".to_string(),
+                },
+                updated_at: "2024-01-01T00:00:00Z".to_string(),
+            }),
+            files: vec![
+                ChangedFile {
+                    filename: "src/main.rs".to_string(),
+                    status: "modified".to_string(),
+                    additions: 1,
+                    deletions: 0,
+                    patch: None,
+                    viewed: true,
+                },
+                ChangedFile {
+                    filename: "src/lib.rs".to_string(),
+                    status: "modified".to_string(),
+                    additions: 1,
+                    deletions: 0,
+                    patch: None,
+                    viewed: true,
+                },
+            ],
+        };
+
+        let (tx, rx) = mpsc::channel(1);
+        app.mark_viewed_receiver = Some((1, rx));
+
+        tx.send(MarkViewedResult::Completed {
+            marked_paths: vec!["src/main.rs".to_string()],
+            total_targets: 1,
+            error: None,
+            set_viewed: false,
+        })
+        .await
+        .unwrap();
+
+        app.poll_mark_viewed_updates();
+
+        if let DataState::Loaded { files, .. } = &app.data_state {
+            assert!(!files[0].viewed, "src/main.rs should be unviewed");
+            assert!(files[1].viewed, "src/lib.rs should remain viewed");
+        } else {
+            panic!("Expected DataState::Loaded");
+        }
+
+        let (success, msg) = app.submission_result.unwrap();
+        assert!(success);
+        assert!(msg.contains("unviewed"));
+    }
+
+    #[tokio::test]
+    async fn test_poll_mark_viewed_skips_apply_on_pr_mismatch() {
+        let mut app = App::new_for_test();
+        app.pr_number = Some(2);
+        app.data_state = DataState::Loaded {
+            pr: Box::new(PullRequest {
+                number: 2,
+                node_id: Some("PR_node2".to_string()),
+                title: "Test PR".to_string(),
+                body: None,
+                state: "open".to_string(),
+                head: crate::github::Branch {
+                    ref_name: "feature".to_string(),
+                    sha: "abc".to_string(),
+                },
+                base: crate::github::Branch {
+                    ref_name: "main".to_string(),
+                    sha: "def".to_string(),
+                },
+                user: crate::github::User {
+                    login: "user".to_string(),
+                },
+                updated_at: "2024-01-01T00:00:00Z".to_string(),
+            }),
+            files: vec![ChangedFile {
+                filename: "src/main.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 0,
+                patch: None,
+                viewed: false,
+            }],
+        };
+
+        let (tx, rx) = mpsc::channel(1);
+        // origin_pr=1 but current pr_number=2
+        app.mark_viewed_receiver = Some((1, rx));
+
+        tx.send(MarkViewedResult::Completed {
+            marked_paths: vec!["src/main.rs".to_string()],
+            total_targets: 1,
+            error: None,
+            set_viewed: true,
+        })
+        .await
+        .unwrap();
+
+        app.poll_mark_viewed_updates();
+
+        // File should NOT be updated because origin_pr != current pr_number
+        if let DataState::Loaded { files, .. } = &app.data_state {
+            assert!(!files[0].viewed, "File should remain unviewed due to PR mismatch");
+        } else {
+            panic!("Expected DataState::Loaded");
+        }
     }
 
     #[tokio::test]
