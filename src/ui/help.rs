@@ -66,6 +66,8 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             "{}  Open split view",
             fmt_key(&kb.open_panel.display(), key_width)
         )),
+        Line::from("  v               Mark selected file as viewed"),
+        Line::from("  V               Mark selected directory as viewed"),
         Line::from(format!(
             "{}  Approve PR",
             fmt_key(&kb.approve.display(), key_width)
@@ -147,7 +149,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             )
         )),
         Line::from(format!(
-            "{}  Page scroll",
+            "{}  Page scroll (also J/K)",
             fmt_key(
                 &format!("{}/{}", kb.page_down.display(), kb.page_up.display()),
                 key_width
@@ -235,11 +237,11 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             fmt_key(&kb.open_panel.display(), key_width)
         )),
         Line::from(format!(
-            "{}  Page down",
+            "{}  Page down (also J)",
             fmt_key(&kb.page_down.display(), key_width)
         )),
         Line::from(format!(
-            "{}  Page up",
+            "{}  Page up (also K)",
             fmt_key(&kb.page_up.display(), key_width)
         )),
         Line::from(format!(

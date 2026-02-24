@@ -723,6 +723,7 @@ mod tests {
                 "@@ -1,3 +1,5 @@\n fn main() {\n+    let x = helper();\n+}\n+fn helper() {\n+    42\n"
                     .to_string(),
             ),
+            viewed: false,
         }];
 
         let result = find_definition_in_patches("helper", &files, 0);
@@ -740,6 +741,7 @@ mod tests {
                 patch: Some(
                     "@@ -1,3 +1,4 @@\n fn main() {\n+    let x = helper();\n }\n".to_string(),
                 ),
+                viewed: false,
             },
             ChangedFile {
                 filename: "src/utils.rs".to_string(),
@@ -749,6 +751,7 @@ mod tests {
                 patch: Some(
                     "@@ -0,0 +1,3 @@\n+pub fn helper() -> i32 {\n+    42\n+}\n".to_string(),
                 ),
+                viewed: false,
             },
         ];
 
@@ -766,6 +769,7 @@ mod tests {
             patch: Some(
                 "@@ -1,2 +1,3 @@\n fn main() {\n+    println!(\"hello\");\n }\n".to_string(),
             ),
+            viewed: false,
         }];
 
         let result = find_definition_in_patches("nonexistent", &files, 0);
@@ -783,6 +787,7 @@ mod tests {
                 "@@ -1,3 +1,3 @@\n-fn old_helper() {\n+fn new_helper() {\n     42\n }\n"
                     .to_string(),
             ),
+            viewed: false,
         }];
 
         // Should NOT find old_helper (removed line)
@@ -799,6 +804,7 @@ mod tests {
                 additions: 0,
                 deletions: 0,
                 patch: None,
+                viewed: false,
             },
             ChangedFile {
                 filename: "src/lib.rs".to_string(),
@@ -806,6 +812,7 @@ mod tests {
                 additions: 1,
                 deletions: 0,
                 patch: Some("@@ -0,0 +1 @@\n+pub fn target() {}\n".to_string()),
+                viewed: false,
             },
         ];
 
@@ -974,6 +981,7 @@ mod tests {
                 "@@ -1,3 +1,5 @@\n use std::process::Command;\n \n fn main() {\n+    let cmd = Command::new(\"ls\");\n+    cmd.status().unwrap();\n"
                     .to_string(),
             ),
+            viewed: false,
         }];
 
         // Command is not defined in the patch, but it is imported

@@ -279,6 +279,16 @@ pub enum RefreshRequest {
     LocalRefresh,
 }
 
+/// PRファイルの viewed 変更結果
+#[derive(Debug, Clone)]
+enum MarkViewedResult {
+    Completed {
+        marked_paths: Vec<String>,
+        total_targets: usize,
+        error: Option<String>,
+    },
+}
+
 /// ファイルウォッチャーのハンドル
 ///
 /// `active` フラグで callback の処理を制御する。
@@ -418,6 +428,8 @@ pub struct App {
     pending_ai_rally: bool,
     // Comment submission state
     comment_submit_receiver: PrReceiver<CommentSubmitResult>,
+    // File viewed-state mutation results
+    mark_viewed_receiver: Option<mpsc::Receiver<MarkViewedResult>>,
     comment_submitting: bool,
     /// Last submission result: (success, message)
     pub submission_result: Option<(bool, String)>,
@@ -514,6 +526,7 @@ impl App {
             start_ai_rally_on_load: false,
             pending_ai_rally: false,
             comment_submit_receiver: None,
+            mark_viewed_receiver: None,
             comment_submitting: false,
             submission_result: None,
             submission_result_time: None,
@@ -588,6 +601,7 @@ impl App {
             start_ai_rally_on_load: false,
             pending_ai_rally: false,
             comment_submit_receiver: None,
+            mark_viewed_receiver: None,
             comment_submitting: false,
             submission_result: None,
             submission_result_time: None,
@@ -647,6 +661,7 @@ impl App {
             self.poll_prefetch_updates();
             self.poll_discussion_comment_updates();
             self.poll_comment_submit_updates();
+            self.poll_mark_viewed_updates();
             self.poll_rally_events();
             terminal.draw(|frame| ui::render(frame, self))?;
             self.handle_input(&mut terminal).await?;
@@ -734,6 +749,9 @@ impl App {
             self.submission_result_time = Some(Instant::now());
             return;
         }
+
+        // PR モードの in-flight viewed mutation を破棄
+        self.mark_viewed_receiver = None;
 
         if self.local_mode {
             // Local → PR
@@ -1423,6 +1441,92 @@ impl App {
         }
     }
 
+    fn poll_mark_viewed_updates(&mut self) {
+        let Some(ref mut rx) = self.mark_viewed_receiver else {
+            return;
+        };
+
+        match rx.try_recv() {
+            Ok(MarkViewedResult::Completed {
+                marked_paths,
+                total_targets,
+                error,
+            }) => {
+                self.mark_viewed_receiver = None;
+                self.apply_viewed_state_to_files(&marked_paths);
+
+                match error {
+                    Some(err) => {
+                        if marked_paths.is_empty() {
+                            self.submission_result =
+                                Some((false, format!("Mark viewed failed: {}", err)));
+                        } else {
+                            self.submission_result = Some((
+                                false,
+                                format!(
+                                    "Marked {}/{} files, then failed: {}",
+                                    marked_paths.len(),
+                                    total_targets,
+                                    err
+                                ),
+                            ));
+                        }
+                    }
+                    None => {
+                        self.submission_result = Some((
+                            true,
+                            format!("Marked {} file(s) as viewed", marked_paths.len()),
+                        ));
+                    }
+                }
+                self.submission_result_time = Some(Instant::now());
+            }
+            Err(mpsc::error::TryRecvError::Empty) => {}
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                self.mark_viewed_receiver = None;
+            }
+        }
+    }
+
+    fn apply_viewed_state_to_files(&mut self, marked_paths: &[String]) {
+        if marked_paths.is_empty() {
+            return;
+        }
+
+        let marked_set: HashSet<&str> = marked_paths.iter().map(|path| path.as_str()).collect();
+        if let DataState::Loaded { files, .. } = &mut self.data_state {
+            for file in files.iter_mut() {
+                if marked_set.contains(file.filename.as_str()) {
+                    file.viewed = true;
+                }
+            }
+        }
+
+        self.sync_loaded_data_to_cache();
+    }
+
+    fn sync_loaded_data_to_cache(&mut self) {
+        let DataState::Loaded { pr, files } = &self.data_state else {
+            return;
+        };
+        let Some(pr_number) = self.pr_number else {
+            return;
+        };
+
+        let cache_key = PrCacheKey {
+            repo: self.repo.clone(),
+            pr_number,
+        };
+        self.session_cache.put_pr_data(
+            cache_key,
+            PrData {
+                pr: pr.clone(),
+                files: files.clone(),
+                pr_updated_at: pr.updated_at.clone(),
+            },
+        );
+    }
+
     /// コメント送信中かどうか
     pub fn is_submitting_comment(&self) -> bool {
         self.comment_submitting
@@ -1445,9 +1549,7 @@ impl App {
                                 // Clear pending post info on terminal states
                                 if matches!(
                                     state,
-                                    RallyState::Completed
-                                        | RallyState::Aborted
-                                        | RallyState::Error
+                                    RallyState::Completed | RallyState::Aborted | RallyState::Error
                                 ) {
                                     rally_state.pending_review_post = None;
                                     rally_state.pending_fix_post = None;
@@ -1857,6 +1959,10 @@ impl App {
         key: event::KeyEvent,
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) -> Result<()> {
+        if self.handle_mark_viewed_key(key) {
+            return Ok(());
+        }
+
         let kb = &self.config.keybindings;
 
         // Quit or back to PR list
@@ -1881,6 +1987,25 @@ impl App {
         // Move up (k or Up arrow)
         if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
             self.selected_file = self.selected_file.saturating_sub(1);
+            return Ok(());
+        }
+
+        // Page down (Ctrl-d by default, also J)
+        if self.matches_single_key(&key, &kb.page_down) || Self::is_shift_char_shortcut(&key, 'j') {
+            if !self.files().is_empty() {
+                let page_step = terminal.size()?.height.saturating_sub(8) as usize;
+                let step = page_step.max(1);
+                self.selected_file =
+                    (self.selected_file + step).min(self.files().len().saturating_sub(1));
+            }
+            return Ok(());
+        }
+
+        // Page up (Ctrl-u by default, also K)
+        if self.matches_single_key(&key, &kb.page_up) || Self::is_shift_char_shortcut(&key, 'k') {
+            let page_step = terminal.size()?.height.saturating_sub(8) as usize;
+            let step = page_step.max(1);
+            self.selected_file = self.selected_file.saturating_sub(step);
             return Ok(());
         }
 
@@ -1973,6 +2098,10 @@ impl App {
         key: event::KeyEvent,
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) -> Result<bool> {
+        if self.handle_mark_viewed_key(key) {
+            return Ok(true);
+        }
+
         let kb = &self.config.keybindings;
 
         // Review actions (disabled in local mode)
@@ -2027,6 +2156,136 @@ impl App {
         Ok(false)
     }
 
+    fn handle_mark_viewed_key(&mut self, key: event::KeyEvent) -> bool {
+        if self.local_mode {
+            return false;
+        }
+
+        let is_mark_file = key.code == KeyCode::Char('v')
+            && !key.modifiers.contains(KeyModifiers::SHIFT)
+            && !key.modifiers.contains(KeyModifiers::CONTROL)
+            && !key.modifiers.contains(KeyModifiers::ALT);
+        let is_mark_directory = key.code == KeyCode::Char('V')
+            || (key.code == KeyCode::Char('v') && key.modifiers.contains(KeyModifiers::SHIFT));
+        let has_unexpected_modifiers = key.modifiers.contains(KeyModifiers::CONTROL)
+            || key.modifiers.contains(KeyModifiers::ALT);
+
+        if has_unexpected_modifiers || (!is_mark_file && !is_mark_directory) {
+            return false;
+        }
+
+        if self.mark_viewed_receiver.is_some() {
+            self.submission_result = Some((false, "Mark viewed already in progress".to_string()));
+            self.submission_result_time = Some(Instant::now());
+            return true;
+        }
+
+        if is_mark_file {
+            self.start_mark_selected_file_as_viewed();
+            return true;
+        }
+
+        self.start_mark_selected_directory_as_viewed();
+        true
+    }
+
+    fn start_mark_selected_file_as_viewed(&mut self) {
+        let Some(file) = self.files().get(self.selected_file) else {
+            return;
+        };
+        if file.viewed {
+            self.submission_result = Some((true, "File is already marked as viewed".to_string()));
+            self.submission_result_time = Some(Instant::now());
+            return;
+        }
+
+        self.start_mark_paths_as_viewed(vec![file.filename.clone()]);
+    }
+
+    fn start_mark_selected_directory_as_viewed(&mut self) {
+        let target_paths = Self::collect_unviewed_directory_paths(self.files(), self.selected_file);
+
+        if target_paths.is_empty() {
+            self.submission_result = Some((true, "No unviewed files in directory".to_string()));
+            self.submission_result_time = Some(Instant::now());
+            return;
+        }
+
+        self.start_mark_paths_as_viewed(target_paths);
+    }
+
+    fn start_mark_paths_as_viewed(&mut self, paths: Vec<String>) {
+        let total_targets = paths.len();
+        if total_targets == 0 {
+            return;
+        }
+
+        let Some(pr) = self.pr() else {
+            self.submission_result = Some((false, "PR metadata not loaded".to_string()));
+            self.submission_result_time = Some(Instant::now());
+            return;
+        };
+        let Some(pr_node_id) = pr.node_id.clone() else {
+            self.submission_result = Some((false, "PR node ID is unavailable".to_string()));
+            self.submission_result_time = Some(Instant::now());
+            return;
+        };
+
+        let repo = self.repo.clone();
+        let (tx, rx) = mpsc::channel(1);
+        self.mark_viewed_receiver = Some(rx);
+        self.submission_result = Some((
+            true,
+            format!("Marking {} file(s) as viewed...", total_targets),
+        ));
+        self.submission_result_time = Some(Instant::now());
+
+        tokio::spawn(async move {
+            let mut marked_paths = Vec::with_capacity(total_targets);
+            let mut error = None;
+
+            for path in paths {
+                match github::mark_file_as_viewed(&repo, &pr_node_id, &path).await {
+                    Ok(()) => marked_paths.push(path),
+                    Err(e) => {
+                        error = Some(format!("{}: {}", path, e));
+                        break;
+                    }
+                }
+            }
+
+            let _ = tx
+                .send(MarkViewedResult::Completed {
+                    marked_paths,
+                    total_targets,
+                    error,
+                })
+                .await;
+        });
+    }
+
+    fn directory_prefix_for(path: &str) -> String {
+        path.rsplit_once('/')
+            .map(|(dir, _)| format!("{}/", dir))
+            .unwrap_or_default()
+    }
+
+    fn collect_unviewed_directory_paths(
+        files: &[ChangedFile],
+        selected_file: usize,
+    ) -> Vec<String> {
+        let Some(selected) = files.get(selected_file) else {
+            return Vec::new();
+        };
+        let directory_prefix = Self::directory_prefix_for(&selected.filename);
+
+        files
+            .iter()
+            .filter(|file| file.filename.starts_with(&directory_prefix) && !file.viewed)
+            .map(|file| file.filename.clone())
+            .collect()
+    }
+
     async fn handle_split_view_file_list_input(
         &mut self,
         key: event::KeyEvent,
@@ -2050,6 +2309,27 @@ impl App {
                 self.selected_file = self.selected_file.saturating_sub(1);
                 self.sync_diff_to_selected_file();
             }
+            return Ok(());
+        }
+
+        // Page down (Ctrl-d by default, also J)
+        if self.matches_single_key(&key, &kb.page_down) || Self::is_shift_char_shortcut(&key, 'j') {
+            if !self.files().is_empty() {
+                let page_step = terminal.size()?.height.saturating_sub(8) as usize;
+                let step = page_step.max(1);
+                self.selected_file =
+                    (self.selected_file + step).min(self.files().len().saturating_sub(1));
+                self.sync_diff_to_selected_file();
+            }
+            return Ok(());
+        }
+
+        // Page up (Ctrl-u by default, also K)
+        if self.matches_single_key(&key, &kb.page_up) || Self::is_shift_char_shortcut(&key, 'k') {
+            let page_step = terminal.size()?.height.saturating_sub(8) as usize;
+            let step = page_step.max(1);
+            self.selected_file = self.selected_file.saturating_sub(step);
+            self.sync_diff_to_selected_file();
             return Ok(());
         }
 
@@ -2400,7 +2680,7 @@ impl App {
         }
 
         // Page down
-        if self.matches_single_key(&key, &kb.page_down) {
+        if self.matches_single_key(&key, &kb.page_down) || Self::is_shift_char_shortcut(&key, 'j') {
             if self.diff_line_count > 0 {
                 self.selected_line =
                     (self.selected_line + 20).min(self.diff_line_count.saturating_sub(1));
@@ -2410,7 +2690,7 @@ impl App {
         }
 
         // Page up
-        if self.matches_single_key(&key, &kb.page_up) {
+        if self.matches_single_key(&key, &kb.page_up) || Self::is_shift_char_shortcut(&key, 'k') {
             self.selected_line = self.selected_line.saturating_sub(20);
             self.adjust_scroll(visible_lines);
             return Ok(());
@@ -2668,6 +2948,36 @@ impl App {
                     self.adjust_log_scroll_to_selection();
                 }
             }
+            KeyCode::Char('J') => {
+                if let Some(ref mut rally_state) = self.ai_rally_state {
+                    let total_logs = rally_state.logs.len();
+                    if total_logs == 0 {
+                        return Ok(());
+                    }
+
+                    let page_step = rally_state.last_visible_log_height.saturating_sub(1).max(1);
+                    let current = rally_state.selected_log_index.unwrap_or(0);
+                    let new_index = (current + page_step).min(total_logs.saturating_sub(1));
+                    rally_state.selected_log_index = Some(new_index);
+                    self.adjust_log_scroll_to_selection();
+                }
+            }
+            KeyCode::Char('K') => {
+                if let Some(ref mut rally_state) = self.ai_rally_state {
+                    let total_logs = rally_state.logs.len();
+                    if total_logs == 0 {
+                        return Ok(());
+                    }
+
+                    let page_step = rally_state.last_visible_log_height.saturating_sub(1).max(1);
+                    let current = rally_state
+                        .selected_log_index
+                        .unwrap_or(total_logs.saturating_sub(1));
+                    let new_index = current.saturating_sub(page_step);
+                    rally_state.selected_log_index = Some(new_index);
+                    self.adjust_log_scroll_to_selection();
+                }
+            }
             KeyCode::Enter => {
                 // Show log detail modal
                 if let Some(ref mut rally_state) = self.ai_rally_state {
@@ -2759,7 +3069,8 @@ impl App {
         ui::restore_terminal(terminal)?;
 
         // Open editor (blocking)
-        let answer = crate::editor::open_clarification_editor(self.config.editor.as_deref(), question)?;
+        let answer =
+            crate::editor::open_clarification_editor(self.config.editor.as_deref(), question)?;
 
         // Re-setup terminal after editor closes
         *terminal = ui::setup_terminal()?;
@@ -3213,8 +3524,7 @@ impl App {
                     ReviewAction::Comment => "commented",
                 };
                 tracing::debug!(action_str, "submit_review: success");
-                self.submission_result =
-                    Some((true, format!("Review submitted ({})", action_str)));
+                self.submission_result = Some((true, format!("Review submitted ({})", action_str)));
                 self.submission_result_time = Some(Instant::now());
             }
             Err(e) => {
@@ -3461,6 +3771,40 @@ impl App {
                         self.selected_discussion_comment.saturating_sub(1);
                 }
             },
+            KeyCode::Char('J') => {
+                let step = visible_lines.max(1);
+                match self.comment_tab {
+                    CommentTab::Review => {
+                        if let Some(ref comments) = self.review_comments {
+                            if !comments.is_empty() {
+                                self.selected_comment =
+                                    (self.selected_comment + step).min(comments.len() - 1);
+                            }
+                        }
+                    }
+                    CommentTab::Discussion => {
+                        if let Some(ref comments) = self.discussion_comments {
+                            if !comments.is_empty() {
+                                self.selected_discussion_comment =
+                                    (self.selected_discussion_comment + step)
+                                        .min(comments.len() - 1);
+                            }
+                        }
+                    }
+                }
+            }
+            KeyCode::Char('K') => {
+                let step = visible_lines.max(1);
+                match self.comment_tab {
+                    CommentTab::Review => {
+                        self.selected_comment = self.selected_comment.saturating_sub(step);
+                    }
+                    CommentTab::Discussion => {
+                        self.selected_discussion_comment =
+                            self.selected_discussion_comment.saturating_sub(step);
+                    }
+                }
+            }
             KeyCode::Enter => match self.comment_tab {
                 CommentTab::Review => {
                     self.jump_to_comment();
@@ -3500,6 +3844,16 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => {
                 self.discussion_comment_detail_scroll =
                     self.discussion_comment_detail_scroll.saturating_sub(1);
+            }
+            KeyCode::Char('J') => {
+                self.discussion_comment_detail_scroll = self
+                    .discussion_comment_detail_scroll
+                    .saturating_add(visible_lines.max(1));
+            }
+            KeyCode::Char('K') => {
+                self.discussion_comment_detail_scroll = self
+                    .discussion_comment_detail_scroll
+                    .saturating_sub(visible_lines.max(1));
             }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.discussion_comment_detail_scroll = self
@@ -3934,7 +4288,11 @@ impl App {
 
             // ターミナルを一時停止して外部エディタを開く
             crate::ui::restore_terminal(terminal)?;
-            let _ = crate::editor::open_file_at_line(self.config.editor.as_deref(), &path_str, line_number);
+            let _ = crate::editor::open_file_at_line(
+                self.config.editor.as_deref(),
+                &path_str,
+                line_number,
+            );
             *terminal = crate::ui::setup_terminal()?;
         }
 
@@ -4118,6 +4476,22 @@ impl App {
         }
     }
 
+    /// True for uppercase shortcuts like `J`/`K` without Ctrl/Alt modifiers.
+    fn is_shift_char_shortcut(event: &KeyEvent, lower: char) -> bool {
+        if event.modifiers.contains(KeyModifiers::CONTROL)
+            || event.modifiers.contains(KeyModifiers::ALT)
+        {
+            return false;
+        }
+
+        let upper = lower.to_ascii_uppercase();
+        match event.code {
+            KeyCode::Char(c) if c == upper => true,
+            KeyCode::Char(c) if c == lower && event.modifiers.contains(KeyModifiers::SHIFT) => true,
+            _ => false,
+        }
+    }
+
     /// Try to match pending keys against a sequence.
     /// Returns SequenceMatch::Full if fully matched, Partial if prefix matches, None otherwise.
     fn try_match_sequence(&self, seq: &KeySequence) -> SequenceMatch {
@@ -4215,6 +4589,27 @@ impl App {
         // Move up (k or Up arrow)
         if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
             self.selected_pr = self.selected_pr.saturating_sub(1);
+            return Ok(());
+        }
+
+        // Page down (Ctrl-d by default, also J)
+        if self.matches_single_key(&key, &kb.page_down) || Self::is_shift_char_shortcut(&key, 'j') {
+            if pr_count > 0 {
+                let step = 20usize;
+                self.selected_pr = (self.selected_pr + step).min(pr_count.saturating_sub(1));
+                if self.pr_list_has_more
+                    && !self.pr_list_loading
+                    && self.selected_pr + 5 >= pr_count
+                {
+                    self.load_more_prs();
+                }
+            }
+            return Ok(());
+        }
+
+        // Page up (Ctrl-u by default, also K)
+        if self.matches_single_key(&key, &kb.page_up) || Self::is_shift_char_shortcut(&key, 'k') {
+            self.selected_pr = self.selected_pr.saturating_sub(20);
             return Ok(());
         }
 
@@ -4374,6 +4769,7 @@ impl App {
         // PR遷移時にバックグラウンドキャッシュをクリア（staleキャッシュ防止）
         self.diff_cache_receiver = None;
         self.prefetch_receiver = None;
+        self.mark_viewed_receiver = None;
         self.highlighted_cache_store.clear();
         self.diff_cache = None;
         self.selected_file = 0;
@@ -4436,6 +4832,7 @@ impl App {
             self.prefetch_receiver = None;
             self.discussion_comment_receiver = None;
             self.comment_submit_receiver = None;
+            self.mark_viewed_receiver = None;
             self.comment_submitting = false;
             self.comments_loading = false;
             self.discussion_comments_loading = false;
@@ -4509,6 +4906,7 @@ impl App {
             start_ai_rally_on_load: false,
             pending_ai_rally: false,
             comment_submit_receiver: None,
+            mark_viewed_receiver: None,
             comment_submitting: false,
             submission_result: None,
             submission_result_time: None,
@@ -4541,6 +4939,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::{KeyEventKind, KeyEventState};
 
     #[test]
     fn test_find_diff_line_index_basic() {
@@ -4800,6 +5199,8 @@ mod tests {
         app.discussion_comment_receiver = Some((1, disc_rx));
         let (_submit_tx, submit_rx) = mpsc::channel(1);
         app.comment_submit_receiver = Some((1, submit_rx));
+        let (_mark_tx, mark_rx) = mpsc::channel(1);
+        app.mark_viewed_receiver = Some(mark_rx);
         app.comment_submitting = true;
         app.comments_loading = true;
         app.discussion_comments_loading = true;
@@ -4815,6 +5216,7 @@ mod tests {
         assert!(app.comment_receiver.is_none());
         assert!(app.discussion_comment_receiver.is_none());
         assert!(app.comment_submit_receiver.is_none());
+        assert!(app.mark_viewed_receiver.is_none());
         assert!(app.diff_cache_receiver.is_none());
         assert!(app.prefetch_receiver.is_none());
         // Loading flags should be cleared
@@ -4865,6 +5267,7 @@ mod tests {
         // SessionCache に Local diff データを事前格納
         let local_pr = PullRequest {
             number: 0,
+            node_id: None,
             title: "Local HEAD diff".to_string(),
             body: None,
             state: "local".to_string(),
@@ -4887,6 +5290,7 @@ mod tests {
             additions: 1,
             deletions: 0,
             patch: Some("@@ -1,1 +1,2 @@\n line1\n+line2".to_string()),
+            viewed: false,
         }];
         app.session_cache.put_pr_data(
             PrCacheKey {
@@ -4935,6 +5339,7 @@ mod tests {
         // Send data for PR #1
         let pr = PullRequest {
             number: 1,
+            node_id: None,
             title: "PR 1".to_string(),
             body: None,
             state: "open".to_string(),
@@ -5017,6 +5422,7 @@ mod tests {
             additions: 1,
             deletions: 1,
             patch: Some("@@ -1,1 +1,1 @@\n-old\n+new".to_string()),
+            viewed: false,
         };
 
         let initial_files: Vec<ChangedFile> = (0..5)
@@ -5025,6 +5431,7 @@ mod tests {
 
         let pr = Box::new(PullRequest {
             number: 1,
+            node_id: None,
             title: "Test PR".to_string(),
             body: None,
             state: "open".to_string(),
@@ -5079,6 +5486,7 @@ mod tests {
             additions: 1,
             deletions: 1,
             patch: Some("@@ -1,1 +1,1 @@\n-old\n+new".to_string()),
+            viewed: false,
         };
 
         let initial_files: Vec<ChangedFile> = (0..5)
@@ -5087,6 +5495,7 @@ mod tests {
 
         let pr = Box::new(PullRequest {
             number: 1,
+            node_id: None,
             title: "Test PR".to_string(),
             body: None,
             state: "open".to_string(),
@@ -5160,6 +5569,7 @@ mod tests {
             additions: 1,
             deletions: 1,
             patch: Some("@@ -1,1 +1,1 @@\n-old\n+new".to_string()),
+            viewed: false,
         };
 
         let initial_files: Vec<ChangedFile> = (0..5)
@@ -5168,6 +5578,7 @@ mod tests {
 
         let pr = Box::new(PullRequest {
             number: 1,
+            node_id: None,
             title: "Test PR".to_string(),
             body: None,
             state: "open".to_string(),
@@ -5261,6 +5672,7 @@ mod tests {
             additions: 1,
             deletions: 1,
             patch: Some("@@ -1,1 +1,1 @@\n-old\n+new".to_string()),
+            viewed: false,
         };
 
         let initial_files: Vec<ChangedFile> = (0..5)
@@ -5269,6 +5681,7 @@ mod tests {
 
         let pr = Box::new(PullRequest {
             number: 1,
+            node_id: None,
             title: "Test PR".to_string(),
             body: None,
             state: "open".to_string(),
@@ -5343,6 +5756,7 @@ mod tests {
             additions: 1,
             deletions: 1,
             patch: Some("@@ -1,1 +1,1 @@\n-old\n+new".to_string()),
+            viewed: false,
         };
 
         let initial_files: Vec<ChangedFile> = vec![
@@ -5353,6 +5767,7 @@ mod tests {
 
         let pr = Box::new(PullRequest {
             number: 1,
+            node_id: None,
             title: "Test PR".to_string(),
             body: None,
             state: "open".to_string(),
@@ -5405,6 +5820,7 @@ mod tests {
             additions: 1,
             deletions: 1,
             patch: Some(patch.to_string()),
+            viewed: false,
         };
 
         let initial_files = vec![
@@ -5416,6 +5832,7 @@ mod tests {
 
         let pr = Box::new(PullRequest {
             number: 1,
+            node_id: None,
             title: "Test PR".to_string(),
             body: None,
             state: "open".to_string(),
@@ -5472,6 +5889,7 @@ mod tests {
             additions: 1,
             deletions: 1,
             patch: Some(patch.to_string()),
+            viewed: false,
         };
 
         let initial_files = vec![
@@ -5484,6 +5902,7 @@ mod tests {
 
         let pr = Box::new(PullRequest {
             number: 1,
+            node_id: None,
             title: "Test PR".to_string(),
             body: None,
             state: "open".to_string(),
@@ -5541,6 +5960,7 @@ mod tests {
             additions: 1,
             deletions: 1,
             patch: Some(patch.to_string()),
+            viewed: false,
         };
 
         let initial_files = vec![
@@ -5553,6 +5973,7 @@ mod tests {
 
         let pr = Box::new(PullRequest {
             number: 1,
+            node_id: None,
             title: "Test PR".to_string(),
             body: None,
             state: "open".to_string(),
@@ -5610,10 +6031,12 @@ mod tests {
             additions: 1,
             deletions: 1,
             patch: Some(patch.to_string()),
+            viewed: false,
         };
 
         let pr = Box::new(PullRequest {
             number: 1,
+            node_id: None,
             title: "Test PR".to_string(),
             body: None,
             state: "open".to_string(),
@@ -5759,6 +6182,116 @@ mod tests {
         assert!(matches!(req, RefreshRequest::LocalRefresh));
     }
 
+    #[test]
+    fn test_is_shift_char_shortcut_accepts_uppercase() {
+        let key = KeyEvent {
+            code: KeyCode::Char('J'),
+            modifiers: KeyModifiers::SHIFT,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        };
+        assert!(App::is_shift_char_shortcut(&key, 'j'));
+    }
+
+    #[test]
+    fn test_is_shift_char_shortcut_rejects_ctrl_or_alt() {
+        let ctrl = KeyEvent {
+            code: KeyCode::Char('J'),
+            modifiers: KeyModifiers::SHIFT | KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        };
+        let alt = KeyEvent {
+            code: KeyCode::Char('K'),
+            modifiers: KeyModifiers::SHIFT | KeyModifiers::ALT,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        };
+
+        assert!(!App::is_shift_char_shortcut(&ctrl, 'j'));
+        assert!(!App::is_shift_char_shortcut(&alt, 'k'));
+    }
+
+    #[test]
+    fn test_collect_unviewed_directory_paths_selected_prefix() {
+        let files = vec![
+            ChangedFile {
+                filename: "src/main.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 0,
+                patch: Some("@@ -1 +1 @@\n+test".to_string()),
+                viewed: false,
+            },
+            ChangedFile {
+                filename: "src/lib.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 0,
+                patch: Some("@@ -1 +1 @@\n+test".to_string()),
+                viewed: true,
+            },
+            ChangedFile {
+                filename: "src/utils/mod.rs".to_string(),
+                status: "added".to_string(),
+                additions: 1,
+                deletions: 0,
+                patch: Some("@@ -0,0 +1 @@\n+test".to_string()),
+                viewed: false,
+            },
+            ChangedFile {
+                filename: "README.md".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 0,
+                patch: Some("@@ -1 +1 @@\n+test".to_string()),
+                viewed: false,
+            },
+        ];
+
+        let paths = App::collect_unviewed_directory_paths(&files, 0);
+        assert_eq!(
+            paths,
+            vec!["src/main.rs".to_string(), "src/utils/mod.rs".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_collect_unviewed_directory_paths_root_prefix_matches_all() {
+        let files = vec![
+            ChangedFile {
+                filename: "README.md".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 0,
+                patch: Some("@@ -1 +1 @@\n+test".to_string()),
+                viewed: false,
+            },
+            ChangedFile {
+                filename: "src/main.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 0,
+                patch: Some("@@ -1 +1 @@\n+test".to_string()),
+                viewed: false,
+            },
+            ChangedFile {
+                filename: "Cargo.toml".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 0,
+                patch: Some("@@ -1 +1 @@\n+test".to_string()),
+                viewed: true,
+            },
+        ];
+
+        let paths = App::collect_unviewed_directory_paths(&files, 0);
+        assert_eq!(
+            paths,
+            vec!["README.md".to_string(), "src/main.rs".to_string()]
+        );
+    }
+
     #[tokio::test]
     async fn test_handle_data_result_auto_focus_skips_state_transition_during_bg_rally() {
         let mut app = App::new_for_test();
@@ -5790,6 +6323,7 @@ mod tests {
             additions: 1,
             deletions: 0,
             patch: Some("@@ -0,0 +1,1 @@\n+new content".to_string()),
+            viewed: false,
         }];
 
         app.handle_data_result(0, DataLoadResult::Success { pr, files });
@@ -5803,6 +6337,7 @@ mod tests {
     fn make_local_pr() -> PullRequest {
         PullRequest {
             number: 0,
+            node_id: None,
             title: "Local diff".to_string(),
             body: None,
             state: "local".to_string(),
@@ -5833,6 +6368,7 @@ mod tests {
                 additions: 1,
                 deletions: 0,
                 patch: Some("@@ -1 +1 @@\n+test".to_string()),
+                viewed: false,
             }],
         };
 
@@ -5861,6 +6397,7 @@ mod tests {
                 additions: 1,
                 deletions: 0,
                 patch: Some("@@ -1 +1 @@\n+test".to_string()),
+                viewed: false,
             }],
         };
 
@@ -5895,6 +6432,7 @@ mod tests {
                     additions: 1,
                     deletions: 0,
                     patch: Some("@@ -1 +1 @@\n+test".to_string()),
+                    viewed: false,
                 },
                 ChangedFile {
                     filename: "main.rs".to_string(),
@@ -5902,6 +6440,7 @@ mod tests {
                     additions: 1,
                     deletions: 0,
                     patch: Some("@@ -1 +1 @@\n+fn main(){}".to_string()),
+                    viewed: false,
                 },
             ],
         };
@@ -5941,11 +6480,11 @@ mod tests {
                 additions: 1,
                 deletions: 0,
                 patch: Some("@@ -1 +1 @@\n+fn main(){}".to_string()),
+                viewed: false,
             }],
         };
 
-        let rs_cache =
-            crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+fn main(){}", 4);
+        let rs_cache = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+fn main(){}", 4);
         app.diff_cache = Some(rs_cache);
 
         app.toggle_markdown_rich();

@@ -106,7 +106,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         )
     } else {
         format!(
-            "j/k/↑↓: move | Enter/→/l: split view | O: browser | a: approve | r: request changes | c: comment | C: comments | {} | R: refresh | q: quit | ?: help",
+            "j/k/↑↓: move | Enter/→/l: split view | v: viewed | V: viewed dir | O: browser | a: approve | r: request changes | c: comment | C: comments | {} | R: refresh | q: quit | ?: help",
             ai_rally_text
         )
     };
@@ -234,6 +234,11 @@ pub(crate) fn build_file_list_items<'a>(
                     format!("[{}] ", status_char),
                     Style::default().fg(status_color),
                 ),
+                if file.viewed {
+                    Span::styled("✓ ", Style::default().fg(Color::Green))
+                } else {
+                    Span::raw("  ")
+                },
                 Span::styled(&file.filename, style),
                 Span::raw(format!(" +{} -{}", file.additions, file.deletions)),
             ]);

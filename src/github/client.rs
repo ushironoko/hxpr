@@ -193,6 +193,37 @@ pub async fn gh_api_post(
     serde_json::from_str(&output).context("Failed to parse gh api response as JSON")
 }
 
+/// Execute gh graphql API with query and variables.
+pub async fn gh_api_graphql(
+    query: &str,
+    fields: &[(&str, FieldValue<'_>)],
+) -> Result<serde_json::Value> {
+    let mut args = vec![
+        "api".to_string(),
+        "graphql".to_string(),
+        "-f".to_string(),
+        format!("query={}", query),
+    ];
+
+    for (key, value) in fields {
+        match value {
+            FieldValue::String(v) => {
+                args.push("-f".to_string());
+                args.push(format!("{}={}", key, v));
+            }
+            FieldValue::Raw(v) => {
+                args.push("-F".to_string());
+                args.push(format!("{}={}", key, v));
+            }
+        }
+    }
+
+    let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    tracing::debug!(args = ?args_refs, "gh api graphql");
+    let output = gh_command(&args_refs).await?;
+    serde_json::from_str(&output).context("Failed to parse gh graphql response as JSON")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
