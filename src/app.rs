@@ -429,6 +429,8 @@ pub struct App {
     pub discussion_comments_loading: bool,
     pub discussion_comment_detail_mode: bool,
     pub discussion_comment_detail_scroll: usize,
+    /// ヘルプ画面のスクロールオフセット（行単位）
+    pub help_scroll_offset: usize,
     // Comment tab state
     pub comment_tab: CommentTab,
     // AI Rally state
@@ -538,6 +540,7 @@ impl App {
             discussion_comments_loading: false,
             discussion_comment_detail_mode: false,
             discussion_comment_detail_scroll: 0,
+            help_scroll_offset: 0,
             comment_tab: CommentTab::default(),
             ai_rally_state: None,
             working_dir: None,
@@ -614,6 +617,7 @@ impl App {
             discussion_comments_loading: false,
             discussion_comment_detail_mode: false,
             discussion_comment_detail_scroll: 0,
+            help_scroll_offset: 0,
             comment_tab: CommentTab::default(),
             ai_rally_state: None,
             working_dir: None,
@@ -1962,7 +1966,7 @@ impl App {
                     AppState::DiffView => self.handle_diff_view_input(key, terminal).await?,
                     AppState::TextInput => self.handle_text_input(key)?,
                     AppState::CommentList => self.handle_comment_list_input(key, terminal).await?,
-                    AppState::Help => self.handle_help_input(key)?,
+                    AppState::Help => self.handle_help_input(key, terminal)?,
                     AppState::AiRally => self.handle_ai_rally_input(key, terminal).await?,
                     AppState::SplitViewFileList => {
                         self.handle_split_view_file_list_input(key, terminal)
@@ -2126,6 +2130,7 @@ impl App {
         if self.matches_single_key(&key, &kb.help) {
             self.previous_state = AppState::FileList;
             self.state = AppState::Help;
+            self.help_scroll_offset = 0;
             return Ok(());
         }
 
@@ -2420,6 +2425,7 @@ impl App {
         if self.matches_single_key(&key, &kb.help) {
             self.previous_state = AppState::SplitViewFileList;
             self.state = AppState::Help;
+            self.help_scroll_offset = 0;
             return Ok(());
         }
 
@@ -3559,10 +3565,49 @@ impl App {
         });
     }
 
-    fn handle_help_input(&mut self, key: event::KeyEvent) -> Result<()> {
+    fn handle_help_input(
+        &mut self,
+        key: event::KeyEvent,
+        terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    ) -> Result<()> {
+        let visible_lines = terminal.size()?.height.saturating_sub(8) as usize;
+
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('?') => {
                 self.state = self.previous_state;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.help_scroll_offset = self.help_scroll_offset.saturating_add(1);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.help_scroll_offset = self.help_scroll_offset.saturating_sub(1);
+            }
+            KeyCode::Char('J') => {
+                self.help_scroll_offset = self
+                    .help_scroll_offset
+                    .saturating_add(visible_lines.max(1));
+            }
+            KeyCode::Char('K') => {
+                self.help_scroll_offset = self
+                    .help_scroll_offset
+                    .saturating_sub(visible_lines.max(1));
+            }
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.help_scroll_offset = self
+                    .help_scroll_offset
+                    .saturating_add(visible_lines / 2);
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.help_scroll_offset = self
+                    .help_scroll_offset
+                    .saturating_sub(visible_lines / 2);
+            }
+            KeyCode::Char('g') => {
+                self.help_scroll_offset = 0;
+            }
+            KeyCode::Char('G') => {
+                // Set to a large value; render will clamp it
+                self.help_scroll_offset = usize::MAX;
             }
             _ => {}
         }
@@ -5021,6 +5066,7 @@ impl App {
         if self.matches_single_key(&key, &kb.help) {
             self.previous_state = AppState::PullRequestList;
             self.state = AppState::Help;
+            self.help_scroll_offset = 0;
             return Ok(());
         }
 
@@ -5204,6 +5250,7 @@ impl App {
             discussion_comments_loading: false,
             discussion_comment_detail_mode: false,
             discussion_comment_detail_scroll: 0,
+            help_scroll_offset: 0,
             comment_tab: CommentTab::default(),
             ai_rally_state: None,
             working_dir: None,
