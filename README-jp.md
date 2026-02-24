@@ -40,6 +40,12 @@ Vim スタイルのキーバインドで操作する GitHub PR レビュー用 T
 cargo install octorus
 ```
 
+または [mise](https://mise.jdx.dev/) 経由でインストール:
+
+```bash
+mise use -g github:ushironoko/octorus
+```
+
 または、ソースからビルド:
 
 ```bash
@@ -214,6 +220,8 @@ Split View はファイル一覧（左 35%）と diff プレビュー（右 65%�
 theme = "base16-ocean.dark"
 # diff 画面でのタブ文字のスペース数（最小値: 1）
 tab_width = 4
+# 追加/削除行の背景色を表示（デフォルト: true）
+# bg_color = false
 
 [keybindings]
 # 設定可能なすべてのキーについては「設定可能なキーバインド」セクションを参照
