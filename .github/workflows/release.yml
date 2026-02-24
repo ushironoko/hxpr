@@ -109,11 +109,15 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Create GitHub Release
+      - name: Upload assets to GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            --title "v${{ needs.validate.outputs.version }}" \
-            --generate-notes \
-            artifacts/*
+          if gh release view "${GITHUB_REF_NAME}" > /dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" artifacts/* --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              --title "v${{ needs.validate.outputs.version }}" \
+              --generate-notes \
+              artifacts/*
+          fi
