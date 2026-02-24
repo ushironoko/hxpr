@@ -268,6 +268,31 @@ mutation($pullRequestId: ID!, $path: String!) {
     Ok(())
 }
 
+pub async fn unmark_file_as_viewed(_repo: &str, pr_node_id: &str, path: &str) -> Result<()> {
+    let query = r#"
+mutation($pullRequestId: ID!, $path: String!) {
+  unmarkFileAsViewed(input: { pullRequestId: $pullRequestId, path: $path }) {
+    clientMutationId
+  }
+}
+"#;
+
+    let response = gh_api_graphql(
+        query,
+        &[
+            ("pullRequestId", FieldValue::String(pr_node_id)),
+            ("path", FieldValue::String(path)),
+        ],
+    )
+    .await?;
+
+    if let Some(errors) = response.get("errors") {
+        anyhow::bail!("GitHub GraphQL returned errors: {}", errors);
+    }
+
+    Ok(())
+}
+
 /// ページネーション結果
 pub struct PrListPage {
     pub items: Vec<PullRequestSummary>,
