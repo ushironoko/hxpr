@@ -960,12 +960,14 @@ fn build_lines_with_syntect(
 /// * `range` – the range of lines to render (may be a sub-range).
 /// * `selected_line` – absolute index of the currently selected line.
 /// * `comment_lines` – set of diff line indices that have comments (for `●` marker).
+/// * `multiline_range` – 複数行選択範囲 (start, end) の inclusive range。None なら通常選択。
 pub fn render_cached_lines<'a>(
     cache: &'a DiffCache,
     range: std::ops::Range<usize>,
     selected_line: usize,
     comment_lines: &HashSet<usize>,
     bg_color: bool,
+    multiline_range: Option<(usize, usize)>,
 ) -> Vec<Line<'a>> {
     // Clamp range to valid bounds to prevent out-of-bounds panic
     let len = cache.lines.len();
@@ -980,6 +982,9 @@ pub fn render_cached_lines<'a>(
         .map(|(rel_idx, cached)| {
             let abs_idx = safe_range.start + rel_idx;
             let is_selected = abs_idx == selected_line;
+            let is_in_multiline = multiline_range
+                .map(|(start, end)| abs_idx >= start && abs_idx <= end)
+                .unwrap_or(false);
 
             let marker = if comment_lines.contains(&abs_idx) {
                 Some(Span::styled("● ", Style::default().fg(Color::Yellow)))
@@ -993,8 +998,19 @@ pub fn render_cached_lines<'a>(
             let all_spans: Vec<Span<'_>> = marker.into_iter().chain(base).collect();
 
             let line = Line::from(all_spans);
-            // 選択行: REVERSED のみ（背景色 + REVERSED は fg/bg 反転で視認性が低下するため省略）
-            if is_selected {
+            if is_in_multiline {
+                // 複数行選択範囲: 青系背景で強調。カーソル行はさらに REVERSED。
+                if is_selected {
+                    line.style(
+                        Style::default()
+                            .bg(Color::Rgb(0, 40, 80))
+                            .add_modifier(Modifier::REVERSED),
+                    )
+                } else {
+                    line.style(Style::default().bg(Color::Rgb(0, 40, 80)))
+                }
+            } else if is_selected {
+                // 選択行: REVERSED のみ（背景色 + REVERSED は fg/bg 反転で視認性が低下するため省略）
                 line.style(Style::default().add_modifier(Modifier::REVERSED))
             } else if bg_color {
                 match cached.line_type {
@@ -1119,12 +1135,17 @@ pub(crate) fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::l
 
         // Only process visible lines (with buffer) for performance
         // When visible_start >= visible_end, this produces an empty range (safe)
+        let multiline_range = app
+            .multiline_selection
+            .as_ref()
+            .map(|s| (s.start(), s.end()));
         render_cached_lines(
             cache,
             visible_start..visible_end,
             app.selected_line,
             &app.file_comment_lines,
             app.config.diff.bg_color,
+            multiline_range,
         )
     } else {
         // Fallback: parse without cache (should rarely happen)
@@ -1326,12 +1347,14 @@ fn highlight_or_fallback(
 }
 
 fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let help_text = if app.comment_panel_open {
+    let help_text = if app.multiline_selection.is_some() {
+        "j/k/↑↓: extend selection | Enter/c: comment | s: suggest | Esc: cancel"
+    } else if app.comment_panel_open {
         "j/k/↑↓: scroll | n/N: jump | Tab: switch | r: reply | c: comment | s: suggest | ←/h: back | Esc/q: close"
     } else if app.is_local_mode() {
         "j/k/↑↓: move | M: markdown rich | Ctrl-d/u: page | ←/h/q: back"
     } else {
-        "j/k/↑↓: move | n/N: next/prev comment | Enter: comments | M: markdown rich | Ctrl-d/u: page | ←/h/q: back"
+        "j/k/↑↓: move | n/N: next/prev comment | Enter: comments | M: markdown rich | Ctrl-d/u: page | Shift+Enter: select range | ←/h/q: back"
     };
 
     let footer_line = super::footer::build_footer_line(app, help_text);
@@ -2026,9 +2049,9 @@ mod tests {
         );
 
         // render_cached_lines でコメントマーカーが挿入されること
-        let plain_rendered = render_cached_lines(&plain, 0..plain.lines.len(), 0, &comment_lines, false);
+        let plain_rendered = render_cached_lines(&plain, 0..plain.lines.len(), 0, &comment_lines, false, None);
         let hl_rendered =
-            render_cached_lines(&highlighted, 0..highlighted.lines.len(), 0, &comment_lines, false);
+            render_cached_lines(&highlighted, 0..highlighted.lines.len(), 0, &comment_lines, false, None);
 
         for &line_idx in &[4usize, 6] {
             let plain_line_text: String = plain_rendered[line_idx]
@@ -2198,7 +2221,7 @@ mod tests {
         assert_eq!(cache.lines.len(), 4);
 
         // range が完全に範囲外 → 空の Vec
-        let result = render_cached_lines(&cache, 100..200, 0, &HashSet::new(), false);
+        let result = render_cached_lines(&cache, 100..200, 0, &HashSet::new(), false, None);
         assert!(
             result.is_empty(),
             "Out-of-bounds range should return empty Vec"
@@ -2210,7 +2233,7 @@ mod tests {
         let cache = build_plain_diff_cache("", 4);
         assert!(cache.lines.is_empty());
 
-        let result = render_cached_lines(&cache, 0..10, 0, &HashSet::new(), false);
+        let result = render_cached_lines(&cache, 0..10, 0, &HashSet::new(), false, None);
         assert!(result.is_empty(), "Empty cache should return empty Vec");
     }
 }

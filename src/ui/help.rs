@@ -253,6 +253,31 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             fmt_key(&kb.suggestion.display(), key_width)
         )),
         Line::from(format!(
+            "{}  Multiline select mode",
+            fmt_key("Shift+Enter", key_width)
+        )),
+        Line::from(vec![Span::styled(
+            "  Multiline Select Mode:",
+            Style::default().fg(Color::DarkGray),
+        )]),
+        Line::from(format!(
+            "{}/{}  Extend selection",
+            fmt_key(&kb.move_down.display(), 10),
+            kb.move_up.display()
+        )),
+        Line::from(format!(
+            "{}  Comment on selection",
+            fmt_key("Enter/c", key_width)
+        )),
+        Line::from(format!(
+            "{}  Suggest on selection",
+            fmt_key(&kb.suggestion.display(), key_width)
+        )),
+        Line::from(format!(
+            "{}  Cancel selection",
+            fmt_key("Esc", key_width)
+        )),
+        Line::from(format!(
             "{}  Toggle markdown rich display",
             fmt_key(&kb.toggle_markdown_rich.display(), key_width)
         )),
