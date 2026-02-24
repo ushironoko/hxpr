@@ -214,6 +214,8 @@ Run `or init` to create default config files, or create `~/.config/octorus/confi
 theme = "base16-ocean.dark"
 # Number of spaces per tab character in diff view (minimum: 1)
 tab_width = 4
+# Show background color on added/removed lines (default: true)
+# bg_color = false
 
 [keybindings]
 # See "Configurable Keybindings" section below for all options
