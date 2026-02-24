@@ -40,6 +40,12 @@ A TUI tool for GitHub PR review with Vim-style keybindings.
 cargo install octorus
 ```
 
+Or install via [mise](https://mise.jdx.dev/):
+
+```bash
+mise use -g github:ushironoko/octorus
+```
+
 Or build from source:
 
 ```bash
