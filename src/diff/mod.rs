@@ -164,6 +164,26 @@ pub fn can_suggest_at_line(patch: &str, line_index: usize) -> bool {
         .unwrap_or(false)
 }
 
+/// Validate that all lines in `start..=end` are contiguous new-side lines within a single hunk.
+///
+/// Returns `true` when every line in the range is `Added` or `Context` and no `Header` line
+/// appears between `start` and `end` (i.e. the range does not cross a hunk boundary).
+pub fn validate_multiline_range(patch: &str, start: usize, end: usize) -> bool {
+    let lines: Vec<&str> = patch.lines().collect();
+    for idx in start..=end {
+        let Some(line) = lines.get(idx) else {
+            return false;
+        };
+        let (line_type, _) = classify_line(line);
+        match line_type {
+            LineType::Added | LineType::Context => {}
+            // Removed, Header, or Meta lines inside the range → invalid
+            _ => return false,
+        }
+    }
+    true
+}
+
 /// Convert a file line number (new_line_number) to a patch position.
 ///
 /// Used by AI Rally to convert line numbers from reviewer output to GitHub API positions.
@@ -778,5 +798,48 @@ Binary files /dev/null and b/image.png differ
     fn test_line_number_to_position_nonexistent_line() {
         assert_eq!(line_number_to_position(SAMPLE_PATCH, 999), None);
         assert_eq!(line_number_to_position(SAMPLE_PATCH, 0), None);
+    }
+
+    // --- validate_multiline_range tests ---
+
+    #[test]
+    fn test_validate_multiline_range_valid_single_hunk() {
+        let patch = "@@ -1,3 +1,4 @@\n context line\n+added line\n another context\n-removed line";
+        // Lines 1..=2 are context + added → valid
+        assert!(validate_multiline_range(patch, 1, 2));
+        // Single line
+        assert!(validate_multiline_range(patch, 1, 1));
+    }
+
+    #[test]
+    fn test_validate_multiline_range_includes_removed_line() {
+        let patch = "@@ -1,3 +1,4 @@\n context line\n+added line\n another context\n-removed line";
+        // Lines 1..=4 includes a removed line at index 4 → invalid
+        assert!(!validate_multiline_range(patch, 1, 4));
+    }
+
+    #[test]
+    fn test_validate_multiline_range_crosses_hunk_boundary() {
+        let patch = "@@ -1,2 +1,2 @@\n line1\n+new line2\n@@ -10,2 +10,2 @@\n line10\n+new line11";
+        // Lines 1..=4 crosses the hunk header at index 3 → invalid
+        assert!(!validate_multiline_range(patch, 1, 4));
+        // Within first hunk only
+        assert!(validate_multiline_range(patch, 1, 2));
+        // Within second hunk only
+        assert!(validate_multiline_range(patch, 4, 5));
+    }
+
+    #[test]
+    fn test_validate_multiline_range_starts_at_header() {
+        let patch = "@@ -1,2 +1,2 @@\n line1\n+added";
+        // Starting at hunk header → invalid
+        assert!(!validate_multiline_range(patch, 0, 1));
+    }
+
+    #[test]
+    fn test_validate_multiline_range_out_of_bounds() {
+        let patch = "@@ -1,2 +1,2 @@\n line1";
+        // Index 10 doesn't exist
+        assert!(!validate_multiline_range(patch, 1, 10));
     }
 }

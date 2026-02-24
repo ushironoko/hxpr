@@ -3768,9 +3768,12 @@ impl App {
         if self.local_mode {
             return;
         }
-        let Some(selection) = self.multiline_selection.take() else {
+        let Some(ref selection) = self.multiline_selection else {
             return;
         };
+        let start = selection.start();
+        let end = selection.end();
+
         let Some(file) = self.files().get(self.selected_file) else {
             return;
         };
@@ -3778,8 +3781,10 @@ impl App {
             return;
         };
 
-        let start = selection.start();
-        let end = selection.end();
+        // 範囲内の全行が同一ハンク内の new-side 行であることを検証
+        if !crate::diff::validate_multiline_range(patch, start, end) {
+            return;
+        }
 
         // 終了行の情報を取得（GitHub API の line パラメータ）
         let Some(end_info) = crate::diff::get_line_info(patch, end) else {
@@ -3813,6 +3818,9 @@ impl App {
             None
         };
 
+        // バリデーション成功後にのみ選択状態をクリア
+        self.multiline_selection = None;
+
         self.input_mode = Some(InputMode::Comment(LineInputContext {
             file_index: self.selected_file,
             line_number: end_line_number,
@@ -3829,9 +3837,12 @@ impl App {
         if self.local_mode {
             return;
         }
-        let Some(selection) = self.multiline_selection.take() else {
+        let Some(ref selection) = self.multiline_selection else {
             return;
         };
+        let start = selection.start();
+        let end = selection.end();
+
         let Some(file) = self.files().get(self.selected_file) else {
             return;
         };
@@ -3839,8 +3850,10 @@ impl App {
             return;
         };
 
-        let start = selection.start();
-        let end = selection.end();
+        // 範囲内の全行が同一ハンク内の new-side 行であることを検証
+        if !crate::diff::validate_multiline_range(patch, start, end) {
+            return;
+        }
 
         // 終了行の情報を取得
         let Some(end_info) = crate::diff::get_line_info(patch, end) else {
@@ -3886,6 +3899,9 @@ impl App {
         } else {
             None
         };
+
+        // バリデーション成功後にのみ選択状態をクリア
+        self.multiline_selection = None;
 
         self.input_mode = Some(InputMode::Suggestion {
             context: LineInputContext {
@@ -6914,5 +6930,159 @@ mod tests {
             app.diff_cache.is_some(),
             "non-md diff_cache should be preserved"
         );
+    }
+
+    // --- Multiline selection tests ---
+
+    fn make_app_with_patch(patch: &str) -> App {
+        let config = Config::default();
+        let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+        let pr = Box::new(PullRequest {
+            number: 1,
+            node_id: None,
+            title: "Test".to_string(),
+            body: None,
+            state: "open".to_string(),
+            head: crate::github::Branch {
+                ref_name: "feature".to_string(),
+                sha: "abc123".to_string(),
+            },
+            base: crate::github::Branch {
+                ref_name: "main".to_string(),
+                sha: "def456".to_string(),
+            },
+            user: crate::github::User {
+                login: "user".to_string(),
+            },
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        });
+        app.data_state = DataState::Loaded {
+            pr,
+            files: vec![ChangedFile {
+                filename: "test.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 1,
+                patch: Some(patch.to_string()),
+                viewed: false,
+            }],
+        };
+        app.selected_file = 0;
+        app
+    }
+
+    #[test]
+    fn test_enter_multiline_selection_sets_anchor() {
+        let mut app = make_app_with_patch("@@ -1,3 +1,4 @@\n context\n+added\n more context");
+        app.selected_line = 1; // context line
+        app.enter_multiline_selection();
+        assert!(app.multiline_selection.is_some());
+        let sel = app.multiline_selection.as_ref().unwrap();
+        assert_eq!(sel.anchor_line, 1);
+        assert_eq!(sel.cursor_line, 1);
+    }
+
+    #[test]
+    fn test_enter_multiline_selection_rejected_on_header() {
+        let mut app = make_app_with_patch("@@ -1,3 +1,4 @@\n context\n+added");
+        app.selected_line = 0; // hunk header line
+        app.enter_multiline_selection();
+        assert!(app.multiline_selection.is_none());
+    }
+
+    #[test]
+    fn test_multiline_comment_preserves_selection_on_invalid_range() {
+        let patch = "@@ -1,2 +1,2 @@\n line1\n+new line2\n@@ -10,2 +10,2 @@\n line10\n+new line11";
+        let mut app = make_app_with_patch(patch);
+        // Selection crosses hunk boundary (lines 1..=4)
+        app.multiline_selection = Some(MultilineSelection {
+            anchor_line: 1,
+            cursor_line: 4,
+        });
+        app.enter_multiline_comment_input();
+        // Selection should be preserved because validation failed
+        assert!(
+            app.multiline_selection.is_some(),
+            "selection should not be cleared on validation failure"
+        );
+        assert!(
+            app.input_mode.is_none(),
+            "should not enter input mode on validation failure"
+        );
+    }
+
+    #[test]
+    fn test_multiline_comment_clears_selection_on_valid_range() {
+        let patch = "@@ -1,3 +1,4 @@\n context\n+added\n more context";
+        let mut app = make_app_with_patch(patch);
+        // Valid range: lines 1..=2 (context + added)
+        app.multiline_selection = Some(MultilineSelection {
+            anchor_line: 1,
+            cursor_line: 2,
+        });
+        app.enter_multiline_comment_input();
+        assert!(
+            app.multiline_selection.is_none(),
+            "selection should be cleared after successful validation"
+        );
+        assert!(app.input_mode.is_some(), "should enter input mode");
+        assert_eq!(app.state, AppState::TextInput);
+    }
+
+    #[test]
+    fn test_multiline_suggestion_preserves_selection_on_invalid_range() {
+        let patch = "@@ -1,3 +1,3 @@\n context\n-removed\n+added";
+        let mut app = make_app_with_patch(patch);
+        // Selection includes a removed line (index 2)
+        app.multiline_selection = Some(MultilineSelection {
+            anchor_line: 1,
+            cursor_line: 3,
+        });
+        app.enter_multiline_suggestion_input();
+        assert!(
+            app.multiline_selection.is_some(),
+            "selection should not be cleared on validation failure"
+        );
+        assert!(app.input_mode.is_none());
+    }
+
+    #[test]
+    fn test_multiline_suggestion_clears_selection_on_valid_range() {
+        let patch = "@@ -1,3 +1,4 @@\n context\n+added\n more context";
+        let mut app = make_app_with_patch(patch);
+        app.multiline_selection = Some(MultilineSelection {
+            anchor_line: 1,
+            cursor_line: 2,
+        });
+        app.enter_multiline_suggestion_input();
+        assert!(
+            app.multiline_selection.is_none(),
+            "selection should be cleared after successful validation"
+        );
+        assert!(app.input_mode.is_some());
+        if let Some(InputMode::Suggestion {
+            context,
+            original_code,
+        }) = &app.input_mode
+        {
+            assert!(context.start_line_number.is_some());
+            assert!(!original_code.is_empty());
+        } else {
+            panic!("expected InputMode::Suggestion");
+        }
+    }
+
+    #[test]
+    fn test_multiline_cancel_clears_selection() {
+        let patch = "@@ -1,3 +1,4 @@\n context\n+added\n more context";
+        let mut app = make_app_with_patch(patch);
+        app.multiline_selection = Some(MultilineSelection {
+            anchor_line: 1,
+            cursor_line: 2,
+        });
+        // Simulate Esc to cancel
+        app.multiline_selection = None;
+        assert!(app.multiline_selection.is_none());
+        assert!(app.input_mode.is_none());
     }
 }
