@@ -169,6 +169,7 @@ fn bench_selected_line_rendering(c: &mut Criterion) {
                         selected,
                         comments,
                         false,
+                        None,
                     ))
                 });
             },
@@ -243,6 +244,7 @@ fn bench_visible_range_processing(c: &mut Criterion) {
                         scroll_offset,
                         comments,
                         false,
+                        None,
                     ))
                 });
             },

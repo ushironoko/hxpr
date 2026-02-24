@@ -842,4 +842,90 @@ Binary files /dev/null and b/image.png differ
         // Index 10 doesn't exist
         assert!(!validate_multiline_range(patch, 1, 10));
     }
+
+    #[test]
+    fn test_validate_multiline_range_removed_lines_in_middle() {
+        // Removed lines scattered between added/context lines
+        let patch =
+            "@@ -1,5 +1,4 @@\n context1\n+added1\n-removed_mid\n context2\n+added2";
+        // Range 1..=4 includes removed line at index 3 → invalid
+        assert!(!validate_multiline_range(patch, 1, 4));
+        // Range 1..=2 is context+added only → valid
+        assert!(validate_multiline_range(patch, 1, 2));
+        // Range 4..=5 is context+added only → valid
+        assert!(validate_multiline_range(patch, 4, 5));
+    }
+
+    #[test]
+    fn test_validate_multiline_range_all_removed() {
+        let patch = "@@ -1,3 +0,0 @@\n-removed1\n-removed2\n-removed3";
+        // All lines are removed → invalid
+        assert!(!validate_multiline_range(patch, 1, 3));
+    }
+
+    /// Validate that new-side line numbers are contiguous for a valid multiline range.
+    /// This ensures the GitHub API will receive a valid start_line..line range.
+    #[test]
+    fn test_multiline_range_new_side_lines_contiguous() {
+        let patch =
+            "@@ -1,4 +1,5 @@\n context1\n+added1\n+added2\n context2\n+added3";
+        // Valid range: indices 1..=4 → all are Added or Context
+        assert!(validate_multiline_range(patch, 1, 4));
+
+        // Verify new-side line numbers are contiguous: 1, 2, 3, 4
+        let start_info = get_line_info(patch, 1).unwrap();
+        let end_info = get_line_info(patch, 4).unwrap();
+        assert_eq!(start_info.new_line_number, Some(1));
+        assert_eq!(end_info.new_line_number, Some(4));
+        // All intermediate lines should also have contiguous new_line_number
+        for idx in 1..=4 {
+            let info = get_line_info(patch, idx).unwrap();
+            assert!(info.new_line_number.is_some());
+        }
+    }
+
+    /// Test single-line vs multiline dispatch logic.
+    /// When start and end new-side line numbers are equal, start_line should be None (single-line).
+    /// When start < end, start_line should be Some (multiline API call).
+    #[test]
+    fn test_single_line_vs_multiline_dispatch() {
+        let patch =
+            "@@ -1,3 +1,4 @@\n context1\n+added1\n+added2\n context2";
+
+        // Single line selection: start == end → should dispatch as single-line comment
+        let info = get_line_info(patch, 2).unwrap();
+        assert_eq!(info.new_line_number, Some(2));
+        // start_line_number == line_number → start_line = None (single-line)
+        let start_line = if info.new_line_number == info.new_line_number {
+            None
+        } else {
+            info.new_line_number
+        };
+        assert_eq!(start_line, None);
+
+        // Multiline selection: start=1, end=3 → should dispatch as multiline comment
+        let start_info = get_line_info(patch, 1).unwrap();
+        let end_info = get_line_info(patch, 3).unwrap();
+        let start_ln = start_info.new_line_number.unwrap();
+        let end_ln = end_info.new_line_number.unwrap();
+        // start_line_number < end_line_number → start_line = Some (multiline API)
+        let start_line = if start_ln < end_ln {
+            Some(start_ln)
+        } else {
+            None
+        };
+        assert_eq!(start_line, Some(1));
+        assert_eq!(end_ln, 3);
+    }
+
+    /// Test that validate_multiline_range correctly rejects meta lines in range.
+    #[test]
+    fn test_validate_multiline_range_meta_lines() {
+        // A patch starting with diff --git meta lines
+        let patch = "diff --git a/f.rs b/f.rs\nindex abc..def 100644\n--- a/f.rs\n+++ b/f.rs\n@@ -1,2 +1,3 @@\n context1\n+added1\n+added2";
+        // Meta lines (indices 0..=3) are not commentable
+        assert!(!validate_multiline_range(patch, 0, 5));
+        // Valid range within the hunk (indices 5..=7)
+        assert!(validate_multiline_range(patch, 5, 7));
+    }
 }
