@@ -11,6 +11,7 @@ pub mod config;
 pub mod diff;
 pub mod editor;
 pub mod github;
+pub mod headless;
 pub mod keybinding;
 pub mod language;
 pub mod loader;

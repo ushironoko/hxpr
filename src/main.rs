@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 // Use modules from the library crate
 use octorus::app::RefreshRequest;
-use octorus::{app, cache, config, github, loader, syntax};
+use octorus::{app, cache, config, github, headless, loader, syntax};
 
 // init is only used by the binary, not needed for benchmarks
 mod init;
@@ -34,7 +34,7 @@ struct Args {
     repo: Option<String>,
 
     /// Pull request number. Shows PR list if omitted.
-    #[arg(short, long)]
+    #[arg(short, long, conflicts_with = "local")]
     pr: Option<u32>,
 
     /// Start AI Rally mode directly
@@ -42,7 +42,7 @@ struct Args {
     ai_rally: bool,
 
     /// Show local git diff against current HEAD (no GitHub PR fetch)
-    #[arg(long, default_value = "false")]
+    #[arg(long, default_value = "false", conflicts_with = "pr")]
     local: bool,
 
     /// Auto-focus changed file when local diff updates (for local mode)
@@ -143,6 +143,21 @@ async fn main() -> Result<()> {
     });
 
     let config = config::Config::load()?;
+
+    // Headless mode: --ai-rally with --pr or --local bypasses TUI entirely
+    if args.ai_rally && args.pr.is_some() {
+        let pr = args.pr.unwrap();
+        let working_dir = resolve_working_dir(&args);
+        let approved =
+            headless::run_headless_rally(&repo, pr, &config, working_dir.as_deref()).await?;
+        std::process::exit(if approved { 0 } else { 1 });
+    }
+    if args.local && args.ai_rally {
+        let working_dir = resolve_working_dir(&args);
+        let approved =
+            headless::run_headless_rally_local(&repo, &config, working_dir.as_deref()).await?;
+        std::process::exit(if approved { 0 } else { 1 });
+    }
 
     if args.local {
         run_with_local_diff(&repo, &config, &args).await
@@ -423,6 +438,17 @@ async fn run_with_pr_list(repo: &str, config: config::Config, args: &Args) -> Re
     // app.run() 内で完了済み。
     let exit_code = if result.is_ok() { 0 } else { 1 };
     std::process::exit(exit_code);
+}
+
+/// Resolve working directory for headless mode
+fn resolve_working_dir(args: &Args) -> Option<String> {
+    if let Some(dir) = args.working_dir.clone() {
+        Some(dir)
+    } else {
+        std::env::current_dir()
+            .ok()
+            .map(|p| p.to_string_lossy().to_string())
+    }
 }
 
 /// Set up working directory for AI agents
