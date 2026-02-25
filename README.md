@@ -70,7 +70,13 @@ or --repo owner/repo --pr 123
 # 4. Start AI Rally (select PR from list, then auto-start)
 or --ai-rally
 
-# 5. Preview local working tree diff in real time
+# 5. Run AI Rally in headless mode (no TUI, CI/CD friendly)
+or --repo owner/repo --pr 123 --ai-rally
+
+# 6. Run headless AI Rally on local diff
+or --local --ai-rally
+
+# 7. Preview local working tree diff in real time
 or --local
 ```
 
@@ -80,7 +86,7 @@ or --local
 |--------|-------------|
 | `-r, --repo <REPO>` | Repository name (e.g., "owner/repo") |
 | `-p, --pr <PR>` | Pull request number |
-| `--ai-rally` | Start AI Rally mode directly |
+| `--ai-rally` | Start AI Rally mode directly (headless when combined with `--pr` or `--local`) |
 | `--working-dir <DIR>` | Working directory for AI agents (default: current directory) |
 | `--local` | Show local git diff against current `HEAD` (no GitHub PR fetch) |
 | `--auto-focus` | In local mode, automatically focus the changed file when diff updates |
@@ -492,6 +498,45 @@ AI Rally is an automated PR review and fix cycle that uses two AI agents:
        ┌────┴────┐
        │ Approve?│  ... repeat until approved
        └─────────┘       or max iterations
+```
+
+### Headless Mode (CI/CD)
+
+When `--ai-rally` is combined with `--pr` or `--local`, AI Rally runs in **headless mode** — no TUI is launched, all output goes to stderr, and the process exits with a code suitable for CI/CD pipelines.
+
+```bash
+# Headless rally on a specific PR
+or --repo owner/repo --pr 123 --ai-rally
+
+# Headless rally on local diff
+or --local --ai-rally
+
+# With custom working directory
+or --repo owner/repo --pr 123 --ai-rally --working-dir /path/to/repo
+```
+
+**Exit codes:**
+
+| Code | Meaning |
+|------|---------|
+| `0` | Reviewer approved |
+| `1` | Not approved (request changes, error, or abort) |
+
+**Headless policy** (no human interaction possible):
+
+| Situation | Behavior |
+|-----------|----------|
+| Clarification needed | Auto-skip (agent proceeds with best judgment) |
+| Permission needed | Auto-deny (prevents dynamic tool expansion) |
+| Post confirmation | Auto-approve (posts review/fix to PR) |
+| Agent text/thinking | Suppressed (prevents JSON leakage to stdout) |
+
+**CI/CD example (GitHub Actions):**
+
+```yaml
+- name: AI Rally Review
+  run: |
+    or --repo ${{ github.repository }} --pr ${{ github.event.pull_request.number }} --ai-rally
 ```
 
 ### Features
