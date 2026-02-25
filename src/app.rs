@@ -3582,40 +3582,35 @@ impl App {
         let visible_lines = terminal_height.saturating_sub(Self::HELP_VIEWPORT_OVERHEAD) as usize;
         let half_page = (visible_lines / 2).max(1);
 
-        match key.code {
-            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('?') => {
-                self.state = self.previous_state;
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.help_scroll_offset = self.help_scroll_offset.saturating_add(1);
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.help_scroll_offset = self.help_scroll_offset.saturating_sub(1);
-            }
-            KeyCode::Char('J') => {
-                self.help_scroll_offset = self
-                    .help_scroll_offset
-                    .saturating_add(visible_lines.max(1));
-            }
-            KeyCode::Char('K') => {
-                self.help_scroll_offset = self
-                    .help_scroll_offset
-                    .saturating_sub(visible_lines.max(1));
-            }
-            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.help_scroll_offset = self.help_scroll_offset.saturating_add(half_page);
-            }
-            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.help_scroll_offset = self.help_scroll_offset.saturating_sub(half_page);
-            }
-            KeyCode::Char('g') => {
-                self.help_scroll_offset = 0;
-            }
-            KeyCode::Char('G') => {
-                // Set to a large value; render will clamp it
-                self.help_scroll_offset = usize::MAX;
-            }
-            _ => {}
+        if matches!(
+            key.code,
+            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('?')
+        ) {
+            self.state = self.previous_state;
+        } else if Self::is_shift_char_shortcut(&key, 'j') {
+            // Page down (J / Shift+j)
+            self.help_scroll_offset = self
+                .help_scroll_offset
+                .saturating_add(visible_lines.max(1));
+        } else if Self::is_shift_char_shortcut(&key, 'k') {
+            // Page up (K / Shift+k)
+            self.help_scroll_offset = self
+                .help_scroll_offset
+                .saturating_sub(visible_lines.max(1));
+        } else if Self::is_shift_char_shortcut(&key, 'g') {
+            // Jump to bottom (G / Shift+g)
+            self.help_scroll_offset = usize::MAX;
+        } else if matches!(key.code, KeyCode::Char('j') | KeyCode::Down) {
+            self.help_scroll_offset = self.help_scroll_offset.saturating_add(1);
+        } else if matches!(key.code, KeyCode::Char('k') | KeyCode::Up) {
+            self.help_scroll_offset = self.help_scroll_offset.saturating_sub(1);
+        } else if key.code == KeyCode::Char('d') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.help_scroll_offset = self.help_scroll_offset.saturating_add(half_page);
+        } else if key.code == KeyCode::Char('u') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.help_scroll_offset = self.help_scroll_offset.saturating_sub(half_page);
+        } else if key.code == KeyCode::Char('g') && key.modifiers.is_empty() {
+            // Jump to top (g without modifiers)
+            self.help_scroll_offset = 0;
         }
     }
 
@@ -7277,5 +7272,56 @@ mod tests {
         //   Content has Borders::ALL (2 rows overhead)
         // Total overhead = 3 + 2 = 5
         assert_eq!(App::HELP_VIEWPORT_OVERHEAD, 5);
+    }
+
+    fn make_shift_key(c: char) -> event::KeyEvent {
+        event::KeyEvent {
+            code: KeyCode::Char(c),
+            modifiers: KeyModifiers::SHIFT,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }
+    }
+
+    #[test]
+    fn test_help_scroll_shift_j_page_down() {
+        let config = Config::default();
+        let (mut app, _) = App::new_loading("owner/repo", 1, config);
+        app.help_scroll_offset = 0;
+        // Shift+j should behave the same as J (page down)
+        // terminal height 30 → visible_lines = 25
+        app.apply_help_scroll(make_shift_key('j'), 30);
+        assert_eq!(app.help_scroll_offset, 25);
+    }
+
+    #[test]
+    fn test_help_scroll_shift_k_page_up() {
+        let config = Config::default();
+        let (mut app, _) = App::new_loading("owner/repo", 1, config);
+        app.help_scroll_offset = 50;
+        // Shift+k should behave the same as K (page up)
+        // terminal height 30 → visible_lines = 25
+        app.apply_help_scroll(make_shift_key('k'), 30);
+        assert_eq!(app.help_scroll_offset, 25);
+    }
+
+    #[test]
+    fn test_help_scroll_shift_g_jumps_to_bottom() {
+        let config = Config::default();
+        let (mut app, _) = App::new_loading("owner/repo", 1, config);
+        app.help_scroll_offset = 0;
+        // Shift+g should behave the same as G (jump to bottom)
+        app.apply_help_scroll(make_shift_key('g'), 30);
+        assert_eq!(app.help_scroll_offset, usize::MAX);
+    }
+
+    #[test]
+    fn test_help_scroll_g_without_modifiers_jumps_to_top() {
+        let config = Config::default();
+        let (mut app, _) = App::new_loading("owner/repo", 1, config);
+        app.help_scroll_offset = 50;
+        // Plain g (no modifiers) should jump to top
+        app.apply_help_scroll(make_key(KeyCode::Char('g')), 30);
+        assert_eq!(app.help_scroll_offset, 0);
     }
 }

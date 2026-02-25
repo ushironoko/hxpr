@@ -422,7 +422,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         Line::from(""),
         Line::from(vec![Span::styled(
             format!(
-                "Press {} or {} to close this help | j/k: scroll | J/K: page scroll | g/G: top/bottom",
+                "Press {} or {} to close this help | j/k: scroll | J/K: page scroll | Ctrl-d/u: half page | g/G: top/bottom",
                 kb.quit.display(),
                 kb.help.display()
             ),
