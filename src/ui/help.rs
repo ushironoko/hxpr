@@ -70,7 +70,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     // Scrollbar
     if total_lines > content_height {
-        let mut scrollbar_state = ScrollbarState::new(max_scroll)
+        let mut scrollbar_state = ScrollbarState::new(max_scroll + 1)
             .position(app.help_scroll_offset);
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(None)

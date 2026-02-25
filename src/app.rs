@@ -3582,10 +3582,11 @@ impl App {
         let visible_lines = terminal_height.saturating_sub(Self::HELP_VIEWPORT_OVERHEAD) as usize;
         let half_page = (visible_lines / 2).max(1);
 
-        if matches!(
-            key.code,
-            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('?')
-        ) {
+        let kb = &self.config.keybindings;
+        if self.matches_single_key(&key, &kb.quit)
+            || self.matches_single_key(&key, &kb.help)
+            || key.code == KeyCode::Esc
+        {
             self.state = self.previous_state;
         } else if Self::is_shift_char_shortcut(&key, 'j') {
             // Page down (J / Shift+j)
