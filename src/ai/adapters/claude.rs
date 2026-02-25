@@ -100,6 +100,8 @@ impl ClaudeAdapter {
         session_id: Option<&str>,
     ) -> Result<ClaudeResponse> {
         let mut cmd = Command::new("claude");
+        // Prevent nested session detection when octorus is run inside Claude Code
+        cmd.env_remove("CLAUDECODE");
         // Use -p without prompt arg; prompt is piped via stdin to avoid OS ARG_MAX limit
         cmd.arg("-p");
         cmd.arg("--output-format").arg("stream-json");

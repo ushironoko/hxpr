@@ -157,6 +157,8 @@ impl CodexAdapter {
             .context("Failed to write schema to temporary file")?;
 
         let mut cmd = Command::new("codex");
+        // Prevent nested session detection when octorus is run inside Claude Code
+        cmd.env_remove("CLAUDECODE");
 
         // Handle session resume
         // Usage: codex exec resume <SESSION_ID> [PROMPT]
