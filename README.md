@@ -153,6 +153,9 @@ The split view shows the file list (left, 35%) and a diff preview (right, 65%). 
 | `Ctrl-u` | Page up |
 | `n` | Jump to next comment |
 | `N` | Jump to previous comment |
+| `c` | Add comment at line |
+| `s` | Add suggestion at line |
+| `Shift+Enter` | Enter multiline selection mode |
 | `Enter` | Open comment panel |
 | `Tab` / `→` / `l` | Open fullscreen diff view |
 | `←` / `h` | Focus file list |
@@ -172,11 +175,26 @@ The split view shows the file list (left, 35%) and a diff preview (right, 65%). 
 | `N` | Jump to previous comment |
 | `Ctrl-d` | Page down |
 | `Ctrl-u` | Page up |
+| `c` | Add comment at line |
+| `s` | Add suggestion at line |
+| `Shift+Enter` | Enter multiline selection mode |
 | `M` | Toggle Markdown rich display |
 | `Enter` | Open comment panel |
 | `←` / `h` / `q` / `Esc` | Back to previous view |
 
 **Note**: Lines with existing comments are marked with `●`. When you select a commented line, the comment content is displayed in a panel below the diff.
+
+**Multiline Selection Mode:**
+
+Press `Shift+Enter` to enter multiline selection mode. Select a range of lines, then create a comment or suggestion spanning the entire range.
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Extend selection down |
+| `k` / `↑` | Extend selection up |
+| `Enter` / `c` | Comment on selection |
+| `s` | Suggest on selection |
+| `Esc` | Cancel selection |
 
 **Comment Panel (when focused):**
 
