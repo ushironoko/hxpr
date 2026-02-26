@@ -799,6 +799,8 @@ impl App {
             self.deactivate_watcher();
             self.saved_local_snapshot = Some(self.save_view_snapshot());
             self.local_mode = false;
+            // モード切替時にファイルフィルタをリセット（stale indices による OOB 防止）
+            self.file_list_filter = None;
 
             if let Some(snapshot) = self.saved_pr_snapshot.take() {
                 let pr_number = snapshot.pr_number;
@@ -836,6 +838,8 @@ impl App {
             let from_pr_list = matches!(self.state, AppState::PullRequestList);
             self.saved_pr_snapshot = Some(self.save_view_snapshot());
             self.local_mode = true;
+            // モード切替時にファイルフィルタをリセット（stale indices による OOB 防止）
+            self.file_list_filter = None;
 
             // PR リストから来た場合は FileList に遷移
             if from_pr_list {
