@@ -303,7 +303,6 @@ fn is_context_compatible(name1: &str, name2: &str) -> bool {
         &["reply", "request_changes"],
         &["toggle_local_mode", "move_right"], // L vs l: different cases
         &["toggle_auto_focus", "go_to_file"], // F vs gf: different sequence lengths
-        &["filter", "approve"],                // Space+/ vs a: different sequence lengths
     ];
 
     for group in context_groups {

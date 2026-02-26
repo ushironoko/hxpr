@@ -1811,6 +1811,10 @@ impl App {
                     },
                 );
                 self.data_state = DataState::Loaded { pr, files };
+                // ファイル一覧が変わったため、フィルタを再適用（stale indices 防止）
+                if self.file_list_filter.is_some() {
+                    self.reapply_filter("file");
+                }
                 // selected_file が変更された場合、コメント位置キャッシュを再計算
                 if self.selected_file != old_selected {
                     self.update_file_comment_positions();
@@ -2023,7 +2027,8 @@ impl App {
             return Ok(());
         }
 
-        if self.handle_mark_viewed_key(key) {
+        // フィルタ結果が空の場合、ファイル操作を無効化（stale selection 防止）
+        if !self.is_filter_selection_empty("file") && self.handle_mark_viewed_key(key) {
             return Ok(());
         }
 
@@ -2215,7 +2220,8 @@ impl App {
         key: event::KeyEvent,
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) -> Result<bool> {
-        if self.handle_mark_viewed_key(key) {
+        // フィルタ結果が空の場合、ファイル操作を無効化（stale selection 防止）
+        if !self.is_filter_selection_empty("file") && self.handle_mark_viewed_key(key) {
             return Ok(true);
         }
 
