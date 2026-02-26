@@ -1353,10 +1353,103 @@ fn split_shell_commands(command: &str) -> Vec<&str> {
     results
 }
 
+/// Shell wrapper commands that can prefix the actual binary.
+/// e.g., `env git push`, `command git push`, `sudo git push`
+const SHELL_WRAPPERS: &[&str] = &[
+    "env", "command", "builtin", "exec", "nohup", "nice", "sudo", "xargs",
+];
+
+/// Check if a token looks like an environment variable assignment (VAR=value).
+fn is_env_var_assignment(token: &str) -> bool {
+    if let Some(eq_pos) = token.find('=') {
+        // Must have at least one char before '=' and the prefix must be a valid env var name
+        eq_pos > 0
+            && token[..eq_pos]
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    } else {
+        false
+    }
+}
+
+/// Check if a token refers to the `git` binary, handling absolute/relative paths.
+/// e.g., "git", "/usr/bin/git", "./git", "../bin/git"
+fn is_git_binary(token: &str) -> bool {
+    // Extract basename: everything after the last '/'
+    let basename = match token.rfind('/') {
+        Some(pos) => &token[pos + 1..],
+        None => token,
+    };
+    basename == "git"
+}
+
+/// Find the git binary and its subcommand index within a token list,
+/// skipping environment variable assignments (VAR=value) and shell wrappers
+/// (env, command, sudo, etc.).
+///
+/// Returns `Some((git_index, subcommand_index))` if git is found, `None` otherwise.
+fn find_git_in_tokens<'a>(tokens: &[&'a str]) -> Option<(usize, Option<usize>)> {
+    let mut i = 0;
+
+    // Skip leading env var assignments (e.g., GIT_TRACE=1 VAR=val git push)
+    while i < tokens.len() && is_env_var_assignment(tokens[i]) {
+        i += 1;
+    }
+
+    // Skip shell wrapper commands (e.g., env, command, sudo)
+    // Wrappers can also have their own flags (e.g., `env -i git push`)
+    while i < tokens.len() {
+        let basename = match tokens[i].rfind('/') {
+            Some(pos) => &tokens[i][pos + 1..],
+            None => tokens[i],
+        };
+        if SHELL_WRAPPERS.contains(&basename) {
+            i += 1;
+            // Skip wrapper flags (e.g., `env -i`, `nice -n 5`, `sudo -u user`)
+            while i < tokens.len() && tokens[i].starts_with('-') {
+                i += 1;
+                // Also skip the argument to the flag if it's not combined (e.g., `-n 5`)
+                // We conservatively skip one more token for flags that take args,
+                // but only if the next token doesn't look like git
+                if i < tokens.len() && !is_git_binary(tokens[i]) && !tokens[i].starts_with('-') {
+                    i += 1;
+                }
+            }
+            // After wrapper flags, skip env var assignments again
+            // (e.g., `env VAR=val git push`)
+            while i < tokens.len() && is_env_var_assignment(tokens[i]) {
+                i += 1;
+            }
+        } else {
+            break;
+        }
+    }
+
+    if i >= tokens.len() {
+        return None;
+    }
+
+    if is_git_binary(tokens[i]) {
+        let git_idx = i;
+        let sub_idx = if i + 1 < tokens.len() {
+            Some(i + 1)
+        } else {
+            None
+        };
+        Some((git_idx, sub_idx))
+    } else {
+        None
+    }
+}
+
 /// Validate whether a tool/action string contains blocked git operations.
 ///
 /// Uses strict token-based parsing instead of substring matching to prevent
 /// bypasses like `git status && git push` passing a `contains("git status")` check.
+///
+/// Also handles wrapper commands (`env`, `command`, `sudo`, etc.), environment
+/// variable prefixes (`VAR=val git push`), and absolute paths (`/usr/bin/git push`)
+/// that could be used to bypass a simple `tokens[0] == "git"` check.
 ///
 /// Returns `Some(reason)` if the action is blocked, `None` if allowed.
 fn check_blocked_git_operation(action: &str) -> Option<String> {
@@ -1392,28 +1485,33 @@ fn check_blocked_git_operation(action: &str) -> Option<String> {
             continue;
         }
 
-        // Check if this is a git command
-        if tokens[0] == "git" {
-            if tokens.len() < 2 {
-                return Some("Bare 'git' command without subcommand is not allowed".to_string());
-            }
+        // Find the git binary in the token list, skipping env vars and wrappers
+        if let Some((_, sub_idx)) = find_git_in_tokens(&tokens) {
+            match sub_idx {
+                None => {
+                    return Some(
+                        "Bare 'git' command without subcommand is not allowed".to_string(),
+                    );
+                }
+                Some(si) => {
+                    let subcommand = tokens[si];
 
-            let subcommand = tokens[1];
+                    // Reject flags before subcommand (e.g., git -C /path push)
+                    // as they can be used to obfuscate the actual operation
+                    if subcommand.starts_with('-') {
+                        return Some(format!(
+                            "Git command with flags before subcommand is not allowed: '{}'",
+                            trimmed
+                        ));
+                    }
 
-            // Reject flags before subcommand (e.g., git -C /path push)
-            // as they can be used to obfuscate the actual operation
-            if subcommand.starts_with('-') {
-                return Some(format!(
-                    "Git command with flags before subcommand is not allowed: '{}'",
-                    trimmed
-                ));
-            }
-
-            if !ALLOWED_GIT_SUBCOMMANDS.contains(&subcommand) {
-                return Some(format!(
-                    "Git subcommand '{}' is not in the allowed list ({:?})",
-                    subcommand, ALLOWED_GIT_SUBCOMMANDS
-                ));
+                    if !ALLOWED_GIT_SUBCOMMANDS.contains(&subcommand) {
+                        return Some(format!(
+                            "Git subcommand '{}' is not in the allowed list ({:?})",
+                            subcommand, ALLOWED_GIT_SUBCOMMANDS
+                        ));
+                    }
+                }
             }
         }
     }
@@ -1839,5 +1937,100 @@ mod tests {
         // (e.g., "widget", "digit", "legit")
         assert!(check_blocked_git_operation("Bash(widget build:*)").is_none());
         assert!(check_blocked_git_operation("Bash(cargo test --features digit:*)").is_none());
+    }
+
+    #[test]
+    fn test_check_blocked_git_via_env_wrapper() {
+        // env git push — bypasses tokens[0] == "git" check
+        assert!(
+            check_blocked_git_operation("Bash(env git push:*)").is_some(),
+            "Should block 'env git push'"
+        );
+        // env with flags
+        assert!(
+            check_blocked_git_operation("Bash(env -i git push:*)").is_some(),
+            "Should block 'env -i git push'"
+        );
+        // env with safe git command should be allowed
+        assert!(
+            check_blocked_git_operation("Bash(env git status:*)").is_none(),
+            "Should allow 'env git status'"
+        );
+    }
+
+    #[test]
+    fn test_check_blocked_git_via_command_wrapper() {
+        // command git push
+        assert!(
+            check_blocked_git_operation("Bash(command git push:*)").is_some(),
+            "Should block 'command git push'"
+        );
+        // command with safe subcommand
+        assert!(
+            check_blocked_git_operation("Bash(command git diff:*)").is_none(),
+            "Should allow 'command git diff'"
+        );
+    }
+
+    #[test]
+    fn test_check_blocked_git_via_env_var_prefix() {
+        // GIT_TRACE=1 git push — env var assignment before git
+        assert!(
+            check_blocked_git_operation("Bash(GIT_TRACE=1 git push:*)").is_some(),
+            "Should block 'GIT_TRACE=1 git push'"
+        );
+        // Multiple env vars
+        assert!(
+            check_blocked_git_operation("Bash(GIT_TRACE=1 GIT_CURL_VERBOSE=1 git push:*)").is_some(),
+            "Should block git push with multiple env var prefixes"
+        );
+        // Env var with safe command
+        assert!(
+            check_blocked_git_operation("Bash(GIT_TRACE=1 git status:*)").is_none(),
+            "Should allow 'GIT_TRACE=1 git status'"
+        );
+    }
+
+    #[test]
+    fn test_check_blocked_git_via_absolute_path() {
+        // /usr/bin/git push — absolute path to git
+        assert!(
+            check_blocked_git_operation("Bash(/usr/bin/git push:*)").is_some(),
+            "Should block '/usr/bin/git push'"
+        );
+        // /usr/local/bin/git push
+        assert!(
+            check_blocked_git_operation("Bash(/usr/local/bin/git push:*)").is_some(),
+            "Should block '/usr/local/bin/git push'"
+        );
+        // Absolute path with safe command
+        assert!(
+            check_blocked_git_operation("Bash(/usr/bin/git status:*)").is_none(),
+            "Should allow '/usr/bin/git status'"
+        );
+    }
+
+    #[test]
+    fn test_check_blocked_git_combined_wrappers() {
+        // env + env var + absolute path
+        assert!(
+            check_blocked_git_operation("Bash(env GIT_TRACE=1 /usr/bin/git push:*)").is_some(),
+            "Should block 'env GIT_TRACE=1 /usr/bin/git push'"
+        );
+        // command + env var + git push
+        assert!(
+            check_blocked_git_operation("Bash(command GIT_TRACE=1 git push:*)").is_some(),
+            "Should block 'command GIT_TRACE=1 git push'"
+        );
+        // Chained: safe wrapper command && wrapper push
+        assert!(
+            check_blocked_git_operation("Bash(git status && env git push:*)").is_some(),
+            "Should block 'env git push' hidden after safe command via &&"
+        );
+        // Chained: env var safe && absolute path push
+        assert!(
+            check_blocked_git_operation("Bash(GIT_TRACE=1 git status; /usr/bin/git push:*)").is_some(),
+            "Should block '/usr/bin/git push' hidden after safe command via ;"
+        );
     }
 }
