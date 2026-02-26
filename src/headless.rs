@@ -1,4 +1,5 @@
 use anyhow::Result;
+use serde::Serialize;
 use tokio::sync::mpsc;
 
 use crate::ai::adapter::{
@@ -8,8 +9,9 @@ use crate::ai::orchestrator::{Orchestrator, OrchestratorCommand, RallyEvent, Ral
 use crate::config::Config;
 use crate::github;
 
-/// Run AI Rally in headless mode (no TUI, output to stderr).
+/// Run AI Rally in headless mode (no TUI).
 ///
+/// Progress logs are written to stderr. On completion, a JSON summary is written to stdout.
 /// This is invoked when `--ai-rally --pr <number>` is specified.
 /// Returns `true` if approved, `false` otherwise.
 pub async fn run_headless_rally(
@@ -67,6 +69,7 @@ pub async fn run_headless_rally(
 
 /// Run AI Rally in headless mode for local diff.
 ///
+/// Progress logs are written to stderr. On completion, a JSON summary is written to stdout.
 /// This is invoked when `--local --ai-rally` is specified.
 /// Returns `true` if approved, `false` otherwise.
 pub async fn run_headless_rally_local(
@@ -189,31 +192,64 @@ async fn run_headless_with_context(
     let orchestrator_handle = tokio::spawn(async move { orchestrator.run().await });
 
     // Event loop: receive events and auto-respond to interactive requests
-    let result = run_headless_event_loop(&mut event_rx, &cmd_tx).await;
+    let outcome = run_headless_event_loop(&mut event_rx, &cmd_tx).await;
 
     // Wait for orchestrator to finish
     let _ = orchestrator_handle.await;
 
-    match result {
-        HeadlessResult::Approved => {
+    // Existing stderr output (unchanged)
+    match &outcome.result {
+        HeadlessResult::Approved(_) => {
             eprintln!("\n[Headless] Rally completed: Approved");
-            Ok(true)
         }
         HeadlessResult::NotApproved(reason) => {
             eprintln!("\n[Headless] Rally completed: {}", reason);
-            Ok(false)
         }
         HeadlessResult::Error(msg) => {
             eprintln!("\n[Headless] Rally error: {}", msg);
-            Ok(false)
         }
     }
+
+    // JSON output to stdout
+    let json_output = build_json_output(&outcome);
+    write_json_stdout(&json_output);
+
+    Ok(matches!(outcome.result, HeadlessResult::Approved(_)))
 }
 
 enum HeadlessResult {
-    Approved,
+    Approved(String),
     NotApproved(String),
     Error(String),
+}
+
+/// Internal outcome from the headless event loop, bundling result with collected data.
+struct HeadlessOutcome {
+    result: HeadlessResult,
+    iterations: u32,
+    last_review: Option<ReviewerOutput>,
+    last_fix: Option<RevieweeOutput>,
+}
+
+/// Result kind for JSON output (serialized as snake_case).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum HeadlessResultKind {
+    Approved,
+    NotApproved,
+    Error,
+}
+
+/// JSON output structure written to stdout on headless completion.
+#[derive(Debug, Serialize)]
+struct HeadlessJsonOutput {
+    result: HeadlessResultKind,
+    iterations: u32,
+    summary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_review: Option<ReviewerOutput>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_fix: Option<RevieweeOutput>,
 }
 
 /// Event loop that processes RallyEvents and auto-responds to interactive requests.
@@ -227,12 +263,16 @@ enum HeadlessResult {
 async fn run_headless_event_loop(
     event_rx: &mut mpsc::Receiver<RallyEvent>,
     cmd_tx: &mpsc::Sender<OrchestratorCommand>,
-) -> HeadlessResult {
+) -> HeadlessOutcome {
     let mut last_error: Option<String> = None;
+    let mut current_iteration: u32 = 0;
+    let mut last_review: Option<ReviewerOutput> = None;
+    let mut last_fix: Option<RevieweeOutput> = None;
 
     while let Some(event) = event_rx.recv().await {
         match event {
             RallyEvent::IterationStarted(n) => {
+                current_iteration = n;
                 eprintln!("\n=== Iteration {} ===", n);
             }
             RallyEvent::StateChanged(state) => match state {
@@ -246,28 +286,43 @@ async fn run_headless_event_loop(
                     // Will be handled by Approved event
                 }
                 RallyState::Aborted => {
-                    return HeadlessResult::NotApproved(
-                        last_error
-                            .unwrap_or_else(|| "Aborted".to_string()),
-                    );
+                    return HeadlessOutcome {
+                        result: HeadlessResult::NotApproved(
+                            last_error.unwrap_or_else(|| "Aborted".to_string()),
+                        ),
+                        iterations: current_iteration,
+                        last_review,
+                        last_fix,
+                    };
                 }
                 RallyState::Error => {
-                    return HeadlessResult::Error(
-                        last_error
-                            .unwrap_or_else(|| "Unknown error".to_string()),
-                    );
+                    return HeadlessOutcome {
+                        result: HeadlessResult::Error(
+                            last_error.unwrap_or_else(|| "Unknown error".to_string()),
+                        ),
+                        iterations: current_iteration,
+                        last_review,
+                        last_fix,
+                    };
                 }
                 _ => {}
             },
             RallyEvent::ReviewCompleted(output) => {
                 eprintln!("{}", format_review_output(&output));
+                last_review = Some(output);
             }
             RallyEvent::FixCompleted(output) => {
                 eprintln!("{}", format_fix_output(&output));
+                last_fix = Some(output);
             }
             RallyEvent::Approved(summary) => {
                 eprintln!("\n[Approved] {}", summary);
-                return HeadlessResult::Approved;
+                return HeadlessOutcome {
+                    result: HeadlessResult::Approved(summary),
+                    iterations: current_iteration,
+                    last_review,
+                    last_fix,
+                };
             }
             RallyEvent::Error(msg) => {
                 eprintln!("\n[Error] {}", msg);
@@ -330,7 +385,14 @@ async fn run_headless_event_loop(
     }
 
     // Channel closed - orchestrator finished without explicit terminal event
-    HeadlessResult::NotApproved(last_error.unwrap_or_else(|| "Rally ended unexpectedly".to_string()))
+    HeadlessOutcome {
+        result: HeadlessResult::NotApproved(
+            last_error.unwrap_or_else(|| "Rally ended unexpectedly".to_string()),
+        ),
+        iterations: current_iteration,
+        last_review,
+        last_fix,
+    }
 }
 
 /// Format ReviewerOutput as human-readable text (no JSON).
@@ -408,6 +470,50 @@ fn truncate_str(s: &str, max_chars: usize) -> String {
         .map(|(i, _)| i)
         .unwrap_or(s.len());
     format!("{}...", &s[..byte_end])
+}
+
+/// Build JSON output from headless outcome (pure function for testability).
+fn build_json_output(outcome: &HeadlessOutcome) -> HeadlessJsonOutput {
+    let (result_kind, summary) = match &outcome.result {
+        HeadlessResult::Approved(summary) => (HeadlessResultKind::Approved, summary.clone()),
+        HeadlessResult::NotApproved(reason) => (HeadlessResultKind::NotApproved, reason.clone()),
+        HeadlessResult::Error(msg) => (HeadlessResultKind::Error, msg.clone()),
+    };
+    HeadlessJsonOutput {
+        result: result_kind,
+        iterations: outcome.iterations,
+        summary,
+        last_review: outcome.last_review.clone(),
+        last_fix: outcome.last_fix.clone(),
+    }
+}
+
+/// Write JSON output to stdout with flush guarantee and broken pipe safety.
+fn write_json_stdout(output: &HeadlessJsonOutput) {
+    use std::io::Write;
+    let stdout = std::io::stdout();
+    let mut handle = stdout.lock();
+    match serde_json::to_writer(&mut handle, output) {
+        Ok(()) => {
+            let _ = writeln!(handle);
+            let _ = handle.flush();
+        }
+        Err(e) => {
+            eprintln!("[Headless] JSON serialization failed: {}", e);
+        }
+    }
+}
+
+/// Write error JSON to stdout for early failures (before event loop starts).
+pub fn write_error_json(error: &str) {
+    let output = HeadlessJsonOutput {
+        result: HeadlessResultKind::Error,
+        iterations: 0,
+        summary: error.to_string(),
+        last_review: None,
+        last_fix: None,
+    };
+    write_json_stdout(&output);
 }
 
 /// Collect diff output for untracked files (mirrors loader.rs behavior).
@@ -657,5 +763,72 @@ mod tests {
     #[test]
     fn test_truncate_str_zero_max() {
         assert_eq!(truncate_str("hello", 0), "...");
+    }
+
+    #[test]
+    fn test_json_output_approved() {
+        let outcome = HeadlessOutcome {
+            result: HeadlessResult::Approved("All good, no issues found".to_string()),
+            iterations: 2,
+            last_review: Some(ReviewerOutput {
+                action: ReviewAction::Approve,
+                summary: "All good".to_string(),
+                comments: vec![],
+                blocking_issues: vec![],
+            }),
+            last_fix: Some(RevieweeOutput {
+                status: RevieweeStatus::Completed,
+                summary: "Fixed".to_string(),
+                files_modified: vec!["src/main.rs".to_string()],
+                question: None,
+                permission_request: None,
+                error_details: None,
+            }),
+        };
+        insta::assert_json_snapshot!(build_json_output(&outcome));
+    }
+
+    #[test]
+    fn test_json_output_not_approved() {
+        let outcome = HeadlessOutcome {
+            result: HeadlessResult::NotApproved("Max iterations reached".to_string()),
+            iterations: 3,
+            last_review: Some(ReviewerOutput {
+                action: ReviewAction::RequestChanges,
+                summary: "Still has issues".to_string(),
+                comments: vec![ReviewComment {
+                    path: "src/lib.rs".to_string(),
+                    line: 10,
+                    body: "Fix this".to_string(),
+                    severity: CommentSeverity::Major,
+                }],
+                blocking_issues: vec!["Error handling".to_string()],
+            }),
+            last_fix: Some(RevieweeOutput {
+                status: RevieweeStatus::Completed,
+                summary: "Attempted fix".to_string(),
+                files_modified: vec!["src/lib.rs".to_string()],
+                question: None,
+                permission_request: None,
+                error_details: None,
+            }),
+        };
+        insta::assert_json_snapshot!(build_json_output(&outcome));
+    }
+
+    #[test]
+    fn test_json_output_error_no_review() {
+        let outcome = HeadlessOutcome {
+            result: HeadlessResult::Error("Agent crashed".to_string()),
+            iterations: 0,
+            last_review: None,
+            last_fix: None,
+        };
+        let output = build_json_output(&outcome);
+        // None fields should be omitted via skip_serializing_if
+        let json = serde_json::to_value(&output).unwrap();
+        assert!(!json.as_object().unwrap().contains_key("last_review"));
+        assert!(!json.as_object().unwrap().contains_key("last_fix"));
+        insta::assert_json_snapshot!(output);
     }
 }
