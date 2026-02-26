@@ -2114,7 +2114,9 @@ impl App {
                         let mut filter = ListFilter::new();
                         let files = self.files();
                         filter.apply(files, |_file, _q| true);
-                        filter.sync_selection();
+                        if let Some(idx) = filter.sync_selection() {
+                            self.selected_file = idx;
+                        }
                         self.file_list_filter = Some(filter);
                     }
                     return Ok(());
@@ -2514,7 +2516,9 @@ impl App {
                         let mut filter = ListFilter::new();
                         let files = self.files();
                         filter.apply(files, |_file, _q| true);
-                        filter.sync_selection();
+                        if let Some(idx) = filter.sync_selection() {
+                            self.selected_file = idx;
+                        }
                         self.file_list_filter = Some(filter);
                     }
                     return Ok(());
@@ -5393,7 +5397,9 @@ impl App {
                         // 初期状態で全アイテムをマッチ
                         if let Some(prs) = self.pr_list.as_ref() {
                             filter.apply(prs, |_pr, _q| true);
-                            filter.sync_selection();
+                            if let Some(idx) = filter.sync_selection() {
+                                self.selected_pr = idx;
+                            }
                         }
                         self.pr_list_filter = Some(filter);
                     }
@@ -5436,6 +5442,9 @@ impl App {
 
         // ブラウザで開く（configurable、フィルターキーより先に評価）
         if self.matches_single_key(&key, &kb.open_in_browser) {
+            if self.is_filter_selection_empty("pr") {
+                return Ok(());
+            }
             if let Some(ref prs) = self.pr_list {
                 if let Some(pr) = prs.get(self.selected_pr) {
                     self.open_pr_in_browser(pr.number);
