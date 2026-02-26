@@ -112,6 +112,9 @@ pub struct KeybindingsConfig {
 
     // Markdown rich display
     pub toggle_markdown_rich: KeySequence,
+
+    // List filter
+    pub filter: KeySequence,
 }
 
 impl Default for AiConfig {
@@ -182,6 +185,9 @@ impl Default for KeybindingsConfig {
 
             // Markdown rich display
             toggle_markdown_rich: KeySequence::single(KeyBinding::char('M')),
+
+            // List filter
+            filter: KeySequence::double(KeyBinding::char(' '), KeyBinding::char('/')),
         }
     }
 }
@@ -228,6 +234,7 @@ impl KeybindingsConfig {
             ("toggle_local_mode", &self.toggle_local_mode),
             ("toggle_auto_focus", &self.toggle_auto_focus),
             ("toggle_markdown_rich", &self.toggle_markdown_rich),
+            ("filter", &self.filter),
         ];
 
         for (name, seq) in &bindings {
@@ -361,6 +368,7 @@ impl Serialize for KeybindingsConfig {
         map.serialize_entry("toggle_local_mode", &seq_to_value(&self.toggle_local_mode))?;
         map.serialize_entry("toggle_auto_focus", &seq_to_value(&self.toggle_auto_focus))?;
         map.serialize_entry("toggle_markdown_rich", &seq_to_value(&self.toggle_markdown_rich))?;
+        map.serialize_entry("filter", &seq_to_value(&self.filter))?;
 
         map.end()
     }
@@ -443,6 +451,19 @@ mod tests {
         let config: Config = toml::from_str("").unwrap();
         assert_eq!(config.keybindings.approve.display(), "a");
         assert_eq!(config.keybindings.request_changes.display(), "r");
+        assert_eq!(config.keybindings.filter.display(), "Space/");
+    }
+
+    #[test]
+    fn test_backwards_compatible_without_filter_key() {
+        // Config without filter key should deserialize with default
+        let toml_str = r#"
+            [keybindings]
+            move_down = "j"
+            move_up = "k"
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.keybindings.filter.display(), "Space/");
     }
 
     #[test]
@@ -605,6 +626,21 @@ mod tests {
         assert_eq!(
             deserialized.toggle_markdown_rich.display(),
             config.toggle_markdown_rich.display()
+        );
+    }
+
+    #[test]
+    fn test_serialize_roundtrip_includes_filter() {
+        let config = KeybindingsConfig::default();
+        let serialized = toml::to_string(&config).unwrap();
+        assert!(
+            serialized.contains("filter"),
+            "Serialized output should include filter"
+        );
+        let deserialized: KeybindingsConfig = toml::from_str(&serialized).unwrap();
+        assert_eq!(
+            deserialized.filter.display(),
+            config.filter.display()
         );
     }
 }

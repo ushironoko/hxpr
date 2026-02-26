@@ -18,6 +18,7 @@ use crate::ai::{Context, Orchestrator, RallyState};
 use crate::cache::{PrCacheKey, PrData, SessionCache};
 use crate::config::Config;
 use crate::diff::LineType;
+use crate::filter::ListFilter;
 use crate::github::comment::{DiscussionComment, ReviewComment};
 use crate::github::{self, ChangedFile, PrStateFilter, PullRequest, PullRequestSummary};
 use crate::keybinding::{
@@ -479,6 +480,10 @@ pub struct App {
     pub session_cache: SessionCache,
     /// Markdown リッチ表示モード（見出し太字・斜体等を適用）
     markdown_rich: bool,
+    /// PR一覧のキーワードフィルタ
+    pub pr_list_filter: Option<ListFilter>,
+    /// ファイル一覧のキーワードフィルタ
+    pub file_list_filter: Option<ListFilter>,
 }
 
 impl App {
@@ -568,6 +573,8 @@ impl App {
             symbol_popup: None,
             session_cache: SessionCache::new(),
             markdown_rich: false,
+            pr_list_filter: None,
+            file_list_filter: None,
         };
 
         (app, tx)
@@ -653,6 +660,8 @@ impl App {
             refresh_pending: None,
             session_cache: SessionCache::new(),
             markdown_rich: false,
+            pr_list_filter: None,
+            file_list_filter: None,
         }
     }
 
@@ -790,6 +799,8 @@ impl App {
             self.deactivate_watcher();
             self.saved_local_snapshot = Some(self.save_view_snapshot());
             self.local_mode = false;
+            // モード切替時にファイルフィルタをリセット（stale indices による OOB 防止）
+            self.file_list_filter = None;
 
             if let Some(snapshot) = self.saved_pr_snapshot.take() {
                 let pr_number = snapshot.pr_number;
@@ -827,6 +838,8 @@ impl App {
             let from_pr_list = matches!(self.state, AppState::PullRequestList);
             self.saved_pr_snapshot = Some(self.save_view_snapshot());
             self.local_mode = true;
+            // モード切替時にファイルフィルタをリセット（stale indices による OOB 防止）
+            self.file_list_filter = None;
 
             // PR リストから来た場合は FileList に遷移
             if from_pr_list {
@@ -1121,6 +1134,11 @@ impl App {
                 self.pr_list_has_more = page.has_more;
                 self.pr_list_loading = false;
                 self.pr_list_receiver = None;
+
+                // フィルタが有効な場合、新データに対してフィルタを再適用
+                if self.pr_list_filter.as_ref().is_some_and(|f| f.has_query()) {
+                    self.reapply_filter("pr");
+                }
             }
             Ok(Err(e)) => {
                 eprintln!("Warning: Failed to fetch PR list: {}", e);
@@ -1797,6 +1815,10 @@ impl App {
                     },
                 );
                 self.data_state = DataState::Loaded { pr, files };
+                // ファイル一覧が変わったため、フィルタを再適用（stale indices 防止）
+                if self.file_list_filter.is_some() {
+                    self.reapply_filter("file");
+                }
                 // selected_file が変更された場合、コメント位置キャッシュを再計算
                 if self.selected_file != old_selected {
                     self.update_file_comment_positions();
@@ -2004,11 +2026,18 @@ impl App {
         key: event::KeyEvent,
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) -> Result<()> {
-        if self.handle_mark_viewed_key(key) {
+        // フィルタ入力中はフィルタ処理を優先
+        if self.handle_filter_input(&key, "file") {
             return Ok(());
         }
 
-        let kb = &self.config.keybindings;
+        // フィルタ結果が空の場合、ファイル操作を無効化（stale selection 防止）
+        if !self.is_filter_selection_empty("file") && self.handle_mark_viewed_key(key) {
+            return Ok(());
+        }
+
+        let kb = self.config.keybindings.clone();
+        let has_filter = self.file_list_filter.is_some();
 
         // Quit or back to PR list
         if self.matches_single_key(&key, &kb.quit) {
@@ -2020,9 +2049,18 @@ impl App {
             return Ok(());
         }
 
+        // Esc: フィルタ適用中なら解除
+        if key.code == KeyCode::Esc {
+            if self.handle_filter_esc("file") {
+                return Ok(());
+            }
+        }
+
         // Move down (j or Down arrow - arrows always work)
         if self.matches_single_key(&key, &kb.move_down) || key.code == KeyCode::Down {
-            if !self.files().is_empty() {
+            if has_filter {
+                self.handle_filter_navigation("file", true);
+            } else if !self.files().is_empty() {
                 self.selected_file =
                     (self.selected_file + 1).min(self.files().len().saturating_sub(1));
             }
@@ -2031,13 +2069,17 @@ impl App {
 
         // Move up (k or Up arrow)
         if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
-            self.selected_file = self.selected_file.saturating_sub(1);
+            if has_filter {
+                self.handle_filter_navigation("file", false);
+            } else {
+                self.selected_file = self.selected_file.saturating_sub(1);
+            }
             return Ok(());
         }
 
         // Page down (Ctrl-d by default, also J)
         if self.matches_single_key(&key, &kb.page_down) || Self::is_shift_char_shortcut(&key, 'j') {
-            if !self.files().is_empty() {
+            if !self.files().is_empty() && !has_filter {
                 let page_step = terminal.size()?.height.saturating_sub(8) as usize;
                 let step = page_step.max(1);
                 self.selected_file =
@@ -2048,10 +2090,47 @@ impl App {
 
         // Page up (Ctrl-u by default, also K)
         if self.matches_single_key(&key, &kb.page_up) || Self::is_shift_char_shortcut(&key, 'k') {
-            let page_step = terminal.size()?.height.saturating_sub(8) as usize;
-            let step = page_step.max(1);
-            self.selected_file = self.selected_file.saturating_sub(step);
+            if !has_filter {
+                let page_step = terminal.size()?.height.saturating_sub(8) as usize;
+                let step = page_step.max(1);
+                self.selected_file = self.selected_file.saturating_sub(step);
+            }
             return Ok(());
+        }
+
+        // Space+/ シーケンス処理（ファイル一覧でのフィルタ起動）
+        if let Some(kb_event) = event_to_keybinding(&key) {
+            self.check_sequence_timeout();
+
+            if !self.pending_keys.is_empty() {
+                self.push_pending_key(kb_event);
+
+                // Space+/: フィルタ起動
+                if self.try_match_sequence(&kb.filter) == SequenceMatch::Full {
+                    self.clear_pending_keys();
+                    if let Some(ref mut filter) = self.file_list_filter {
+                        filter.input_active = true;
+                    } else {
+                        let mut filter = ListFilter::new();
+                        let files = self.files();
+                        filter.apply(files, |_file, _q| true);
+                        if let Some(idx) = filter.sync_selection() {
+                            self.selected_file = idx;
+                        }
+                        self.file_list_filter = Some(filter);
+                    }
+                    return Ok(());
+                }
+
+                // マッチしなければペンディングをクリア
+                self.clear_pending_keys();
+            } else {
+                // シーケンス開始チェック
+                if self.key_could_match_sequence(&key, &kb.filter) {
+                    self.push_pending_key(kb_event);
+                    return Ok(());
+                }
+            }
         }
 
         // Open split view (Enter, Right arrow, or l)
@@ -2059,6 +2138,9 @@ impl App {
             || self.matches_single_key(&key, &kb.move_right)
             || key.code == KeyCode::Right
         {
+            if self.is_filter_selection_empty("file") {
+                return Ok(());
+            }
             if !self.files().is_empty() {
                 self.state = AppState::SplitViewDiff;
                 self.sync_diff_to_selected_file();
@@ -2144,7 +2226,8 @@ impl App {
         key: event::KeyEvent,
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) -> Result<bool> {
-        if self.handle_mark_viewed_key(key) {
+        // フィルタ結果が空の場合、ファイル操作を無効化（stale selection 防止）
+        if !self.is_filter_selection_empty("file") && self.handle_mark_viewed_key(key) {
             return Ok(true);
         }
 
@@ -2352,30 +2435,42 @@ impl App {
         key: event::KeyEvent,
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) -> Result<()> {
-        let kb = &self.config.keybindings;
+        // フィルタ入力中はフィルタ処理を優先
+        if self.handle_filter_input(&key, "file") {
+            // フィルタ操作後に diff プレビューを同期
+            self.sync_diff_to_selected_file();
+            return Ok(());
+        }
+
+        let kb = self.config.keybindings.clone();
+        let has_filter = self.file_list_filter.is_some();
 
         // Move down
         if self.matches_single_key(&key, &kb.move_down) || key.code == KeyCode::Down {
-            if !self.files().is_empty() {
+            if has_filter {
+                self.handle_filter_navigation("file", true);
+            } else if !self.files().is_empty() {
                 self.selected_file =
                     (self.selected_file + 1).min(self.files().len().saturating_sub(1));
-                self.sync_diff_to_selected_file();
             }
+            self.sync_diff_to_selected_file();
             return Ok(());
         }
 
         // Move up
         if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
-            if self.selected_file > 0 {
+            if has_filter {
+                self.handle_filter_navigation("file", false);
+            } else if self.selected_file > 0 {
                 self.selected_file = self.selected_file.saturating_sub(1);
-                self.sync_diff_to_selected_file();
             }
+            self.sync_diff_to_selected_file();
             return Ok(());
         }
 
         // Page down (Ctrl-d by default, also J)
         if self.matches_single_key(&key, &kb.page_down) || Self::is_shift_char_shortcut(&key, 'j') {
-            if !self.files().is_empty() {
+            if !self.files().is_empty() && !has_filter {
                 let page_step = terminal.size()?.height.saturating_sub(8) as usize;
                 let step = page_step.max(1);
                 self.selected_file =
@@ -2387,11 +2482,57 @@ impl App {
 
         // Page up (Ctrl-u by default, also K)
         if self.matches_single_key(&key, &kb.page_up) || Self::is_shift_char_shortcut(&key, 'k') {
-            let page_step = terminal.size()?.height.saturating_sub(8) as usize;
-            let step = page_step.max(1);
-            self.selected_file = self.selected_file.saturating_sub(step);
-            self.sync_diff_to_selected_file();
+            if !has_filter {
+                let page_step = terminal.size()?.height.saturating_sub(8) as usize;
+                let step = page_step.max(1);
+                self.selected_file = self.selected_file.saturating_sub(step);
+                self.sync_diff_to_selected_file();
+            }
             return Ok(());
+        }
+
+        // Esc: フィルタ適用中なら解除、なければ通常動作
+        if key.code == KeyCode::Esc {
+            if self.handle_filter_esc("file") {
+                return Ok(());
+            }
+            self.state = AppState::FileList;
+            return Ok(());
+        }
+
+        // Space+/ シーケンス処理（分割表示でのフィルタ起動）
+        if let Some(kb_event) = event_to_keybinding(&key) {
+            self.check_sequence_timeout();
+
+            if !self.pending_keys.is_empty() {
+                self.push_pending_key(kb_event);
+
+                // Space+/: フィルタ起動
+                if self.try_match_sequence(&kb.filter) == SequenceMatch::Full {
+                    self.clear_pending_keys();
+                    if let Some(ref mut filter) = self.file_list_filter {
+                        filter.input_active = true;
+                    } else {
+                        let mut filter = ListFilter::new();
+                        let files = self.files();
+                        filter.apply(files, |_file, _q| true);
+                        if let Some(idx) = filter.sync_selection() {
+                            self.selected_file = idx;
+                        }
+                        self.file_list_filter = Some(filter);
+                    }
+                    return Ok(());
+                }
+
+                // マッチしなければペンディングをクリア
+                self.clear_pending_keys();
+            } else {
+                // シーケンス開始チェック
+                if self.key_could_match_sequence(&key, &kb.filter) {
+                    self.push_pending_key(kb_event);
+                    return Ok(());
+                }
+            }
         }
 
         // Focus diff pane
@@ -2399,6 +2540,9 @@ impl App {
             || self.matches_single_key(&key, &kb.move_right)
             || key.code == KeyCode::Right
         {
+            if self.is_filter_selection_empty("file") {
+                return Ok(());
+            }
             if !self.files().is_empty() {
                 self.state = AppState::SplitViewDiff;
             }
@@ -2409,7 +2553,6 @@ impl App {
         if self.matches_single_key(&key, &kb.quit)
             || self.matches_single_key(&key, &kb.move_left)
             || key.code == KeyCode::Left
-            || key.code == KeyCode::Esc
         {
             self.state = AppState::FileList;
             return Ok(());
@@ -3366,6 +3509,7 @@ impl App {
         self.discussion_comments = None;
         self.comments_loading = false;
         self.discussion_comments_loading = false;
+        self.file_list_filter = None;
         // 強制的に Loading 状態にしてから再取得
         self.data_state = DataState::Loading;
         self.retry_load();
@@ -4912,10 +5056,250 @@ impl App {
             .unwrap_or(false)
     }
 
+    // ========================================
+    // Filter helpers
+    // ========================================
+
+    /// フィルタ入力中のキー処理。処理した場合は true を返す。
+    ///
+    /// `target`: "pr" or "file" — どのフィルタを操作するか
+    fn handle_filter_input(&mut self, key: &KeyEvent, target: &str) -> bool {
+        let filter = match target {
+            "pr" => self.pr_list_filter.as_mut(),
+            "file" => self.file_list_filter.as_mut(),
+            _ => return false,
+        };
+        let Some(filter) = filter else {
+            return false;
+        };
+        if !filter.input_active {
+            return false;
+        }
+
+        match key.code {
+            KeyCode::Esc => {
+                // フィルタ入力をキャンセル（フィルタ解除）
+                match target {
+                    "pr" => self.pr_list_filter = None,
+                    "file" => self.file_list_filter = None,
+                    _ => {}
+                }
+                return true;
+            }
+            KeyCode::Enter => {
+                // 入力を確定（フィルタ適用維持、入力バーを閉じる）
+                let filter = match target {
+                    "pr" => self.pr_list_filter.as_mut(),
+                    "file" => self.file_list_filter.as_mut(),
+                    _ => return false,
+                };
+                if let Some(f) = filter {
+                    if f.query.is_empty() {
+                        // クエリ空なら解除
+                        match target {
+                            "pr" => self.pr_list_filter = None,
+                            "file" => self.file_list_filter = None,
+                            _ => {}
+                        }
+                    } else {
+                        f.input_active = false;
+                    }
+                }
+                return true;
+            }
+            KeyCode::Backspace => {
+                let filter = match target {
+                    "pr" => self.pr_list_filter.as_mut(),
+                    "file" => self.file_list_filter.as_mut(),
+                    _ => return false,
+                };
+                if let Some(f) = filter {
+                    f.delete_char();
+                    self.reapply_filter(target);
+                }
+                return true;
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let filter = match target {
+                    "pr" => self.pr_list_filter.as_mut(),
+                    "file" => self.file_list_filter.as_mut(),
+                    _ => return false,
+                };
+                if let Some(f) = filter {
+                    f.clear_query();
+                    self.reapply_filter(target);
+                }
+                return true;
+            }
+            KeyCode::Up => {
+                let filter = match target {
+                    "pr" => self.pr_list_filter.as_mut(),
+                    "file" => self.file_list_filter.as_mut(),
+                    _ => return false,
+                };
+                if let Some(f) = filter {
+                    if let Some(idx) = f.navigate_up() {
+                        match target {
+                            "pr" => self.selected_pr = idx,
+                            "file" => self.selected_file = idx,
+                            _ => {}
+                        }
+                    }
+                }
+                return true;
+            }
+            KeyCode::Down => {
+                let filter = match target {
+                    "pr" => self.pr_list_filter.as_mut(),
+                    "file" => self.file_list_filter.as_mut(),
+                    _ => return false,
+                };
+                if let Some(f) = filter {
+                    if let Some(idx) = f.navigate_down() {
+                        match target {
+                            "pr" => self.selected_pr = idx,
+                            "file" => self.selected_file = idx,
+                            _ => {}
+                        }
+                    }
+                }
+                return true;
+            }
+            KeyCode::Char(c) => {
+                // Ctrl+文字は通常のフィルタ入力ではない
+                if key.modifiers.contains(KeyModifiers::CONTROL) {
+                    return false;
+                }
+                let filter = match target {
+                    "pr" => self.pr_list_filter.as_mut(),
+                    "file" => self.file_list_filter.as_mut(),
+                    _ => return false,
+                };
+                if let Some(f) = filter {
+                    f.insert_char(c);
+                    self.reapply_filter(target);
+                }
+                return true;
+            }
+            _ => return true, // 入力中は他のキーを消費
+        }
+    }
+
+    /// フィルタを再適用し、選択位置を同期する
+    fn reapply_filter(&mut self, target: &str) {
+        match target {
+            "pr" => {
+                // pr_list_filter と pr_list を同時に借用するため、一時的に取り出す
+                let mut filter = match self.pr_list_filter.take() {
+                    Some(f) => f,
+                    None => return,
+                };
+                if let Some(prs) = self.pr_list.as_ref() {
+                    filter.apply(prs, |pr, q| {
+                        pr.title.to_lowercase().contains(q)
+                            || pr.number.to_string().contains(q)
+                            || pr.author.login.to_lowercase().contains(q)
+                    });
+                    if let Some(idx) = filter.sync_selection() {
+                        self.selected_pr = idx;
+                    }
+                }
+                self.pr_list_filter = Some(filter);
+            }
+            "file" => {
+                // file_list_filter と data_state を同時に借用するため、一時的に取り出す
+                let mut filter = match self.file_list_filter.take() {
+                    Some(f) => f,
+                    None => return,
+                };
+                let files = match &self.data_state {
+                    DataState::Loaded { files, .. } => files.as_slice(),
+                    _ => &[],
+                };
+                filter.apply(files, |file, q| file.filename.to_lowercase().contains(q));
+                if let Some(idx) = filter.sync_selection() {
+                    self.selected_file = idx;
+                }
+                self.file_list_filter = Some(filter);
+            }
+            _ => {}
+        }
+    }
+
+    /// フィルタ適用中のナビゲーション（j/k/↑/↓）。処理した場合は true を返す。
+    fn handle_filter_navigation(
+        &mut self,
+        target: &str,
+        is_down: bool,
+    ) -> bool {
+        let filter = match target {
+            "pr" => self.pr_list_filter.as_mut(),
+            "file" => self.file_list_filter.as_mut(),
+            _ => return false,
+        };
+        let Some(filter) = filter else {
+            return false;
+        };
+        if filter.input_active {
+            return false; // input_active 中は handle_filter_input が処理
+        }
+
+        let idx = if is_down {
+            filter.navigate_down()
+        } else {
+            filter.navigate_up()
+        };
+        if let Some(idx) = idx {
+            match target {
+                "pr" => self.selected_pr = idx,
+                "file" => self.selected_file = idx,
+                _ => {}
+            }
+        }
+        true
+    }
+
+    /// フィルタ適用中（非入力）の Esc 処理。処理した場合は true を返す。
+    fn handle_filter_esc(&mut self, target: &str) -> bool {
+        let filter = match target {
+            "pr" => self.pr_list_filter.as_ref(),
+            "file" => self.file_list_filter.as_ref(),
+            _ => return false,
+        };
+        if filter.is_some() {
+            match target {
+                "pr" => self.pr_list_filter = None,
+                "file" => self.file_list_filter = None,
+                _ => {}
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// フィルタ適用中の Enter 処理。選択が None の場合は Enter を無視する。
+    fn is_filter_selection_empty(&self, target: &str) -> bool {
+        let filter = match target {
+            "pr" => self.pr_list_filter.as_ref(),
+            "file" => self.file_list_filter.as_ref(),
+            _ => return false,
+        };
+        match filter {
+            Some(f) => f.selected.is_none(),
+            None => false,
+        }
+    }
+
     /// PR一覧画面のキー入力処理
     async fn handle_pr_list_input(&mut self, key: event::KeyEvent) -> Result<()> {
         // Clone keybindings to avoid borrow conflicts
         let kb = self.config.keybindings.clone();
+
+        // フィルタ入力中はフィルタ処理を優先
+        if self.handle_filter_input(&key, "pr") {
+            return Ok(());
+        }
 
         // Quit
         if self.matches_single_key(&key, &kb.quit) {
@@ -4929,10 +5313,13 @@ impl App {
         }
 
         let pr_count = self.pr_list.as_ref().map(|l| l.len()).unwrap_or(0);
+        let has_filter = self.pr_list_filter.is_some();
 
         // Move down (j or Down arrow)
         if self.matches_single_key(&key, &kb.move_down) || key.code == KeyCode::Down {
-            if pr_count > 0 {
+            if has_filter {
+                self.handle_filter_navigation("pr", true);
+            } else if pr_count > 0 {
                 self.selected_pr = (self.selected_pr + 1).min(pr_count.saturating_sub(1));
                 // 無限スクロール: 残り5件で次を取得
                 if self.pr_list_has_more
@@ -4947,13 +5334,17 @@ impl App {
 
         // Move up (k or Up arrow)
         if self.matches_single_key(&key, &kb.move_up) || key.code == KeyCode::Up {
-            self.selected_pr = self.selected_pr.saturating_sub(1);
+            if has_filter {
+                self.handle_filter_navigation("pr", false);
+            } else {
+                self.selected_pr = self.selected_pr.saturating_sub(1);
+            }
             return Ok(());
         }
 
         // Page down (Ctrl-d by default, also J)
         if self.matches_single_key(&key, &kb.page_down) || Self::is_shift_char_shortcut(&key, 'j') {
-            if pr_count > 0 {
+            if pr_count > 0 && !has_filter {
                 let step = 20usize;
                 self.selected_pr = (self.selected_pr + step).min(pr_count.saturating_sub(1));
                 if self.pr_list_has_more
@@ -4968,21 +5359,52 @@ impl App {
 
         // Page up (Ctrl-u by default, also K)
         if self.matches_single_key(&key, &kb.page_up) || Self::is_shift_char_shortcut(&key, 'k') {
-            self.selected_pr = self.selected_pr.saturating_sub(20);
+            if !has_filter {
+                self.selected_pr = self.selected_pr.saturating_sub(20);
+            }
             return Ok(());
         }
 
-        // gg/G シーケンス処理
+        // Esc: フィルタ適用中なら解除
+        if key.code == KeyCode::Esc {
+            if self.handle_filter_esc("pr") {
+                return Ok(());
+            }
+        }
+
+        // gg/G/Space+/ シーケンス処理
         if let Some(kb_event) = event_to_keybinding(&key) {
             self.check_sequence_timeout();
 
             if !self.pending_keys.is_empty() {
                 self.push_pending_key(kb_event);
 
-                // gg: 先頭へ
+                // gg: 先頭へ（フィルタ適用中は無効化）
                 if self.try_match_sequence(&kb.jump_to_first) == SequenceMatch::Full {
                     self.clear_pending_keys();
-                    self.selected_pr = 0;
+                    if !has_filter {
+                        self.selected_pr = 0;
+                    }
+                    return Ok(());
+                }
+
+                // Space+/: フィルタ起動
+                if self.try_match_sequence(&kb.filter) == SequenceMatch::Full {
+                    self.clear_pending_keys();
+                    if let Some(ref mut filter) = self.pr_list_filter {
+                        // 既存フィルタを再編集
+                        filter.input_active = true;
+                    } else {
+                        let mut filter = ListFilter::new();
+                        // 初期状態で全アイテムをマッチ
+                        if let Some(prs) = self.pr_list.as_ref() {
+                            filter.apply(prs, |_pr, _q| true);
+                            if let Some(idx) = filter.sync_selection() {
+                                self.selected_pr = idx;
+                            }
+                        }
+                        self.pr_list_filter = Some(filter);
+                    }
                     return Ok(());
                 }
 
@@ -4990,7 +5412,9 @@ impl App {
                 self.clear_pending_keys();
             } else {
                 // シーケンス開始チェック
-                if self.key_could_match_sequence(&key, &kb.jump_to_first) {
+                if self.key_could_match_sequence(&key, &kb.jump_to_first)
+                    || self.key_could_match_sequence(&key, &kb.filter)
+                {
                     self.push_pending_key(kb_event);
                     return Ok(());
                 }
@@ -4999,7 +5423,7 @@ impl App {
 
         // G: 末尾へ
         if self.matches_single_key(&key, &kb.jump_to_last) {
-            if pr_count > 0 {
+            if pr_count > 0 && !has_filter {
                 self.selected_pr = pr_count.saturating_sub(1);
             }
             return Ok(());
@@ -5007,6 +5431,9 @@ impl App {
 
         // Enter: PR選択
         if self.matches_single_key(&key, &kb.open_panel) {
+            if self.is_filter_selection_empty("pr") {
+                return Ok(());
+            }
             if let Some(ref prs) = self.pr_list {
                 if let Some(pr) = prs.get(self.selected_pr) {
                     self.select_pr(pr.number);
@@ -5017,6 +5444,9 @@ impl App {
 
         // ブラウザで開く（configurable、フィルターキーより先に評価）
         if self.matches_single_key(&key, &kb.open_in_browser) {
+            if self.is_filter_selection_empty("pr") {
+                return Ok(());
+            }
             if let Some(ref prs) = self.pr_list {
                 if let Some(pr) = prs.get(self.selected_pr) {
                     self.open_pr_in_browser(pr.number);
@@ -5083,6 +5513,7 @@ impl App {
         self.pr_list_scroll_offset = 0;
         self.pr_list_loading = true;
         self.pr_list_has_more = false;
+        self.pr_list_filter = None;
 
         let (tx, rx) = mpsc::channel(2);
         self.pr_list_receiver = Some(rx);
@@ -5125,6 +5556,7 @@ impl App {
     fn select_pr(&mut self, pr_number: u32) {
         self.pr_number = Some(pr_number);
         self.state = AppState::FileList;
+        self.file_list_filter = None;
 
         // PR遷移時にバックグラウンドキャッシュをクリア（staleキャッシュ防止）
         self.diff_cache_receiver = None;
@@ -5201,6 +5633,7 @@ impl App {
             self.file_list_scroll_offset = 0;
             self.selected_line = 0;
             self.scroll_offset = 0;
+            self.file_list_filter = None;
 
             self.state = AppState::PullRequestList;
         }
@@ -5288,6 +5721,8 @@ impl App {
             watcher_handle: None,
             refresh_pending: None,
             markdown_rich: false,
+            pr_list_filter: None,
+            file_list_filter: None,
         }
     }
 

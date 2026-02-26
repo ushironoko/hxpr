@@ -431,8 +431,9 @@ impl AgentAdapter for ClaudeAdapter {
     }
 
     fn add_reviewee_allowed_tool(&mut self, tool: &str) {
-        // Skip if already included
-        if self.reviewee_allowed_tools.contains(tool) {
+        // Use exact match on comma-separated items instead of substring match
+        // to prevent false dedup (e.g., "git status" matching inside "Bash(git status:*)")
+        if self.reviewee_allowed_tools.split(',').any(|t| t == tool) {
             return;
         }
         self.reviewee_allowed_tools.push(',');

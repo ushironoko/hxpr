@@ -154,6 +154,10 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             "{}  Toggle auto-focus (local mode)",
             fmt_key(&kb.toggle_auto_focus.display(), key_width)
         )),
+        Line::from(format!(
+            "{}  Filter list",
+            fmt_key(&kb.filter.display(), key_width)
+        )),
         Line::from(format!("{}  Quit", fmt_key(&kb.quit.display(), key_width))),
         Line::from(""),
         Line::from(vec![Span::styled(
@@ -176,6 +180,10 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
                 ),
                 key_width
             )
+        )),
+        Line::from(format!(
+            "{}  Filter list",
+            fmt_key(&kb.filter.display(), key_width)
         )),
         Line::from(format!(
             "{}, Right, {}     Focus diff pane",
