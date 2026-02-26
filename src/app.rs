@@ -5379,10 +5379,12 @@ impl App {
             if !self.pending_keys.is_empty() {
                 self.push_pending_key(kb_event);
 
-                // gg: 先頭へ
+                // gg: 先頭へ（フィルタ適用中は無効化）
                 if self.try_match_sequence(&kb.jump_to_first) == SequenceMatch::Full {
                     self.clear_pending_keys();
-                    self.selected_pr = 0;
+                    if !has_filter {
+                        self.selected_pr = 0;
+                    }
                     return Ok(());
                 }
 
