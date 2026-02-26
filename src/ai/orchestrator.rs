@@ -1408,7 +1408,11 @@ fn is_shell_interpreter(token: &str) -> bool {
 /// - `sh -c 'git push'` → "git push"
 /// - `bash -lc "git status && git push"` → "git status && git push"
 /// - `env sh -c "git push"` → "git push"
-/// - `/usr/bin/bash -c git push` → "git push"
+/// - `/usr/bin/bash -c git push` → "git" (only the first argument; `push` becomes `$0`)
+///
+/// In POSIX shell, `sh -c cmd_string [command_name [argument...]]` — only the first
+/// argument after `-c` is the command string. Subsequent arguments are positional
+/// parameters (`$0`, `$1`, ...), not part of the executed command.
 ///
 /// Returns `None` if the command is not a shell interpreter invocation with `-c`.
 fn extract_shell_interpreter_command(command: &str) -> Option<String> {
@@ -1485,19 +1489,37 @@ fn extract_shell_interpreter_command(command: &str) -> Option<String> {
         return None;
     }
 
-    // Remaining tokens form the command string — join and strip outer quotes
-    let cmd_str = tokens[i..].join(" ");
-    let stripped = cmd_str
-        .strip_prefix('\'')
-        .and_then(|s| s.strip_suffix('\''))
-        .or_else(|| {
-            cmd_str
-                .strip_prefix('"')
-                .and_then(|s| s.strip_suffix('"'))
-        })
-        .unwrap_or(&cmd_str);
+    // Extract only the first shell argument after -c (the command string).
+    // In POSIX sh, `sh -c cmd_string [arg0 ...]` — only cmd_string is executed;
+    // subsequent arguments become positional parameters ($0, $1, ...).
+    let first_token = tokens[i];
+    let first_char = first_token.chars().next()?;
 
-    Some(stripped.to_string())
+    if first_char == '\'' || first_char == '"' {
+        // Quoted argument: collect tokens until the matching closing quote
+        if first_token.len() > 1 && first_token.ends_with(first_char) {
+            // Entire quoted argument in one token, e.g., 'cmd' or "cmd"
+            Some(first_token[1..first_token.len() - 1].to_string())
+        } else {
+            // Quote spans multiple whitespace-separated tokens
+            let mut end = i + 1;
+            while end < tokens.len() && !tokens[end].ends_with(first_char) {
+                end += 1;
+            }
+            if end < tokens.len() {
+                // Found closing quote — join and strip outer quotes
+                let cmd_str = tokens[i..=end].join(" ");
+                Some(cmd_str[1..cmd_str.len() - 1].to_string())
+            } else {
+                // No closing quote found — best effort: strip leading quote
+                let cmd_str = tokens[i..].join(" ");
+                Some(cmd_str[1..].to_string())
+            }
+        }
+    } else {
+        // Unquoted: only the first token is the command string
+        Some(first_token.to_string())
+    }
 }
 
 /// Find the git binary and its subcommand index within a token list,
@@ -2285,6 +2307,15 @@ mod tests {
             check_blocked_git_operation("Bash(bash -c \"sh -c 'git push'\":*)").is_some(),
             "Should block doubly nested shell interpreter git push"
         );
+        // Regression: trailing args after -c command string must not bypass detection
+        assert!(
+            check_blocked_git_operation("Bash(bash -c \"git push\" x:*)").is_some(),
+            "Should block 'bash -c \"git push\" x' — trailing arg must not bypass detection"
+        );
+        assert!(
+            check_blocked_git_operation("Bash(sh -c 'git push' --:*)").is_some(),
+            "Should block 'sh -c 'git push' --' — trailing '--' must not bypass detection"
+        );
     }
 
     #[test]
@@ -2331,10 +2362,11 @@ mod tests {
             extract_shell_interpreter_command("bash -lc 'git push'"),
             Some("git push".to_string())
         );
-        // No quotes
+        // No quotes — only first token after -c is the command string
+        // (in POSIX shell, `push` would be $0, not part of the command)
         assert_eq!(
             extract_shell_interpreter_command("sh -c git push"),
-            Some("git push".to_string())
+            Some("git".to_string())
         );
         // Not a shell interpreter
         assert_eq!(extract_shell_interpreter_command("git push"), None);
@@ -2353,6 +2385,20 @@ mod tests {
         assert_eq!(
             extract_shell_interpreter_command("env bash -c 'git push'"),
             Some("git push".to_string())
+        );
+        // Trailing arguments after quoted command string are ignored (they become $0, $1, ...)
+        assert_eq!(
+            extract_shell_interpreter_command("bash -c \"git push\" x"),
+            Some("git push".to_string())
+        );
+        assert_eq!(
+            extract_shell_interpreter_command("sh -c 'git push' --"),
+            Some("git push".to_string())
+        );
+        // Trailing arguments do not pollute extracted command
+        assert_eq!(
+            extract_shell_interpreter_command("bash -c 'git push origin main' extra args"),
+            Some("git push origin main".to_string())
         );
     }
 }
