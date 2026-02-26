@@ -181,6 +181,10 @@ impl Orchestrator {
 
     /// Set the context for the rally
     pub fn set_context(&mut self, context: Context) {
+        // Propagate local_mode to both adapters so they can enforce
+        // git write restrictions at the tool level
+        self.reviewer_adapter.set_local_mode(context.local_mode);
+        self.reviewee_adapter.set_local_mode(context.local_mode);
         self.context = Some(context);
     }
 
@@ -697,8 +701,39 @@ impl Orchestrator {
         Ok(())
     }
 
+    /// Git read-only commands that are allowed even in local mode
+    const GIT_READONLY_COMMANDS: &[&str] = &["git status", "git diff", "git log", "git show"];
+
     /// Handle permission granted from user
     async fn handle_permission_granted(&mut self, action: &str) -> Result<()> {
+        // In local mode, block git write operations even if user grants permission.
+        // Only read-only git commands are allowed.
+        if self.context.as_ref().is_some_and(|c| c.local_mode) {
+            let action_lower = action.to_lowercase();
+            if action_lower.contains("git ")
+                && !Self::GIT_READONLY_COMMANDS
+                    .iter()
+                    .any(|cmd| action_lower.contains(cmd))
+            {
+                self.send_event(RallyEvent::Log(format!(
+                    "Blocked git write operation in local mode: {}",
+                    action
+                )))
+                .await;
+
+                // Route to denied flow instead of silently succeeding
+                let prompt = build_permission_denied_prompt(action, "Git write operations are not allowed in local mode");
+                self.reviewee_adapter.continue_reviewee(&prompt).await?;
+
+                self.session.update_state(RallyState::RevieweeFix);
+                self.send_event(RallyEvent::StateChanged(RallyState::RevieweeFix))
+                    .await;
+                let _ = write_session(&self.session);
+
+                return Ok(());
+            }
+        }
+
         self.send_event(RallyEvent::Log(format!(
             "User granted permission for: {}",
             action

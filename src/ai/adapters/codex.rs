@@ -102,11 +102,21 @@ pub enum CodexError {
     ChannelClosed,
 }
 
+/// Prompt prefix for local mode git write prohibition (best-effort for Codex)
+const LOCAL_MODE_GIT_CONSTRAINT: &str = "\
+CRITICAL CONSTRAINT: This is a LOCAL-ONLY session. The following git commands are ABSOLUTELY \
+FORBIDDEN and must NEVER be executed: git add, git commit, git push, git stash, git switch, \
+git branch, git merge, git rebase, git reset, git cherry-pick, git revert, git checkout, \
+git restore, git tag, git rm, git clean. Only read-only git commands (status, diff, log, show) \
+are permitted. Edit files directly without staging or committing.\n\n";
+
 /// OpenAI Codex CLI adapter
 pub struct CodexAdapter {
     reviewer_session_id: Option<String>,
     reviewee_session_id: Option<String>,
     event_sender: Option<mpsc::Sender<RallyEvent>>,
+    /// When true, git write prohibition is prepended to prompts (best-effort)
+    local_mode: bool,
 }
 
 impl CodexAdapter {
@@ -115,6 +125,7 @@ impl CodexAdapter {
             reviewer_session_id: None,
             reviewee_session_id: None,
             event_sender: None,
+            local_mode: false,
         }
     }
 
@@ -483,9 +494,15 @@ impl AgentAdapter for CodexAdapter {
     async fn run_reviewee(&mut self, prompt: &str, context: &Context) -> Result<RevieweeOutput> {
         // Reviewee runs in full-auto mode (workspace-write)
         // NOTE: full-auto allows git push, but the prompt explicitly prohibits it
+        // In local mode, prepend git write prohibition (best-effort for Codex)
+        let effective_prompt = if self.local_mode {
+            format!("{}{}", LOCAL_MODE_GIT_CONSTRAINT, prompt)
+        } else {
+            prompt.to_string()
+        };
         let response = self
             .run_codex_streaming(
-                prompt,
+                &effective_prompt,
                 REVIEWEE_SCHEMA,
                 true, // full-auto sandbox for reviewee
                 context.working_dir.as_deref(),
@@ -530,6 +547,10 @@ impl AgentAdapter for CodexAdapter {
         // Codex doesn't support granular tool permissions like Claude's --allowedTools.
         // It uses sandbox policies (read-only vs full-auto) instead.
         // This is a no-op for Codex.
+    }
+
+    fn set_local_mode(&mut self, local_mode: bool) {
+        self.local_mode = local_mode;
     }
 }
 
