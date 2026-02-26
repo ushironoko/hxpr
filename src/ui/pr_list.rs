@@ -13,13 +13,23 @@ use crate::app::App;
 use crate::github::PullRequestSummary;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
+    let has_filter_bar = app
+        .pr_list_filter
+        .as_ref()
+        .is_some_and(|f| f.input_active);
+
+    let mut constraints = vec![
+        Constraint::Length(3), // Header
+        Constraint::Min(0),    // PR list
+    ];
+    if has_filter_bar {
+        constraints.push(Constraint::Length(3)); // Filter bar
+    }
+    constraints.push(Constraint::Length(3)); // Footer
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // Header
-            Constraint::Min(0),    // PR list
-            Constraint::Length(3), // Footer
-        ])
+        .constraints(constraints)
         .split(frame.area());
 
     // Header
@@ -47,10 +57,58 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             );
             frame.render_widget(empty, chunks[1]);
         } else {
-            let total_prs = prs.len();
-            let items = build_pr_list_items(prs, app.selected_pr);
+            // フィルタ適用中はフィルタ済みサブセットを表示
+            let (display_prs, display_selected, total_display) =
+                if let Some(ref filter) = app.pr_list_filter {
+                    if filter.matched_indices.is_empty() {
+                        // マッチ0件
+                        let empty_msg =
+                            format!("No matches for '{}'", filter.query);
+                        let empty = Paragraph::new(empty_msg)
+                            .style(Style::default().fg(Color::DarkGray))
+                            .block(
+                                Block::default()
+                                    .borders(Borders::ALL)
+                                    .title(format!(
+                                        "Pull Requests (0/{})",
+                                        prs.len()
+                                    )),
+                            );
+                        frame.render_widget(empty, chunks[1]);
 
-            let title = if app.pr_list_loading {
+                        // Filter bar
+                        if has_filter_bar {
+                            render_filter_bar(frame, chunks[2], filter);
+                        }
+
+                        // Footer
+                        let footer_idx = if has_filter_bar { 3 } else { 2 };
+                        render_footer(frame, chunks[footer_idx], app);
+                        return;
+                    }
+                    let filtered: Vec<&PullRequestSummary> = filter
+                        .matched_indices
+                        .iter()
+                        .map(|&i| &prs[i])
+                        .collect();
+                    let sel = filter.selected.unwrap_or(0);
+                    let total = filtered.len();
+                    (filtered, sel, total)
+                } else {
+                    let all: Vec<&PullRequestSummary> = prs.iter().collect();
+                    let sel = app.selected_pr;
+                    let total = all.len();
+                    (all, sel, total)
+                };
+
+            let total_prs = prs.len();
+            let title = if let Some(ref filter) = app.pr_list_filter {
+                format!(
+                    "Pull Requests ({}/{})",
+                    filter.matched_indices.len(),
+                    total_prs
+                )
+            } else if app.pr_list_loading {
                 format!("Pull Requests ({}) {}", total_prs, app.spinner_char())
             } else if app.pr_list_has_more {
                 format!("Pull Requests ({}+)", total_prs)
@@ -58,10 +116,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 format!("Pull Requests ({})", total_prs)
             };
 
+            let items = build_pr_list_items_ref(&display_prs, display_selected);
+
             // Use ListState for stateful rendering with automatic scroll management
             let mut list_state = ListState::default()
                 .with_offset(app.pr_list_scroll_offset)
-                .with_selected(Some(app.selected_pr));
+                .with_selected(Some(display_selected));
 
             let list = List::new(items)
                 .block(Block::default().borders(Borders::ALL).title(title))
@@ -72,13 +132,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             app.pr_list_scroll_offset = list_state.offset();
 
             // Scrollbar
-            if total_prs > 1 {
+            if total_display > 1 {
                 let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
                     .begin_symbol(Some("▲"))
                     .end_symbol(Some("▼"));
 
                 let mut scrollbar_state =
-                    ScrollbarState::new(total_prs.saturating_sub(1)).position(app.selected_pr);
+                    ScrollbarState::new(total_display.saturating_sub(1)).position(display_selected);
 
                 frame.render_stateful_widget(
                     scrollbar,
@@ -100,14 +160,44 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         frame.render_widget(empty, chunks[1]);
     }
 
+    // Filter bar
+    if has_filter_bar {
+        if let Some(ref filter) = app.pr_list_filter {
+            render_filter_bar(frame, chunks[2], filter);
+        }
+    }
+
     // Footer
-    let footer_text =
-        "j/k/↑↓: move | Enter: select | gg/G: top/bottom | O: browser | o: open | c: closed | a: all | r: refresh | q: quit | ?: help";
-    let footer = Paragraph::new(footer_text).block(Block::default().borders(Borders::ALL));
-    frame.render_widget(footer, chunks[2]);
+    let footer_idx = if has_filter_bar { 3 } else { 2 };
+    render_footer(frame, chunks[footer_idx], app);
 }
 
-fn build_pr_list_items(prs: &[PullRequestSummary], selected: usize) -> Vec<ListItem<'static>> {
+fn render_filter_bar(frame: &mut Frame, area: ratatui::layout::Rect, filter: &crate::filter::ListFilter) {
+    let cursor_display = format!("/{}", filter.query);
+    let filter_bar = Paragraph::new(Line::from(vec![
+        Span::styled("Filter: ", Style::default().fg(Color::Cyan)),
+        Span::styled(cursor_display, Style::default().fg(Color::White)),
+        Span::styled("│", Style::default().fg(Color::DarkGray)),
+    ]))
+    .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Cyan)));
+    frame.render_widget(filter_bar, area);
+}
+
+fn render_footer(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
+    let filter_hint = if app.pr_list_filter.is_some() {
+        "Esc: clear filter | "
+    } else {
+        "Space /: filter | "
+    };
+    let footer_text = format!(
+        "j/k/↑↓: move | Enter: select | {}gg/G: top/bottom | O: browser | o: open | c: closed | a: all | r: refresh | q: quit | ?: help",
+        filter_hint
+    );
+    let footer = Paragraph::new(footer_text).block(Block::default().borders(Borders::ALL));
+    frame.render_widget(footer, area);
+}
+
+fn build_pr_list_items_ref(prs: &[&PullRequestSummary], selected: usize) -> Vec<ListItem<'static>> {
     prs.iter()
         .enumerate()
         .map(|(i, pr)| {

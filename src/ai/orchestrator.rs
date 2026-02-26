@@ -28,6 +28,13 @@ const BOT_EXACT_MATCHES: &[&str] = &["github-actions", "dependabot"];
 /// Maximum number of external comments to include in context
 const MAX_EXTERNAL_COMMENTS: usize = 20;
 
+/// Git subcommands that are safe (read-only or local-only operations)
+/// for the reviewee to execute. Any git subcommand not in this list
+/// is blocked when validating permission requests in local mode.
+const ALLOWED_GIT_SUBCOMMANDS: &[&str] = &[
+    "status", "diff", "add", "commit", "log", "show", "branch", "switch", "stash",
+];
+
 /// Rally state
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RallyState {
@@ -701,28 +708,22 @@ impl Orchestrator {
         Ok(())
     }
 
-    /// Git read-only commands that are allowed even in local mode
-    const GIT_READONLY_COMMANDS: &[&str] = &["git status", "git diff", "git log", "git show"];
-
     /// Handle permission granted from user
     async fn handle_permission_granted(&mut self, action: &str) -> Result<()> {
-        // In local mode, block git write operations even if user grants permission.
-        // Only read-only git commands are allowed.
+        // In local mode, validate that the action doesn't contain blocked git operations.
+        // Uses strict token-based parsing to prevent bypasses like
+        // `git status && git push` passing a substring-based check.
         if self.context.as_ref().is_some_and(|c| c.local_mode) {
-            let action_lower = action.to_lowercase();
-            if action_lower.contains("git ")
-                && !Self::GIT_READONLY_COMMANDS
-                    .iter()
-                    .any(|cmd| action_lower.contains(cmd))
-            {
-                self.send_event(RallyEvent::Log(format!(
-                    "Blocked git write operation in local mode: {}",
-                    action
-                )))
-                .await;
+            if let Some(reason) = check_blocked_git_operation(action) {
+                let msg = format!(
+                    "Permission blocked in local mode: {}. Action: {}",
+                    reason, action
+                );
+                warn!("{}", msg);
+                self.send_event(RallyEvent::Log(msg.clone())).await;
 
-                // Route to denied flow instead of silently succeeding
-                let prompt = build_permission_denied_prompt(action, "Git write operations are not allowed in local mode");
+                // Route to denied flow instead of returning error
+                let prompt = build_permission_denied_prompt(action, &reason);
                 self.reviewee_adapter.continue_reviewee(&prompt).await?;
 
                 self.session.update_state(RallyState::RevieweeFix);
@@ -1322,6 +1323,118 @@ fn is_bot_user(login: &str) -> bool {
     BOT_SUFFIXES.iter().any(|suffix| login.ends_with(suffix)) || BOT_EXACT_MATCHES.contains(&login)
 }
 
+/// Extract the shell command from a `Bash(command:*)` tool pattern.
+///
+/// Returns `Some(command)` if the action matches the pattern, `None` otherwise.
+fn extract_bash_command(action: &str) -> Option<&str> {
+    let rest = action.trim().strip_prefix("Bash(")?;
+    // Handle both Bash(cmd:*) and Bash(cmd) formats
+    let inner = rest.strip_suffix(')')?;
+    Some(inner.strip_suffix(":*").unwrap_or(inner))
+}
+
+/// Split a shell command string by command separators (`&&`, `||`, `;`, `|`).
+///
+/// Handles `||` before `|` to avoid incorrect splitting.
+fn split_shell_commands(command: &str) -> Vec<&str> {
+    let mut results = Vec::new();
+    let mut start = 0;
+    let bytes = command.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+
+    while i < len {
+        // Check for two-character separators (&& and ||) first
+        let is_double =
+            i + 1 < len && ((bytes[i] == b'&' && bytes[i + 1] == b'&') || (bytes[i] == b'|' && bytes[i + 1] == b'|'));
+        if is_double {
+            results.push(&command[start..i]);
+            i += 2;
+            start = i;
+        } else if bytes[i] == b';' || bytes[i] == b'|' {
+            results.push(&command[start..i]);
+            i += 1;
+            start = i;
+        } else {
+            i += 1;
+        }
+    }
+
+    if start <= len {
+        results.push(&command[start..]);
+    }
+
+    results
+}
+
+/// Validate whether a tool/action string contains blocked git operations.
+///
+/// Uses strict token-based parsing instead of substring matching to prevent
+/// bypasses like `git status && git push` passing a `contains("git status")` check.
+///
+/// Returns `Some(reason)` if the action is blocked, `None` if allowed.
+fn check_blocked_git_operation(action: &str) -> Option<String> {
+    // For non-Bash tools (Read, Edit, Write, Glob, Grep, etc.), always allow
+    let command = match extract_bash_command(action) {
+        Some(cmd) => cmd,
+        None => {
+            // Not a Bash() pattern — check if it looks like a raw git command
+            let trimmed = action.trim();
+            if trimmed.starts_with("git ") || trimmed == "git" {
+                trimmed
+            } else {
+                return None;
+            }
+        }
+    };
+
+    if command.is_empty() {
+        return None;
+    }
+
+    // Split by shell command separators to detect chained commands
+    let individual_commands = split_shell_commands(command);
+
+    for cmd in &individual_commands {
+        let trimmed = cmd.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+        if tokens.is_empty() {
+            continue;
+        }
+
+        // Check if this is a git command
+        if tokens[0] == "git" {
+            if tokens.len() < 2 {
+                return Some("Bare 'git' command without subcommand is not allowed".to_string());
+            }
+
+            let subcommand = tokens[1];
+
+            // Reject flags before subcommand (e.g., git -C /path push)
+            // as they can be used to obfuscate the actual operation
+            if subcommand.starts_with('-') {
+                return Some(format!(
+                    "Git command with flags before subcommand is not allowed: '{}'",
+                    trimmed
+                ));
+            }
+
+            if !ALLOWED_GIT_SUBCOMMANDS.contains(&subcommand) {
+                return Some(format!(
+                    "Git subcommand '{}' is not in the allowed list ({:?})",
+                    subcommand, ALLOWED_GIT_SUBCOMMANDS
+                ));
+            }
+        }
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1569,5 +1682,176 @@ mod tests {
         };
         assert_eq!(info.summary, "Fixed issues");
         assert_eq!(info.files_modified.len(), 2);
+    }
+
+    #[test]
+    fn test_extract_bash_command() {
+        // Standard Bash(cmd:*) format
+        assert_eq!(extract_bash_command("Bash(git push:*)"), Some("git push"));
+        assert_eq!(
+            extract_bash_command("Bash(git status:*)"),
+            Some("git status")
+        );
+
+        // Without wildcard suffix
+        assert_eq!(
+            extract_bash_command("Bash(git push)"),
+            Some("git push")
+        );
+
+        // Not a Bash pattern
+        assert_eq!(extract_bash_command("Read"), None);
+        assert_eq!(extract_bash_command("Edit"), None);
+        assert_eq!(extract_bash_command("git push"), None);
+
+        // Complex commands
+        assert_eq!(
+            extract_bash_command("Bash(git status && git push:*)"),
+            Some("git status && git push")
+        );
+    }
+
+    #[test]
+    fn test_split_shell_commands() {
+        // Single command
+        assert_eq!(split_shell_commands("git status"), vec!["git status"]);
+
+        // && separator
+        let result = split_shell_commands("git status && git push");
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].trim(), "git status");
+        assert_eq!(result[1].trim(), "git push");
+
+        // || separator
+        let result = split_shell_commands("git status || git push");
+        assert_eq!(result.len(), 2);
+
+        // ; separator
+        let result = split_shell_commands("git status; git push");
+        assert_eq!(result.len(), 2);
+
+        // | pipe
+        let result = split_shell_commands("echo test | git push");
+        assert_eq!(result.len(), 2);
+
+        // Multiple separators
+        let result = split_shell_commands("git status && git diff; git push");
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn test_check_blocked_git_operation_allows_safe_commands() {
+        // Allowed git subcommands
+        assert!(check_blocked_git_operation("Bash(git status:*)").is_none());
+        assert!(check_blocked_git_operation("Bash(git diff:*)").is_none());
+        assert!(check_blocked_git_operation("Bash(git add:*)").is_none());
+        assert!(check_blocked_git_operation("Bash(git commit:*)").is_none());
+        assert!(check_blocked_git_operation("Bash(git log:*)").is_none());
+        assert!(check_blocked_git_operation("Bash(git show:*)").is_none());
+        assert!(check_blocked_git_operation("Bash(git branch:*)").is_none());
+        assert!(check_blocked_git_operation("Bash(git switch:*)").is_none());
+        assert!(check_blocked_git_operation("Bash(git stash:*)").is_none());
+
+        // Non-Bash tools are always allowed
+        assert!(check_blocked_git_operation("Read").is_none());
+        assert!(check_blocked_git_operation("Edit").is_none());
+        assert!(check_blocked_git_operation("Write").is_none());
+        assert!(check_blocked_git_operation("Glob").is_none());
+        assert!(check_blocked_git_operation("Grep").is_none());
+        assert!(check_blocked_git_operation("Skill").is_none());
+
+        // Non-git Bash commands are allowed
+        assert!(check_blocked_git_operation("Bash(cargo test:*)").is_none());
+        assert!(check_blocked_git_operation("Bash(npm run build:*)").is_none());
+    }
+
+    #[test]
+    fn test_check_blocked_git_operation_blocks_write_operations() {
+        // git push
+        assert!(check_blocked_git_operation("Bash(git push:*)").is_some());
+        assert!(check_blocked_git_operation("Bash(git push origin main:*)").is_some());
+
+        // git reset
+        assert!(check_blocked_git_operation("Bash(git reset --hard:*)").is_some());
+
+        // git checkout (can discard changes)
+        assert!(check_blocked_git_operation("Bash(git checkout:*)").is_some());
+
+        // git restore (can discard changes)
+        assert!(check_blocked_git_operation("Bash(git restore:*)").is_some());
+
+        // git clean
+        assert!(check_blocked_git_operation("Bash(git clean:*)").is_some());
+
+        // git rebase
+        assert!(check_blocked_git_operation("Bash(git rebase:*)").is_some());
+
+        // git merge
+        assert!(check_blocked_git_operation("Bash(git merge:*)").is_some());
+    }
+
+    #[test]
+    fn test_check_blocked_git_operation_blocks_mixed_commands() {
+        // Mixed read + write via &&
+        assert!(
+            check_blocked_git_operation("Bash(git status && git push:*)").is_some(),
+            "Should block git push hidden after git status via &&"
+        );
+
+        // Mixed read + write via ;
+        assert!(
+            check_blocked_git_operation("Bash(git status; git push -f origin main:*)").is_some(),
+            "Should block git push hidden after git status via ;"
+        );
+
+        // Mixed read + write via ||
+        assert!(
+            check_blocked_git_operation("Bash(git status || git reset --hard:*)").is_some(),
+            "Should block git reset hidden after git status via ||"
+        );
+
+        // Mixed read + write via pipe
+        assert!(
+            check_blocked_git_operation("Bash(echo test | git push:*)").is_some(),
+            "Should block git push via pipe"
+        );
+
+        // Multiple chained safe commands should be allowed
+        assert!(
+            check_blocked_git_operation("Bash(git status && git diff:*)").is_none(),
+            "Should allow chained safe git commands"
+        );
+    }
+
+    #[test]
+    fn test_check_blocked_git_operation_blocks_flag_obfuscation() {
+        // git -C /path push (flag before subcommand to obfuscate)
+        assert!(
+            check_blocked_git_operation("Bash(git -C /tmp push:*)").is_some(),
+            "Should block git commands with flags before subcommand"
+        );
+    }
+
+    #[test]
+    fn test_check_blocked_git_operation_raw_commands() {
+        // Raw git commands (not in Bash() format)
+        assert!(check_blocked_git_operation("git push").is_some());
+        assert!(check_blocked_git_operation("git status").is_none());
+        assert!(check_blocked_git_operation("git reset --hard").is_some());
+    }
+
+    #[test]
+    fn test_check_blocked_bare_git() {
+        // Bare 'git' without subcommand
+        assert!(check_blocked_git_operation("Bash(git:*)").is_some());
+        assert!(check_blocked_git_operation("git").is_some());
+    }
+
+    #[test]
+    fn test_check_blocked_non_git_with_git_substring() {
+        // Words containing "git" that aren't git commands should not be blocked
+        // (e.g., "widget", "digit", "legit")
+        assert!(check_blocked_git_operation("Bash(widget build:*)").is_none());
+        assert!(check_blocked_git_operation("Bash(cargo test --features digit:*)").is_none());
     }
 }
