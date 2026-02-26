@@ -1361,6 +1361,13 @@ const SHELL_WRAPPERS: &[&str] = &[
     "env", "command", "builtin", "exec", "nohup", "nice", "sudo", "xargs",
 ];
 
+/// Shell interpreters that can execute arbitrary command strings via `-c`.
+/// e.g., `sh -c 'git push'`, `bash -lc "git push"`
+const SHELL_INTERPRETERS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "fish"];
+
+/// Maximum recursion depth for nested shell interpreter detection.
+const MAX_SHELL_NESTING_DEPTH: usize = 3;
+
 /// Check if a token looks like an environment variable assignment (VAR=value).
 fn is_env_var_assignment(token: &str) -> bool {
     if let Some(eq_pos) = token.find('=') {
@@ -1383,6 +1390,114 @@ fn is_git_binary(token: &str) -> bool {
         None => token,
     };
     basename == "git"
+}
+
+/// Check if a token refers to a shell interpreter, handling absolute paths.
+/// e.g., "sh", "bash", "/usr/bin/bash", "/bin/sh"
+fn is_shell_interpreter(token: &str) -> bool {
+    let basename = match token.rfind('/') {
+        Some(pos) => &token[pos + 1..],
+        None => token,
+    };
+    SHELL_INTERPRETERS.contains(&basename)
+}
+
+/// Extract the command string from a shell interpreter invocation with `-c`.
+///
+/// Handles:
+/// - `sh -c 'git push'` → "git push"
+/// - `bash -lc "git status && git push"` → "git status && git push"
+/// - `env sh -c "git push"` → "git push"
+/// - `/usr/bin/bash -c git push` → "git push"
+///
+/// Returns `None` if the command is not a shell interpreter invocation with `-c`.
+fn extract_shell_interpreter_command(command: &str) -> Option<String> {
+    let tokens: Vec<&str> = command.split_whitespace().collect();
+    if tokens.is_empty() {
+        return None;
+    }
+
+    let mut i = 0;
+
+    // Skip leading env var assignments (e.g., VAR=val sh -c ...)
+    while i < tokens.len() && is_env_var_assignment(tokens[i]) {
+        i += 1;
+    }
+
+    // Skip shell wrappers (env, command, sudo, etc.)
+    while i < tokens.len() {
+        let basename = match tokens[i].rfind('/') {
+            Some(pos) => &tokens[i][pos + 1..],
+            None => tokens[i],
+        };
+        if SHELL_WRAPPERS.contains(&basename) {
+            i += 1;
+            // Skip wrapper flags
+            while i < tokens.len() && tokens[i].starts_with('-') {
+                i += 1;
+                if i < tokens.len()
+                    && !is_shell_interpreter(tokens[i])
+                    && !is_git_binary(tokens[i])
+                    && !tokens[i].starts_with('-')
+                {
+                    i += 1;
+                }
+            }
+            // Skip env var assignments after wrapper
+            while i < tokens.len() && is_env_var_assignment(tokens[i]) {
+                i += 1;
+            }
+        } else {
+            break;
+        }
+    }
+
+    if i >= tokens.len() {
+        return None;
+    }
+
+    // Check if it's a shell interpreter
+    if !is_shell_interpreter(tokens[i]) {
+        return None;
+    }
+    i += 1;
+
+    // Look for -c flag (standalone or combined like -lc, -ic)
+    let mut found_c = false;
+    while i < tokens.len() && tokens[i].starts_with('-') {
+        let flag = tokens[i];
+        // Standalone -c, or combined short flags ending with 'c' (e.g., -lc, -ic)
+        // The 'c' must be last since it takes the next argument as the command string
+        if flag == "-c"
+            || (flag.len() >= 2
+                && flag.starts_with('-')
+                && !flag.starts_with("--")
+                && flag.ends_with('c'))
+        {
+            found_c = true;
+            i += 1;
+            break;
+        }
+        i += 1;
+    }
+
+    if !found_c || i >= tokens.len() {
+        return None;
+    }
+
+    // Remaining tokens form the command string — join and strip outer quotes
+    let cmd_str = tokens[i..].join(" ");
+    let stripped = cmd_str
+        .strip_prefix('\'')
+        .and_then(|s| s.strip_suffix('\''))
+        .or_else(|| {
+            cmd_str
+                .strip_prefix('"')
+                .and_then(|s| s.strip_suffix('"'))
+        })
+        .unwrap_or(&cmd_str);
+
+    Some(stripped.to_string())
 }
 
 /// Find the git binary and its subcommand index within a token list,
@@ -1450,7 +1565,8 @@ fn find_git_in_tokens<'a>(tokens: &[&'a str]) -> Option<(usize, Option<usize>)> 
 /// bypasses like `git status && git push` passing a `contains("git status")` check.
 ///
 /// Also handles wrapper commands (`env`, `command`, `sudo`, etc.), environment
-/// variable prefixes (`VAR=val git push`), and absolute paths (`/usr/bin/git push`)
+/// variable prefixes (`VAR=val git push`), absolute paths (`/usr/bin/git push`),
+/// and nested shell interpreters (`sh -c 'git push'`, `bash -lc "git push"`)
 /// that could be used to bypass a simple `tokens[0] == "git"` check.
 ///
 /// Returns `Some(reason)` if the action is blocked, `None` if allowed.
@@ -1471,6 +1587,16 @@ fn check_blocked_git_operation(action: &str) -> Option<String> {
 
     if command.is_empty() {
         return None;
+    }
+
+    check_command_for_blocked_git(command, 0)
+}
+
+/// Recursive inner function that checks a command string for blocked git operations.
+/// The `depth` parameter prevents infinite recursion from deeply nested shell invocations.
+fn check_command_for_blocked_git(command: &str, depth: usize) -> Option<String> {
+    if depth > MAX_SHELL_NESTING_DEPTH {
+        return Some("Shell command nesting too deep — blocked for safety".to_string());
     }
 
     // Split by shell command separators to detect chained commands
@@ -1514,6 +1640,14 @@ fn check_blocked_git_operation(action: &str) -> Option<String> {
                         ));
                     }
                 }
+            }
+        }
+
+        // Check for shell interpreter with -c (e.g., sh -c 'git push', bash -lc "git push")
+        // This catches nested execution that bypasses direct git binary detection.
+        if let Some(inner_cmd) = extract_shell_interpreter_command(trimmed) {
+            if let Some(reason) = check_command_for_blocked_git(&inner_cmd, depth + 1) {
+                return Some(reason);
             }
         }
     }
@@ -2079,6 +2213,146 @@ mod tests {
         assert!(
             check_blocked_git_operation("Bash(GIT_TRACE=1 git status; /usr/bin/git push:*)").is_some(),
             "Should block '/usr/bin/git push' hidden after safe command via ;"
+        );
+    }
+
+    #[test]
+    fn test_check_blocked_git_via_shell_interpreter_c() {
+        // sh -c 'git push'
+        assert!(
+            check_blocked_git_operation("Bash(sh -c 'git push':*)").is_some(),
+            "Should block 'sh -c git push'"
+        );
+        // bash -c "git push"
+        assert!(
+            check_blocked_git_operation("Bash(bash -c \"git push\":*)").is_some(),
+            "Should block 'bash -c git push'"
+        );
+        // zsh -c 'git push origin main'
+        assert!(
+            check_blocked_git_operation("Bash(zsh -c 'git push origin main':*)").is_some(),
+            "Should block 'zsh -c git push origin main'"
+        );
+        // bash with combined flags: -lc
+        assert!(
+            check_blocked_git_operation("Bash(bash -lc \"git push\":*)").is_some(),
+            "Should block 'bash -lc git push'"
+        );
+        // bash -lc with chained commands hiding git push
+        assert!(
+            check_blocked_git_operation("Bash(bash -lc \"git status && git push\":*)").is_some(),
+            "Should block 'bash -lc \"git status && git push\"'"
+        );
+        // sh -c without quotes
+        assert!(
+            check_blocked_git_operation("Bash(sh -c git push:*)").is_some(),
+            "Should block 'sh -c git push' (unquoted)"
+        );
+        // Absolute path to shell interpreter
+        assert!(
+            check_blocked_git_operation("Bash(/bin/sh -c 'git push':*)").is_some(),
+            "Should block '/bin/sh -c git push'"
+        );
+        assert!(
+            check_blocked_git_operation("Bash(/usr/bin/bash -c 'git push':*)").is_some(),
+            "Should block '/usr/bin/bash -c git push'"
+        );
+        // env wrapper + shell interpreter
+        assert!(
+            check_blocked_git_operation("Bash(env sh -c 'git push':*)").is_some(),
+            "Should block 'env sh -c git push'"
+        );
+        // dash, ksh, fish
+        assert!(
+            check_blocked_git_operation("Bash(dash -c 'git push':*)").is_some(),
+            "Should block 'dash -c git push'"
+        );
+        assert!(
+            check_blocked_git_operation("Bash(ksh -c 'git push':*)").is_some(),
+            "Should block 'ksh -c git push'"
+        );
+        assert!(
+            check_blocked_git_operation("Bash(fish -c 'git push':*)").is_some(),
+            "Should block 'fish -c git push'"
+        );
+        // Chained: safe command && shell interpreter git push
+        assert!(
+            check_blocked_git_operation("Bash(echo hello && sh -c 'git push':*)").is_some(),
+            "Should block shell interpreter git push in chained command"
+        );
+        // Nested: bash -c "sh -c 'git push'"
+        assert!(
+            check_blocked_git_operation("Bash(bash -c \"sh -c 'git push'\":*)").is_some(),
+            "Should block doubly nested shell interpreter git push"
+        );
+    }
+
+    #[test]
+    fn test_check_blocked_git_via_shell_interpreter_allows_safe() {
+        // sh -c with safe git command
+        assert!(
+            check_blocked_git_operation("Bash(sh -c 'git status':*)").is_none(),
+            "Should allow 'sh -c git status'"
+        );
+        assert!(
+            check_blocked_git_operation("Bash(bash -c 'git diff':*)").is_none(),
+            "Should allow 'bash -c git diff'"
+        );
+        // sh -c with non-git command
+        assert!(
+            check_blocked_git_operation("Bash(sh -c 'echo hello':*)").is_none(),
+            "Should allow 'sh -c echo hello'"
+        );
+        // bash without -c (just running a script)
+        assert!(
+            check_blocked_git_operation("Bash(bash script.sh:*)").is_none(),
+            "Should allow 'bash script.sh' (no -c flag)"
+        );
+        // sh with other flags but no -c
+        assert!(
+            check_blocked_git_operation("Bash(sh -x script.sh:*)").is_none(),
+            "Should allow 'sh -x script.sh' (no -c flag)"
+        );
+    }
+
+    #[test]
+    fn test_extract_shell_interpreter_command() {
+        // Basic cases
+        assert_eq!(
+            extract_shell_interpreter_command("sh -c 'git push'"),
+            Some("git push".to_string())
+        );
+        assert_eq!(
+            extract_shell_interpreter_command("bash -c \"git push\""),
+            Some("git push".to_string())
+        );
+        // Combined flags
+        assert_eq!(
+            extract_shell_interpreter_command("bash -lc 'git push'"),
+            Some("git push".to_string())
+        );
+        // No quotes
+        assert_eq!(
+            extract_shell_interpreter_command("sh -c git push"),
+            Some("git push".to_string())
+        );
+        // Not a shell interpreter
+        assert_eq!(extract_shell_interpreter_command("git push"), None);
+        // No -c flag
+        assert_eq!(extract_shell_interpreter_command("bash script.sh"), None);
+        // Empty
+        assert_eq!(extract_shell_interpreter_command(""), None);
+        // -c but no command after
+        assert_eq!(extract_shell_interpreter_command("sh -c"), None);
+        // Absolute path interpreter
+        assert_eq!(
+            extract_shell_interpreter_command("/bin/sh -c 'git push'"),
+            Some("git push".to_string())
+        );
+        // Wrapper + interpreter
+        assert_eq!(
+            extract_shell_interpreter_command("env bash -c 'git push'"),
+            Some("git push".to_string())
         );
     }
 }
