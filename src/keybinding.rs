@@ -115,6 +115,7 @@ impl KeyCodeConfig {
     /// Display string for help screen
     pub fn display(&self) -> String {
         match self {
+            KeyCodeConfig::Char(' ') => "Space".to_string(),
             KeyCodeConfig::Char(c) => c.to_string(),
             KeyCodeConfig::Named(n) => n.display_name().to_string(),
         }
@@ -485,7 +486,9 @@ fn parse_key_string(s: &str) -> Result<KeyBinding, String> {
     };
 
     // Parse the key part
-    let code = if key_part.len() == 1 {
+    let code = if key_part.eq_ignore_ascii_case("space") {
+        KeyCodeConfig::Char(' ')
+    } else if key_part.len() == 1 {
         let c = key_part.chars().next().unwrap();
         if c.is_ascii_uppercase() && modifiers.is_empty() {
             // Uppercase letter implies shift

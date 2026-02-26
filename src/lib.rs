@@ -10,6 +10,7 @@ pub mod cache;
 pub mod config;
 pub mod diff;
 pub mod editor;
+pub mod filter;
 pub mod github;
 pub mod headless;
 pub mod keybinding;
