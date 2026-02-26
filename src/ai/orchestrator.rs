@@ -188,6 +188,10 @@ impl Orchestrator {
 
     /// Set the context for the rally
     pub fn set_context(&mut self, context: Context) {
+        // Propagate local_mode to both adapters so they can enforce
+        // git write restrictions at the tool level
+        self.reviewer_adapter.set_local_mode(context.local_mode);
+        self.reviewee_adapter.set_local_mode(context.local_mode);
         self.context = Some(context);
     }
 
@@ -717,7 +721,17 @@ impl Orchestrator {
                 );
                 warn!("{}", msg);
                 self.send_event(RallyEvent::Log(msg.clone())).await;
-                return Err(anyhow!(msg));
+
+                // Route to denied flow instead of returning error
+                let prompt = build_permission_denied_prompt(action, &reason);
+                self.reviewee_adapter.continue_reviewee(&prompt).await?;
+
+                self.session.update_state(RallyState::RevieweeFix);
+                self.send_event(RallyEvent::StateChanged(RallyState::RevieweeFix))
+                    .await;
+                let _ = write_session(&self.session);
+
+                return Ok(());
             }
         }
 

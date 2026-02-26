@@ -128,6 +128,22 @@ Note: Address these comments if they are relevant and valid. Don't wait for more
             ReviewAction::Comment => "Comment",
         };
 
+        let git_operations = if context.local_mode {
+            "## Git Operations\n\n\
+             This is a LOCAL-ONLY session. Do NOT run any git write commands \
+             (add, commit, push, stash, switch, branch, merge, rebase, reset, etc.).\n\
+             Only read-only git commands (status, diff, log, show) are allowed.\n\
+             Edit files directly — the user will handle staging and committing."
+        } else {
+            "## Git Operations\n\n\
+             After making changes, you MUST commit your changes locally:\n\n\
+             1. Check status: `git status`\n\
+             2. Stage files: `git add <files>`\n\
+             3. Commit: `git commit -m \"fix: <description>\"`\n\n\
+             NOTE: Do NOT push changes. The user will review and push manually.\n\
+             If git push is needed and allowed, it will be explicitly permitted via config."
+        };
+
         let mut vars = HashMap::new();
         vars.insert("repo", context.repo.clone());
         vars.insert("pr_number", context.pr_number.to_string());
@@ -138,6 +154,7 @@ Note: Address these comments if they are relevant and valid. Don't wait for more
         vars.insert("review_comments", comments_text);
         vars.insert("blocking_issues", blocking_text);
         vars.insert("external_comments", external_section);
+        vars.insert("git_operations", git_operations.to_string());
 
         render_template(&template, &vars)
     }
@@ -341,6 +358,55 @@ mod tests {
         assert!(prompt.contains("Iteration 2"));
         assert!(prompt.contains("Fixed error handling"));
         assert!(prompt.contains("+new code"));
+    }
+
+    /// Create a PromptLoader that always uses default templates (ignoring custom prompt dir)
+    fn create_default_loader() -> PromptLoader {
+        PromptLoader { prompt_dir: None }
+    }
+
+    #[test]
+    fn test_load_reviewee_prompt_local_mode_git_operations() {
+        let loader = create_default_loader();
+        let mut context = create_test_context();
+        context.local_mode = true;
+
+        let review = ReviewerOutput {
+            action: ReviewAction::RequestChanges,
+            summary: "Fix issues".to_string(),
+            comments: vec![],
+            blocking_issues: vec![],
+        };
+
+        let prompt = loader.load_reviewee_prompt(&context, &review, 1);
+
+        // Local mode: should contain prohibition
+        assert!(prompt.contains("LOCAL-ONLY session"));
+        assert!(prompt.contains("Do NOT run any git write commands"));
+        // Should NOT contain normal git operations
+        assert!(!prompt.contains("you MUST commit your changes locally"));
+        assert!(!prompt.contains("git add <files>"));
+    }
+
+    #[test]
+    fn test_load_reviewee_prompt_normal_mode_git_operations() {
+        let loader = create_default_loader();
+        let context = create_test_context(); // local_mode = false
+
+        let review = ReviewerOutput {
+            action: ReviewAction::RequestChanges,
+            summary: "Fix issues".to_string(),
+            comments: vec![],
+            blocking_issues: vec![],
+        };
+
+        let prompt = loader.load_reviewee_prompt(&context, &review, 1);
+
+        // Normal mode: should contain commit instructions
+        assert!(prompt.contains("you MUST commit your changes locally"));
+        assert!(prompt.contains("git add <files>"));
+        // Should NOT contain local mode prohibition
+        assert!(!prompt.contains("LOCAL-ONLY session"));
     }
 
     #[test]

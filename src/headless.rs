@@ -184,6 +184,8 @@ async fn run_headless_with_context(
     let (event_tx, mut event_rx) = mpsc::channel(100);
     let (cmd_tx, cmd_rx) = mpsc::channel(10);
 
+    let local_mode = context.local_mode;
+
     let mut orchestrator =
         Orchestrator::new(repo, pr_number, config.ai.clone(), event_tx, Some(cmd_rx))?;
     orchestrator.set_context(context);
@@ -192,7 +194,7 @@ async fn run_headless_with_context(
     let orchestrator_handle = tokio::spawn(async move { orchestrator.run().await });
 
     // Event loop: receive events and auto-respond to interactive requests
-    let outcome = run_headless_event_loop(&mut event_rx, &cmd_tx).await;
+    let outcome = run_headless_event_loop(&mut event_rx, &cmd_tx, local_mode).await;
 
     // Wait for orchestrator to finish
     let _ = orchestrator_handle.await;
@@ -263,6 +265,7 @@ struct HeadlessJsonOutput {
 async fn run_headless_event_loop(
     event_rx: &mut mpsc::Receiver<RallyEvent>,
     cmd_tx: &mpsc::Sender<OrchestratorCommand>,
+    local_mode: bool,
 ) -> HeadlessOutcome {
     let mut last_error: Option<String> = None;
     let mut current_iteration: u32 = 0;
@@ -357,18 +360,25 @@ async fn run_headless_event_loop(
                     .send(OrchestratorCommand::PermissionResponse(false))
                     .await;
             }
-            // Post confirmation: always approve in headless mode
-            // (auto_post is checked by orchestrator; if we receive this event,
-            // it means auto_post is false, and we approve since headless can't interact)
+            // Post confirmation handling:
+            // - local_mode: auto-deny (no PR to post to)
+            // - otherwise: auto-approve (headless can't interact)
             RallyEvent::ReviewPostConfirmNeeded(info) => {
                 eprintln!(
                     "  [Post review] {}: {} ({} comments)",
                     info.action, info.summary, info.comment_count
                 );
-                eprintln!("  -> Auto-approving post (headless mode)");
-                let _ = cmd_tx
-                    .send(OrchestratorCommand::PostConfirmResponse(true))
-                    .await;
+                if local_mode {
+                    eprintln!("  -> Skipping (local mode, no PR to post to)");
+                    let _ = cmd_tx
+                        .send(OrchestratorCommand::PostConfirmResponse(false))
+                        .await;
+                } else {
+                    eprintln!("  -> Auto-approving post (headless mode)");
+                    let _ = cmd_tx
+                        .send(OrchestratorCommand::PostConfirmResponse(true))
+                        .await;
+                }
             }
             RallyEvent::FixPostConfirmNeeded(info) => {
                 eprintln!(
@@ -376,10 +386,17 @@ async fn run_headless_event_loop(
                     info.summary,
                     info.files_modified.join(", ")
                 );
-                eprintln!("  -> Auto-approving post (headless mode)");
-                let _ = cmd_tx
-                    .send(OrchestratorCommand::PostConfirmResponse(true))
-                    .await;
+                if local_mode {
+                    eprintln!("  -> Skipping (local mode, no PR to post to)");
+                    let _ = cmd_tx
+                        .send(OrchestratorCommand::PostConfirmResponse(false))
+                        .await;
+                } else {
+                    eprintln!("  -> Auto-approving post (headless mode)");
+                    let _ = cmd_tx
+                        .send(OrchestratorCommand::PostConfirmResponse(true))
+                        .await;
+                }
             }
         }
     }

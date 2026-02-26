@@ -18,16 +18,7 @@ PR #{{pr_number}}: {{pr_title}}
 ### Blocking Issues
 {{blocking_issues}}
 {{external_comments}}
-## Git Operations
-
-After making changes, you MUST commit your changes locally:
-
-1. Check status: `git status`
-2. Stage files: `git add <files>`
-3. Commit: `git commit -m "fix: <description>"`
-
-NOTE: Do NOT push changes. The user will review and push manually.
-If git push is needed and allowed, it will be explicitly permitted via config.
+{{git_operations}}
 
 CRITICAL RULES:
 - NEVER use `git reset --hard` - this destroys work

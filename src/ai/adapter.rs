@@ -148,6 +148,13 @@ pub trait AgentAdapter: Send + Sync {
     /// Used when user grants permission for a specific action (e.g., "Bash(git push:*)").
     /// This allows the reviewee to execute the permitted action in subsequent calls.
     fn add_reviewee_allowed_tool(&mut self, tool: &str);
+
+    /// Set local mode flag
+    ///
+    /// When local_mode is true, git write operations (add, commit, push, etc.)
+    /// are blocked to prevent unintended changes to the working tree.
+    /// This is propagated from Context via Orchestrator::set_context().
+    fn set_local_mode(&mut self, local_mode: bool);
 }
 
 /// Supported agent types

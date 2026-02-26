@@ -13,6 +13,16 @@ use crate::config::AiConfig;
 const REVIEWER_SCHEMA: &str = include_str!("../schemas/reviewer.json");
 const REVIEWEE_SCHEMA: &str = include_str!("../schemas/reviewee.json");
 
+/// Git commands to disallow in local mode.
+/// --disallowedTools overrides --allowedTools and settings.local.json.
+const GIT_DISALLOWED_TOOLS: &str = concat!(
+    "Bash(git add:*),Bash(git commit:*),Bash(git push:*),",
+    "Bash(git stash:*),Bash(git switch:*),Bash(git branch:*),",
+    "Bash(git merge:*),Bash(git rebase:*),Bash(git reset:*),",
+    "Bash(git cherry-pick:*),Bash(git revert:*),Bash(git checkout:*),",
+    "Bash(git restore:*),Bash(git tag:*),Bash(git rm:*),Bash(git clean:*)"
+);
+
 /// Claude Code adapter
 pub struct ClaudeAdapter {
     /// Cached allowed tools string for reviewer (built once at initialization)
@@ -22,6 +32,8 @@ pub struct ClaudeAdapter {
     reviewer_session_id: Option<String>,
     reviewee_session_id: Option<String>,
     event_sender: Option<mpsc::Sender<RallyEvent>>,
+    /// When true, git write operations are blocked via --disallowedTools
+    local_mode: bool,
 }
 
 impl ClaudeAdapter {
@@ -32,6 +44,7 @@ impl ClaudeAdapter {
             reviewer_session_id: None,
             reviewee_session_id: None,
             event_sender: None,
+            local_mode: false,
         }
     }
 
@@ -109,6 +122,12 @@ impl ClaudeAdapter {
         cmd.arg("--json-schema").arg(schema);
         if let Some(tools) = allowed_tools {
             cmd.arg("--allowedTools").arg(tools);
+        }
+
+        // In local mode, block git write operations via --disallowedTools.
+        // --disallowedTools takes precedence over --allowedTools and settings.local.json.
+        if self.local_mode {
+            cmd.arg("--disallowedTools").arg(GIT_DISALLOWED_TOOLS);
         }
 
         if let Some(session) = session_id {
@@ -439,6 +458,10 @@ impl AgentAdapter for ClaudeAdapter {
         self.reviewee_allowed_tools.push(',');
         self.reviewee_allowed_tools.push_str(tool);
     }
+
+    fn set_local_mode(&mut self, local_mode: bool) {
+        self.local_mode = local_mode;
+    }
 }
 
 /// Stream event from Claude CLI stream-json output
@@ -620,5 +643,52 @@ mod tests {
         let tools_before = adapter.reviewee_allowed_tools.clone();
         adapter.add_reviewee_allowed_tool("Bash(git push:*)");
         assert_eq!(adapter.reviewee_allowed_tools, tools_before);
+    }
+
+    #[test]
+    fn test_set_local_mode() {
+        use crate::ai::adapter::AgentAdapter;
+
+        let config = AiConfig::default();
+        let mut adapter = ClaudeAdapter::new(&config);
+
+        assert!(!adapter.local_mode);
+
+        adapter.set_local_mode(true);
+        assert!(adapter.local_mode);
+
+        adapter.set_local_mode(false);
+        assert!(!adapter.local_mode);
+    }
+
+    #[test]
+    fn test_git_disallowed_tools_coverage() {
+        // Verify that GIT_DISALLOWED_TOOLS contains all critical git write commands
+        let disallowed = GIT_DISALLOWED_TOOLS;
+        let expected_commands = [
+            "git add",
+            "git commit",
+            "git push",
+            "git stash",
+            "git switch",
+            "git branch",
+            "git merge",
+            "git rebase",
+            "git reset",
+            "git cherry-pick",
+            "git revert",
+            "git checkout",
+            "git restore",
+            "git tag",
+            "git rm",
+            "git clean",
+        ];
+        for cmd in expected_commands {
+            assert!(
+                disallowed.contains(&format!("Bash({}", cmd)),
+                "GIT_DISALLOWED_TOOLS should contain '{}'",
+                cmd
+            );
+        }
     }
 }
