@@ -70,7 +70,13 @@ or --repo owner/repo --pr 123
 # 4. AI Rally を開始（PR 選択後に自動開始）
 or --ai-rally
 
-# 5. ローカルの変更をリアルタイムで確認
+# 5. ヘッドレスモードで AI Rally を実行（TUI なし、CI/CD 対応）
+or --repo owner/repo --pr 123 --ai-rally
+
+# 6. ローカル diff に対してヘッドレス AI Rally を実行
+or --local --ai-rally
+
+# 7. ローカルの変更をリアルタイムで確認
 or --local
 ```
 
@@ -80,7 +86,7 @@ or --local
 |--------|-------------|
 | `-r, --repo <REPO>` | リポジトリ名（例: "owner/repo"） |
 | `-p, --pr <PR>` | プルリクエスト番号 |
-| `--ai-rally` | AI Rally モードを直接開始 |
+| `--ai-rally` | AI Rally モードを直接開始（`--pr` または `--local` と組み合わせるとヘッドレスモード） |
 | `--working-dir <DIR>` | AI エージェントの作業ディレクトリ（デフォルト: カレントディレクトリ） |
 | `--local` | GitHub 取得をせず、`HEAD` との差分を表示 |
 | `--auto-focus` | ローカルモード時に差分更新があったファイルへ自動フォーカス |
@@ -492,6 +498,45 @@ AI Rally は2つの AI エージェントによる自動 PR レビュー＆修�
        ┌────┴────┐
        │ Approve?│  ... Approve または最大
        └─────────┘      イテレーションまで繰り返し
+```
+
+### ヘッドレスモード（CI/CD）
+
+`--ai-rally` を `--pr` または `--local` と組み合わせると、AI Rally は**ヘッドレスモード**で実行されます — TUI は起動せず、すべての出力は stderr に出力され、CI/CD パイプラインに適した終了コードでプロセスが終了します。
+
+```bash
+# 特定の PR に対してヘッドレスラリーを実行
+or --repo owner/repo --pr 123 --ai-rally
+
+# ローカル diff に対してヘッドレスラリーを実行
+or --local --ai-rally
+
+# カスタム作業ディレクトリを指定
+or --repo owner/repo --pr 123 --ai-rally --working-dir /path/to/repo
+```
+
+**終了コード:**
+
+| コード | 意味 |
+|--------|------|
+| `0` | Reviewer が Approve |
+| `1` | 未承認（Request Changes、エラー、中断） |
+
+**ヘッドレスポリシー**（人間の操作なし）:
+
+| 状況 | 動作 |
+|------|------|
+| 確認が必要（Clarification） | 自動スキップ（エージェントが最善の判断で続行） |
+| 許可が必要（Permission） | 自動拒否（動的なツール拡張を防止） |
+| 投稿確認（Post Confirmation） | 自動承認（レビュー/修正を PR に投稿） |
+| エージェントのテキスト/思考 | 非表示（stdout への JSON 漏洩を防止） |
+
+**CI/CD 例（GitHub Actions）:**
+
+```yaml
+- name: AI Rally Review
+  run: |
+    or --repo ${{ github.repository }} --pr ${{ github.event.pull_request.number }} --ai-rally
 ```
 
 ### 特徴
