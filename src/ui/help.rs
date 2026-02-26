@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
     Frame,
 };
 
@@ -15,7 +15,7 @@ fn fmt_key(key: &str, width: usize) -> String {
     format!("  {:<width$}", key, width = width)
 }
 
-pub fn render(frame: &mut Frame, app: &App) {
+pub fn render(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -39,9 +39,51 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     // Help content with dynamic keybindings
     let help_lines = build_help_lines(kb);
+    let total_lines = help_lines.len();
+    // Content area height (subtract 2 for borders)
+    let content_height = chunks[1].height.saturating_sub(2) as usize;
 
-    let help = Paragraph::new(help_lines).block(Block::default().borders(Borders::ALL));
+    // Clamp scroll offset so we don't scroll past content
+    let max_scroll = total_lines.saturating_sub(content_height);
+    if app.help_scroll_offset > max_scroll {
+        app.help_scroll_offset = max_scroll;
+    }
+
+    let scroll_info = if total_lines > content_height {
+        format!(
+            " ({}/{})",
+            app.help_scroll_offset + 1,
+            max_scroll + 1
+        )
+    } else {
+        String::new()
+    };
+
+    let help = Paragraph::new(help_lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!("Keybindings{}", scroll_info)),
+        )
+        .scroll((app.help_scroll_offset as u16, 0));
     frame.render_widget(help, chunks[1]);
+
+    // Scrollbar
+    if total_lines > content_height {
+        let mut scrollbar_state = ScrollbarState::new(max_scroll + 1)
+            .position(app.help_scroll_offset);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None);
+        frame.render_stateful_widget(
+            scrollbar,
+            chunks[1].inner(ratatui::layout::Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
+            &mut scrollbar_state,
+        );
+    }
 }
 
 fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
@@ -380,7 +422,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         Line::from(""),
         Line::from(vec![Span::styled(
             format!(
-                "Press {} or {} to close this help",
+                "Press {} or {} to close this help | j/k: scroll | J/K: page scroll | Ctrl-d/u: half page | g/G: top/bottom",
                 kb.quit.display(),
                 kb.help.display()
             ),
