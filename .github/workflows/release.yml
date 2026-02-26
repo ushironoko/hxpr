@@ -1,9 +1,20 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g., 0.5.2)"
+        required: true
+        type: string
+      bump_sha:
+        description: "SHA of the version bump commit"
+        required: true
+        type: string
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -15,28 +26,68 @@ env:
 jobs:
   validate:
     runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.bump_sha }}
 
-      - name: Extract version from tag
-        id: version
+      - name: Validate semver format
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          echo "version=${TAG_VERSION}" >> "$GITHUB_OUTPUT"
-
-      - name: Verify version matches Cargo.toml
-        run: |
-          CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
-            echo "::error::Tag version ($TAG_VERSION) does not match Cargo.toml version ($CARGO_VERSION)"
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Invalid semver format: $VERSION"
             exit 1
           fi
 
-  build:
+      - name: Validate bump_sha is HEAD of origin/main
+        env:
+          BUMP_SHA: ${{ inputs.bump_sha }}
+        run: |
+          MAIN_HEAD=$(git ls-remote origin refs/heads/main | awk '{print $1}')
+          if [ "$MAIN_HEAD" != "$BUMP_SHA" ]; then
+            echo "::error::bump_sha ($BUMP_SHA) is not the current HEAD of origin/main ($MAIN_HEAD)"
+            exit 1
+          fi
+
+      - name: Verify version matches Cargo.toml
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          if [ "$CARGO_VERSION" != "$VERSION" ]; then
+            echo "::error::Input version ($VERSION) does not match Cargo.toml version ($CARGO_VERSION)"
+            exit 1
+          fi
+
+      - name: Check tag does not already exist
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if git ls-remote --tags origin "refs/tags/v${VERSION}" | grep -q .; then
+            echo "::error::Tag v${VERSION} already exists"
+            exit 1
+          fi
+
+  test:
     needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.bump_sha }}
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test
+
+  build:
+    needs: [validate, test]
     strategy:
       fail-fast: false
       matrix:
@@ -55,9 +106,11 @@ jobs:
             use_cross: false
     runs-on: ${{ matrix.runner }}
     env:
-      ARCHIVE_NAME: octorus-${{ needs.validate.outputs.version }}-${{ matrix.target }}
+      ARCHIVE_NAME: octorus-${{ inputs.version }}-${{ matrix.target }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.bump_sha }}
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -74,17 +127,22 @@ jobs:
         run: cargo install cross --version 0.2.5
 
       - name: Build release binary
+        env:
+          USE_CROSS: ${{ matrix.use_cross }}
+          TARGET: ${{ matrix.target }}
         run: |
-          if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cross build --release --target ${{ matrix.target }}
+          if [ "$USE_CROSS" = "true" ]; then
+            cross build --release --target "$TARGET"
           else
-            cargo build --release --target ${{ matrix.target }}
+            cargo build --release --target "$TARGET"
           fi
 
       - name: Create archive
+        env:
+          TARGET: ${{ matrix.target }}
         run: |
           mkdir -p "${ARCHIVE_NAME}"
-          cp "target/${{ matrix.target }}/release/${BINARY_NAME}" "${ARCHIVE_NAME}/"
+          cp "target/${TARGET}/release/${BINARY_NAME}" "${ARCHIVE_NAME}/"
           cp README.md "${ARCHIVE_NAME}/"
           tar czf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
           shasum -a 256 "${ARCHIVE_NAME}.tar.gz" > "${ARCHIVE_NAME}.tar.gz.sha256"
@@ -96,12 +154,23 @@ jobs:
           path: |
             ${{ env.ARCHIVE_NAME }}.tar.gz
             ${{ env.ARCHIVE_NAME }}.tar.gz.sha256
+          retention-days: 1
 
   release:
     needs: [validate, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.bump_sha }}
+
+      - name: Create and push tag
+        env:
+          VERSION: ${{ inputs.version }}
+          BUMP_SHA: ${{ inputs.bump_sha }}
+        run: |
+          git tag "v${VERSION}" "$BUMP_SHA"
+          git push origin "v${VERSION}"
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -109,15 +178,76 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Upload assets to GitHub Release
+      - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
         run: |
-          if gh release view "${GITHUB_REF_NAME}" > /dev/null 2>&1; then
-            gh release upload "${GITHUB_REF_NAME}" artifacts/* --clobber
+          gh release create "v${VERSION}" \
+            --title "v${VERSION}" \
+            --generate-notes \
+            artifacts/*
+
+  publish:
+    needs: [validate, release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.bump_sha }}
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p octorus
+
+  rollback:
+    needs: [validate, test, build, release]
+    if: always() && (needs.test.result == 'failure' || needs.build.result == 'failure' || needs.release.result == 'failure')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Check if HEAD is still the bump commit
+        id: check
+        env:
+          BUMP_SHA: ${{ inputs.bump_sha }}
+        run: |
+          HEAD_SHA=$(git rev-parse HEAD)
+          if [ "$HEAD_SHA" != "$BUMP_SHA" ]; then
+            echo "::warning::HEAD ($HEAD_SHA) has moved past bump commit ($BUMP_SHA). Skipping revert."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
           else
-            gh release create "${GITHUB_REF_NAME}" \
-              --title "v${{ needs.validate.outputs.version }}" \
-              --generate-notes \
-              artifacts/*
+            echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Revert bump commit
+        if: steps.check.outputs.skip != 'true'
+        env:
+          BUMP_SHA: ${{ inputs.bump_sha }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git revert --no-edit "$BUMP_SHA"
+          git push origin main
+
+      - name: Delete tag
+        if: always()
+        continue-on-error: true
+        env:
+          VERSION: ${{ inputs.version }}
+        run: git push origin --delete "v${VERSION}"
+
+      - name: Delete GitHub Release
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: gh release delete "v${VERSION}" --yes
