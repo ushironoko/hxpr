@@ -43,8 +43,8 @@ pub fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Re
 }
 
 pub fn render(frame: &mut Frame, app: &mut App) {
-    // PR一覧画面は独自のローディング処理があるためスキップ
-    if app.state != AppState::PullRequestList {
+    // PR一覧画面・ヘルプ画面はデータ状態に依存しないためスキップ
+    if app.state != AppState::PullRequestList && app.state != AppState::Help {
         // Loading状態の場合は専用画面を表示
         if matches!(app.data_state, DataState::Loading) {
             file_list::render_loading(frame, app);

@@ -1940,7 +1940,8 @@ impl App {
         if event::poll(std::time::Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 // PR一覧画面は独自のLoading処理があるためスキップ
-                if self.state != AppState::PullRequestList {
+                // Help画面はデータ状態に依存しないためスキップ
+                if self.state != AppState::PullRequestList && self.state != AppState::Help {
                     // Error状態でのリトライ処理
                     if let DataState::Error(_) = &self.data_state {
                         match key.code {
@@ -7324,5 +7325,30 @@ mod tests {
         // Plain g (no modifiers) should jump to top
         app.apply_help_scroll(make_key(KeyCode::Char('g')), 30);
         assert_eq!(app.help_scroll_offset, 0);
+    }
+
+    #[tokio::test]
+    async fn test_help_from_pr_list_not_blocked_by_loading_guard() {
+        // Regression: PR一覧(DataState::Loading)から?でヘルプを開いた後、
+        // handle_inputのLoadingガードでキー入力がブロックされ戻れなくなるバグ
+        let config = Config::default();
+        let mut app = App::new_pr_list("owner/repo", config);
+        // PR一覧のロードが完了した状態をシミュレート
+        // (pr_list_loading=falseでないとキー入力を受け付けない)
+        app.pr_list_loading = false;
+        app.pr_list = Some(vec![]);
+        // data_stateはPR未選択のためLoadingのまま
+        assert!(matches!(app.data_state, DataState::Loading));
+
+        // ?でヘルプを開く
+        app.handle_pr_list_input(make_key(KeyCode::Char('?')))
+            .await
+            .unwrap();
+        assert_eq!(app.state, AppState::Help);
+        assert_eq!(app.previous_state, AppState::PullRequestList);
+
+        // Help状態ではLoadingガードがスキップされるので、qで戻れる
+        app.apply_help_scroll(make_key(KeyCode::Char('q')), 30);
+        assert_eq!(app.state, AppState::PullRequestList);
     }
 }
