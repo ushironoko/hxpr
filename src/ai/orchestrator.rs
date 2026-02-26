@@ -1319,9 +1319,11 @@ fn extract_bash_command(action: &str) -> Option<&str> {
     Some(inner.strip_suffix(":*").unwrap_or(inner))
 }
 
-/// Split a shell command string by command separators (`&&`, `||`, `;`, `|`).
+/// Split a shell command string by command separators (`&&`, `||`, `;`, `|`, `&`, newline).
 ///
-/// Handles `||` before `|` to avoid incorrect splitting.
+/// Handles two-character separators (`&&`, `||`) before single-character ones
+/// (`&`, `|`) to avoid incorrect splitting. Newlines (`\n`) are also treated as
+/// command separators to prevent bypass via multi-line commands.
 fn split_shell_commands(command: &str) -> Vec<&str> {
     let mut results = Vec::new();
     let mut start = 0;
@@ -1337,7 +1339,7 @@ fn split_shell_commands(command: &str) -> Vec<&str> {
             results.push(&command[start..i]);
             i += 2;
             start = i;
-        } else if bytes[i] == b';' || bytes[i] == b'|' {
+        } else if bytes[i] == b';' || bytes[i] == b'|' || bytes[i] == b'&' || bytes[i] == b'\n' {
             results.push(&command[start..i]);
             i += 1;
             start = i;
@@ -1821,6 +1823,22 @@ mod tests {
         // Multiple separators
         let result = split_shell_commands("git status && git diff; git push");
         assert_eq!(result.len(), 3);
+
+        // & (background) separator
+        let result = split_shell_commands("git status & git push");
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].trim(), "git status");
+        assert_eq!(result[1].trim(), "git push");
+
+        // Newline separator
+        let result = split_shell_commands("git status\ngit push");
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].trim(), "git status");
+        assert_eq!(result[1].trim(), "git push");
+
+        // Multiple newlines
+        let result = split_shell_commands("git status\ngit diff\ngit push");
+        assert_eq!(result.len(), 3);
     }
 
     #[test]
@@ -1900,10 +1918,40 @@ mod tests {
             "Should block git push via pipe"
         );
 
+        // Mixed read + write via & (background)
+        assert!(
+            check_blocked_git_operation("Bash(git status & git push:*)").is_some(),
+            "Should block git push hidden after git status via &"
+        );
+
+        // Mixed read + write via newline
+        assert!(
+            check_blocked_git_operation("Bash(git status\ngit push:*)").is_some(),
+            "Should block git push hidden after git status via newline"
+        );
+
+        // Multiple newlines with write at end
+        assert!(
+            check_blocked_git_operation("Bash(git status\ngit diff\ngit push:*)").is_some(),
+            "Should block git push hidden in multi-line command"
+        );
+
         // Multiple chained safe commands should be allowed
         assert!(
             check_blocked_git_operation("Bash(git status && git diff:*)").is_none(),
             "Should allow chained safe git commands"
+        );
+
+        // Safe commands via & should be allowed
+        assert!(
+            check_blocked_git_operation("Bash(git status & git diff:*)").is_none(),
+            "Should allow chained safe git commands via &"
+        );
+
+        // Safe commands via newline should be allowed
+        assert!(
+            check_blocked_git_operation("Bash(git status\ngit diff:*)").is_none(),
+            "Should allow chained safe git commands via newline"
         );
     }
 
