@@ -32,6 +32,17 @@ jobs:
         with:
           ref: ${{ inputs.bump_sha }}
 
+      - name: Verify all actions are pinned to SHA
+        run: |
+          UNPINNED=$(grep -rn 'uses:' .github/workflows/*.yml \
+            | grep -v '@[0-9a-f]\{40\}' \
+            | grep -v '^\s*#' || true)
+          if [ -n "$UNPINNED" ]; then
+            echo "::error::Found actions not pinned to commit SHA:"
+            echo "$UNPINNED"
+            exit 1
+          fi
+
       - name: Validate semver format
         env:
           VERSION: ${{ inputs.version }}
