@@ -2656,7 +2656,13 @@ mod priming_diff_tests {
  More text"#;
 
         let cache = build_plain_diff_cache(patch, 4);
-        assert_snapshot!("plain_diff_cache_markdown", format_diff_cache_spans(&cache));
+        assert_snapshot!(format_diff_cache_spans(&cache), @r###"
+        L0: "@@ -1,3 +1,4 @@" [fg:Cyan]
+        L1: " " [default] | "# Heading" [default]
+        L2: "+" [fg:Green] | "## New Section" [fg:Green]
+        L3: " " [default] | "Some text" [default]
+        L4: " " [default] | "More text" [default]
+        "###);
     }
 
     #[test]
@@ -2673,7 +2679,13 @@ mod priming_diff_tests {
         let cache = build_diff_cache(patch, "README.md", "base16-ocean.dark", &mut parser_pool, false, 4);
 
         assert!(cache.highlighted);
-        assert_snapshot!("highlighted_diff_cache_markdown", format_diff_cache_spans(&cache));
+        assert_snapshot!(format_diff_cache_spans(&cache), @r###"
+        L0: "@@ -1,3 +1,4 @@" [fg:Cyan]
+        L1: " " [default] | "#" [fg:Gray] | " " [default] | "Heading" [fg:Rgb(143, 161, 179)]
+        L2: "+" [fg:Green] | "##" [fg:Gray] | " " [default] | "New Section" [fg:Rgb(143, 161, 179)]
+        L3: " " [default] | "Some text" [default]
+        L4: " " [default] | "More text" [default]
+        "###);
     }
 
     #[test]
@@ -2697,7 +2709,12 @@ mod priming_diff_tests {
         assert!(!snapshot_rich.is_empty());
 
         // Snapshot the rich mode output for regression detection
-        assert_snapshot!("markdown_rich_mode", snapshot_rich);
+        assert_snapshot!(snapshot_rich, @r#"
+        L0: "@@ -1,2 +1,3 @@" [fg:Cyan]
+        L1: " " [default] | "Title" [fg:Yellow,BOLD]
+        L2: "+" [fg:Green] | "bold text" [fg:LightRed,BOLD]
+        L3: " " [default] | "plain text" [default]
+        "#);
     }
 
     #[test]
@@ -2739,7 +2756,14 @@ mod priming_diff_tests {
         let cache =
             build_diff_cache(patch, "test.md", "base16-ocean.dark", &mut parser_pool, true, 4);
 
-        assert_snapshot!("markdown_table_rich", format_diff_cache_spans(&cache));
+        assert_snapshot!(format_diff_cache_spans(&cache), @r#"
+        L0: "@@ -1,5 +1,5 @@" [fg:Cyan]
+        L1: "+" [fg:Green] | "│ Name │ Value │" [BOLD]
+        L2: "+" [fg:Green] | "├ ─── ┼ ─── ┤" [fg:DarkGray]
+        L3: "+" [fg:Green] | "│ foo │ 123 │" [default]
+        L4: "+" [fg:Green] | "│ bar │ 456 │" [default]
+        L5: " " [default] | "plain text" [default]
+        "#);
     }
 
     #[test]
@@ -2756,7 +2780,13 @@ mod priming_diff_tests {
         let cache =
             build_diff_cache(patch, "test.md", "base16-ocean.dark", &mut parser_pool, true, 4);
 
-        assert_snapshot!("markdown_list_rich", format_diff_cache_spans(&cache));
+        assert_snapshot!(format_diff_cache_spans(&cache), @r#"
+        L0: "@@ -1,4 +1,4 @@" [fg:Cyan]
+        L1: "+" [fg:Green] | "・ " [default] | "item one" [default]
+        L2: "+" [fg:Green] | "・ " [default] | "item two" [default]
+        L3: "+" [fg:Green] | "・ " [default] | "item three" [default]
+        L4: " " [default] | "plain text" [default]
+        "#);
     }
 
     #[test]

@@ -1525,7 +1525,11 @@ const count = ref(0)
             "md",
         );
 
-        assert_snapshot!(format_line_highlights(source, &highlights));
+        assert_snapshot!(format_line_highlights(source, &highlights), @r##"
+        L0: "# Hello World" => "#"[fg:Gray], "Hello World"[fg:Rgb(143, 161, 179)]
+        L1: "" => (none)
+        L2: "Some text here." => (none)
+        "##);
     }
 
     #[test]
@@ -1547,6 +1551,14 @@ const count = ref(0)
             "md",
         );
 
-        assert_snapshot!(format_line_highlights(source, &highlights));
+        assert_snapshot!(format_line_highlights(source, &highlights), @r##"
+        L0: "# Title" => "#"[fg:Gray], "Title"[fg:Rgb(143, 161, 179)]
+        L1: "" => (none)
+        L2: "```rust" => "```rust"[fg:Green], "```"[fg:Gray]
+        L3: "fn main() {" => "fn main() {"[fg:Green], "fn"[fg:Rgb(180, 142, 173)], "main"[fg:Rgb(143, 161, 179)], "("[fg:Gray], ")"[fg:Gray], "{"[fg:Gray]
+        L4: "    println!(\"hello\");" => "    println!(\"hello\");"[fg:Green], "println"[fg:Rgb(143, 161, 179)], "!"[fg:Rgb(143, 161, 179)], "("[fg:Gray], "\"hello\""[fg:Rgb(163, 190, 140)], ")"[fg:Gray], ";"[fg:Gray]
+        L5: "}" => "}"[fg:Green], "}"[fg:Gray]
+        L6: "```" => "```"[fg:Green], "```"[fg:Gray]
+        "##);
     }
 }

@@ -802,7 +802,26 @@ mod tests {
                 error_details: None,
             }),
         };
-        insta::assert_json_snapshot!(build_json_output(&outcome));
+        insta::assert_json_snapshot!(build_json_output(&outcome), @r#"
+        {
+          "result": "approved",
+          "iterations": 2,
+          "summary": "All good, no issues found",
+          "last_review": {
+            "action": "approve",
+            "summary": "All good",
+            "comments": [],
+            "blocking_issues": []
+          },
+          "last_fix": {
+            "status": "completed",
+            "summary": "Fixed",
+            "files_modified": [
+              "src/main.rs"
+            ]
+          }
+        }
+        "#);
     }
 
     #[test]
@@ -830,7 +849,35 @@ mod tests {
                 error_details: None,
             }),
         };
-        insta::assert_json_snapshot!(build_json_output(&outcome));
+        insta::assert_json_snapshot!(build_json_output(&outcome), @r#"
+        {
+          "result": "not_approved",
+          "iterations": 3,
+          "summary": "Max iterations reached",
+          "last_review": {
+            "action": "request_changes",
+            "summary": "Still has issues",
+            "comments": [
+              {
+                "path": "src/lib.rs",
+                "line": 10,
+                "body": "Fix this",
+                "severity": "major"
+              }
+            ],
+            "blocking_issues": [
+              "Error handling"
+            ]
+          },
+          "last_fix": {
+            "status": "completed",
+            "summary": "Attempted fix",
+            "files_modified": [
+              "src/lib.rs"
+            ]
+          }
+        }
+        "#);
     }
 
     #[test]
@@ -846,6 +893,12 @@ mod tests {
         let json = serde_json::to_value(&output).unwrap();
         assert!(!json.as_object().unwrap().contains_key("last_review"));
         assert!(!json.as_object().unwrap().contains_key("last_fix"));
-        insta::assert_json_snapshot!(output);
+        insta::assert_json_snapshot!(output, @r#"
+        {
+          "result": "error",
+          "iterations": 0,
+          "summary": "Agent crashed"
+        }
+        "#);
     }
 }
