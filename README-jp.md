@@ -9,22 +9,33 @@
 
 [English](./README.md)
 
-Vim スタイルのキーバインドで操作する GitHub PR レビュー用 TUI ツール。
+GitHub PRやローカルdiffを、6,000ファイル・300,000行超の規模でもターミナル上で表示・レビューできます。2つのAIエージェントが自動でレビューと修正を繰り返し、approveまで導きます。
 
-## 機能
+## Features
 
-- PR の変更ファイル一覧を閲覧
-- ファイル一覧と diff プレビューの分割表示（Split View）
-- シンタックスハイライト付きで diff を表示（`M` キーで Markdown リッチ表示モード）
-- 特定の行にインラインコメントを追加
-- コードサジェスチョンを追加
-- レビューコメントの一覧表示と該当行へのジャンプ
-- レビュー送信（Approve / Request Changes / Comment）
-- インテリジェントキャッシュによる高速起動
-- **Local Diff Mode**: ローカルの `git diff HEAD` をファイルウォッチャーでリアルタイムプレビュー — PR 不要
-- PR モードと Local モードをその場で切替可能（`L` キー）
-- カスタマイズ可能なキーバインドとエディタ
-- **AI Rally**: AI エージェントによる自動 PR レビュー＆修正サイクル
+### Performance
+- キャッシュによる高速起動・表示
+- 高いメモリ効率と安全性
+- 6,000ファイル以上・300,000行以上のdiffで動作
+
+### AI Rally
+AIエージェントによるPRの自動レビュー＆修正サイクル。reviewerエージェントがdiffを分析しコメントを投稿、revieweeエージェントが問題を修正してコミット——承認されるまでループします。
+
+### Local Diff Mode
+`git diff HEAD` のローカルdiffをfile watcherによりリアルタイムでプレビュー——PRは不要です。`L`キーでPRモードとLocalモードを即座に切り替えられます。
+
+### PR Review
+- ファイルリストとdiffプレビューのsplit view
+- tree-sitterによるsyntax highlighting
+- 特定の行へのinline commentとcode suggestionの追加
+- review commentの表示・ナビゲーションとjump-to-line
+- レビューの送信（Approve / Request Changes / Comment）
+- Vimライクなsymbol search（`gd`）、その場でのファイル表示・編集（`gf`）
+
+### Customization
+- すべてのkeybindingsとeditorを自由に設定可能
+- AI Rallyのprompt templateをカスタマイズ可能
+- 任意のsyntax highlightingテーマを追加可能
 
 ## 必要要件
 
