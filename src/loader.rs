@@ -279,12 +279,88 @@ async fn run_git_name_status(working_dir: Option<&str>) -> Result<String> {
     run_git_command(working_dir, &["diff", "--name-status", "HEAD"]).await
 }
 
+/// Git の C-quoted パス文字列をデコードする。
+///
+/// `core.quotePath` が true（デフォルト）の場合、非 ASCII パスは
+/// `"src/\343\201\202.rs"` のように C-quoted 形式で出力される。
+/// この関数は引用符を除去し、オクタルエスケープを UTF-8 バイト列に変換する。
+///
+/// 引用符で囲まれていないパスはそのまま返す。
+fn unquote_git_path(path: &str) -> String {
+    // C-quoted 形式でなければそのまま返す
+    if !path.starts_with('"') || !path.ends_with('"') {
+        return path.to_string();
+    }
+
+    // 前後の引用符を除去
+    let inner = &path[1..path.len() - 1];
+    let mut bytes: Vec<u8> = Vec::with_capacity(inner.len());
+    let mut chars = inner.chars();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            match chars.next() {
+                Some('\\') => bytes.push(b'\\'),
+                Some('"') => bytes.push(b'"'),
+                Some('n') => bytes.push(b'\n'),
+                Some('t') => bytes.push(b'\t'),
+                Some('a') => bytes.push(0x07), // bell
+                Some('b') => bytes.push(0x08), // backspace
+                Some('r') => bytes.push(b'\r'),
+                Some('f') => bytes.push(0x0C), // form feed
+                Some('v') => bytes.push(0x0B), // vertical tab
+                Some(c) if c.is_ascii_digit() && c != '8' && c != '9' => {
+                    // Octal escape: \ooo (1-3 digits)
+                    let mut octal = String::with_capacity(3);
+                    octal.push(c);
+                    // Peek at next chars for octal digits
+                    for _ in 0..2 {
+                        // We need to peek, but chars doesn't support peek.
+                        // Use a clone trick.
+                        let mut peek = chars.clone();
+                        if let Some(next) = peek.next() {
+                            if next.is_ascii_digit() && next != '8' && next != '9' {
+                                octal.push(next);
+                                chars.next(); // consume
+                            } else {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                    if let Ok(byte) = u8::from_str_radix(&octal, 8) {
+                        bytes.push(byte);
+                    }
+                }
+                Some(c) => {
+                    // Unknown escape, keep as-is
+                    bytes.push(b'\\');
+                    let mut buf = [0u8; 4];
+                    bytes.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+                }
+                None => bytes.push(b'\\'),
+            }
+        } else {
+            let mut buf = [0u8; 4];
+            bytes.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+        }
+    }
+
+    String::from_utf8(bytes).unwrap_or_else(|e| {
+        // Fallback: lossy conversion
+        String::from_utf8_lossy(e.as_bytes()).into_owned()
+    })
+}
+
 /// name-status 出力をパース。rename/copy の3カラム形式にも対応:
 ///   "M\tsrc/foo.rs"           → ("src/foo.rs", "modified")
 ///   "A\tsrc/new.rs"           → ("src/new.rs", "added")
 ///   "D\tsrc/old.rs"           → ("src/old.rs", "removed")
 ///   "R100\told.rs\tnew.rs"    → ("new.rs", "renamed")
 ///   "C100\tsrc.rs\tdst.rs"    → ("dst.rs", "copied")
+///
+/// Git の C-quoted パス（非 ASCII ファイル名）も自動でデコードする。
 fn parse_name_status_output(output: &str) -> Vec<(String, String)> {
     let mut result = Vec::new();
 
@@ -300,7 +376,7 @@ fn parse_name_status_output(output: &str) -> Vec<(String, String)> {
             'R' | 'C' => {
                 // Rename/Copy: 3カラム形式 "R100\told\tnew" or "C100\tsrc\tdst"
                 if parts.len() >= 3 {
-                    let new_name = parts[2].to_string();
+                    let new_name = unquote_git_path(parts[2]);
                     let status = if first_char == 'R' {
                         "renamed"
                     } else {
@@ -310,21 +386,21 @@ fn parse_name_status_output(output: &str) -> Vec<(String, String)> {
                 }
             }
             'M' => {
-                result.push((parts[1].to_string(), "modified".to_string()));
+                result.push((unquote_git_path(parts[1]), "modified".to_string()));
             }
             'A' => {
-                result.push((parts[1].to_string(), "added".to_string()));
+                result.push((unquote_git_path(parts[1]), "added".to_string()));
             }
             'D' => {
-                result.push((parts[1].to_string(), "removed".to_string()));
+                result.push((unquote_git_path(parts[1]), "removed".to_string()));
             }
             'T' => {
                 // Type change
-                result.push((parts[1].to_string(), "modified".to_string()));
+                result.push((unquote_git_path(parts[1]), "modified".to_string()));
             }
             _ => {
                 // Unknown status, treat as modified
-                result.push((parts[1].to_string(), "modified".to_string()));
+                result.push((unquote_git_path(parts[1]), "modified".to_string()));
             }
         }
     }
@@ -390,6 +466,8 @@ async fn current_head_sha(working_dir: Option<&str>) -> Result<String> {
 
 async fn run_git_command(working_dir: Option<&str>, args: &[&str]) -> Result<String> {
     let mut command = Command::new("git");
+    // Disable C-quoting of non-ASCII paths to get raw UTF-8 output
+    command.args(["-c", "core.quotePath=false"]);
     command.args(args);
 
     if let Some(dir) = working_dir {
@@ -424,7 +502,7 @@ fn parse_numstat_output(output: Option<&str>) -> HashMap<String, (u32, u32)> {
         if let (Some(added_raw), Some(deleted_raw), Some(path)) = (added_raw, deleted_raw, path) {
             let parse_count = |value: &str| -> u32 { value.parse().unwrap_or(0) };
             result.insert(
-                path.to_string(),
+                unquote_git_path(path),
                 (parse_count(added_raw), parse_count(deleted_raw)),
             );
         }
@@ -436,7 +514,7 @@ fn parse_numstat_output(output: Option<&str>) -> HashMap<String, (u32, u32)> {
 fn parse_path_list(output: &str) -> Vec<String> {
     output
         .lines()
-        .map(|line| line.trim().to_string())
+        .map(|line| unquote_git_path(line.trim()))
         .filter(|line| !line.is_empty())
         .collect()
 }
@@ -451,6 +529,8 @@ async fn run_git_untracked(working_dir: Option<&str>) -> Result<String> {
 
 async fn run_git_no_index_diff(working_dir: Option<&str>, filename: &str) -> Result<String> {
     let mut command = Command::new("git");
+    // Disable C-quoting of non-ASCII paths to get raw UTF-8 output
+    command.args(["-c", "core.quotePath=false"]);
     command.args([
         "diff",
         "--no-ext-diff",
@@ -921,5 +1001,219 @@ index 1234567..abcdefg 100644
         assert_eq!(files[1].additions, 10);
         assert_eq!(files[1].deletions, 0);
         assert!(files[1].patch.is_none());
+    }
+
+    #[test]
+    fn test_unquote_git_path_plain() {
+        assert_eq!(unquote_git_path("src/foo.rs"), "src/foo.rs");
+    }
+
+    #[test]
+    fn test_unquote_git_path_cquoted_non_ascii() {
+        // \343\201\202 = UTF-8 encoding of 'あ' (U+3042)
+        assert_eq!(
+            unquote_git_path(r#""src/\343\201\202.rs""#),
+            "src/あ.rs"
+        );
+    }
+
+    #[test]
+    fn test_unquote_git_path_cquoted_backslash_and_quote() {
+        assert_eq!(unquote_git_path(r#""path\\to\"file""#), "path\\to\"file");
+    }
+
+    #[test]
+    fn test_unquote_git_path_cquoted_special_escapes() {
+        assert_eq!(unquote_git_path(r#""a\tb\nc""#), "a\tb\nc");
+    }
+
+    #[test]
+    fn test_unquote_git_path_cquoted_multibyte_sequence() {
+        // \346\227\245\346\234\254\350\252\236 = UTF-8 encoding of '日本語'
+        assert_eq!(
+            unquote_git_path(r#""src/\346\227\245\346\234\254\350\252\236.txt""#),
+            "src/日本語.txt"
+        );
+    }
+
+    #[test]
+    fn test_parse_name_status_output_cquoted_paths() {
+        // Git C-quotes non-ASCII filenames by default (core.quotePath=true)
+        // In real git output, the tab-separated line looks like:
+        //   M\t"src/\343\201\202.rs"
+        // We construct this with format! to avoid Rust escape conflicts
+        let output = format!("M\t{}\n", r#""src/\343\201\202.rs""#);
+        let result = parse_name_status_output(&output);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, "src/あ.rs");
+        assert_eq!(result[0].1, "modified");
+    }
+
+    #[test]
+    fn test_parse_numstat_output_cquoted_paths() {
+        let output = format!("3\t1\t{}\n", r#""src/\343\201\202.rs""#);
+        let result = parse_numstat_output(Some(&output));
+
+        assert_eq!(result.len(), 1);
+        assert!(result.contains_key("src/あ.rs"), "numstat should decode quoted paths");
+        assert_eq!(result["src/あ.rs"], (3, 1));
+    }
+
+    #[test]
+    fn test_parse_path_list_cquoted_paths() {
+        let output = format!("{}\nsrc/plain.rs\n", r#""src/\343\201\202.rs""#);
+        let result = parse_path_list(&output);
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], "src/あ.rs");
+        assert_eq!(result[1], "src/plain.rs");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_local_diffs_batched_non_ascii_filename() {
+        let tempdir = tempdir().unwrap();
+        let workdir = tempdir.path();
+
+        run_git(
+            &mut Command::new("git"),
+            workdir,
+            &["init", "-b", "main"],
+            "failed to initialize temp git repo",
+        );
+        write_file(&workdir.join("README.md"), "hello\n");
+        run_git(
+            &mut Command::new("git"),
+            workdir,
+            &["add", "README.md"],
+            "failed to add initial file",
+        );
+        run_git(
+            &mut Command::new("git"),
+            workdir,
+            &["commit", "-m", "initial commit"],
+            "failed to commit initial file",
+        );
+
+        // Create a non-ASCII tracked file, commit, then modify
+        let non_ascii_path = workdir.join("src/日本語.rs");
+        write_file(&non_ascii_path, "fn original() {}\n");
+        run_git(
+            &mut Command::new("git"),
+            workdir,
+            &["add", "src/日本語.rs"],
+            "failed to add non-ASCII file",
+        );
+        run_git(
+            &mut Command::new("git"),
+            workdir,
+            &["commit", "-m", "add non-ASCII file"],
+            "failed to commit non-ASCII file",
+        );
+
+        // Modify the file so it appears in diff
+        write_file(&non_ascii_path, "fn modified() {}\n");
+
+        // First, verify fetch_local_diff returns the decoded filename
+        let (tx, mut rx) = mpsc::channel::<DataLoadResult>(1);
+        fetch_local_diff(
+            "local".to_string(),
+            Some(workdir.to_string_lossy().to_string()),
+            tx,
+        )
+        .await;
+
+        let result = rx.recv().await.unwrap();
+        let files = match result {
+            DataLoadResult::Success { files, .. } => files,
+            DataLoadResult::Error(err) => panic!("unexpected error: {err}"),
+        };
+
+        let non_ascii_file = files
+            .iter()
+            .find(|f| f.filename == "src/日本語.rs")
+            .expect("non-ASCII filename should be decoded from C-quoted format");
+        assert_eq!(non_ascii_file.status, "modified");
+
+        // Now verify batched diff can retrieve the patch using decoded filename
+        let (tx2, mut rx2) = mpsc::channel::<Vec<SingleFileDiffResult>>(2);
+        fetch_local_diffs_batched(
+            Some(workdir.to_string_lossy().to_string()),
+            vec!["src/日本語.rs".to_string()],
+            vec![],
+            20,
+            tx2,
+        )
+        .await;
+
+        let results = rx2.recv().await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].filename, "src/日本語.rs");
+        assert!(
+            results[0].patch.is_some(),
+            "batched diff must retrieve patch for non-ASCII filename"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fetch_single_file_diff_non_ascii_filename() {
+        let tempdir = tempdir().unwrap();
+        let workdir = tempdir.path();
+
+        run_git(
+            &mut Command::new("git"),
+            workdir,
+            &["init", "-b", "main"],
+            "failed to initialize temp git repo",
+        );
+        write_file(&workdir.join("README.md"), "hello\n");
+        run_git(
+            &mut Command::new("git"),
+            workdir,
+            &["add", "README.md"],
+            "failed to add initial file",
+        );
+        run_git(
+            &mut Command::new("git"),
+            workdir,
+            &["commit", "-m", "initial commit"],
+            "failed to commit initial file",
+        );
+
+        // Create and commit a non-ASCII tracked file, then modify
+        let non_ascii_path = workdir.join("src/テスト.rs");
+        write_file(&non_ascii_path, "fn original() {}\n");
+        run_git(
+            &mut Command::new("git"),
+            workdir,
+            &["add", "src/テスト.rs"],
+            "failed to add non-ASCII file",
+        );
+        run_git(
+            &mut Command::new("git"),
+            workdir,
+            &["commit", "-m", "add non-ASCII file"],
+            "failed to commit non-ASCII file",
+        );
+
+        write_file(&non_ascii_path, "fn modified() {}\n");
+
+        let (tx, mut rx) = mpsc::channel::<SingleFileDiffResult>(1);
+        fetch_single_file_diff(
+            Some(workdir.to_string_lossy().to_string()),
+            "src/テスト.rs".to_string(),
+            false,
+            tx,
+        )
+        .await;
+
+        let result = rx.recv().await.unwrap();
+        assert_eq!(result.filename, "src/テスト.rs");
+        assert!(
+            result.patch.is_some(),
+            "single file diff must retrieve patch for non-ASCII filename"
+        );
+        let patch = result.patch.unwrap();
+        assert!(patch.contains("+fn modified()"));
     }
 }
