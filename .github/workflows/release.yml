@@ -200,18 +200,13 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Obtain OIDC token for crates.io
-        uses: actions/github-script@v7
-        id: oidc
-        with:
-          script: |
-            const token = await core.getIDToken('https://crates.io');
-            core.setSecret(token);
-            core.setOutput('token', token);
+      - name: Obtain token via trusted publishing
+        uses: rust-lang/crates-io-auth-action@v1
+        id: auth
 
       - name: Publish to crates.io
         env:
-          CARGO_REGISTRY_TOKEN: ${{ steps.oidc.outputs.token }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: cargo publish -p octorus
 
   rollback:
