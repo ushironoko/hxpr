@@ -324,6 +324,7 @@ fn build_file_list_item<'a>(file: &'a ChangedFile, is_selected: bool) -> ListIte
         "added" => Color::Green,
         "removed" => Color::Red,
         "modified" => Color::Yellow,
+        "copied" => Color::Cyan,
         _ => Color::White,
     };
 
@@ -332,6 +333,7 @@ fn build_file_list_item<'a>(file: &'a ChangedFile, is_selected: bool) -> ListIte
         "removed" => 'D',
         "modified" => 'M',
         "renamed" => 'R',
+        "copied" => 'C',
         _ => '?',
     };
 

@@ -269,6 +269,7 @@ fn build_file_list_items_ref<'a>(
                 "added" => Color::Green,
                 "removed" => Color::Red,
                 "modified" => Color::Yellow,
+                "copied" => Color::Cyan,
                 _ => Color::White,
             };
 
@@ -277,6 +278,7 @@ fn build_file_list_items_ref<'a>(
                 "removed" => 'D',
                 "modified" => 'M',
                 "renamed" => 'R',
+                "copied" => 'C',
                 _ => '?',
             };
 
@@ -518,7 +520,13 @@ fn render_diff_body(
         match file {
             Some(f) => match f.patch.as_ref() {
                 Some(_) => vec![Line::from("Loading diff...")],
-                None => vec![Line::from("No diff available")],
+                None => {
+                    if app.is_lazy_diff_loading() {
+                        vec![Line::from("Loading diff...")]
+                    } else {
+                        vec![Line::from("No diff available")]
+                    }
+                }
             },
             None => vec![Line::from("No file selected")],
         }

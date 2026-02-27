@@ -2056,12 +2056,6 @@ impl App {
                 } else {
                     self.file_list_scroll_offset =
                         self.file_list_scroll_offset.min(self.selected_file);
-                    // Local mode: trigger lazy diff for the selected file even when
-                    // auto-focus didn't move selection, so the user doesn't have to
-                    // wait for the full batch order.
-                    if self.local_mode {
-                        self.request_lazy_diff();
-                    }
                 }
                 self.diff_line_count = Self::calc_diff_line_count(&files, self.selected_file);
                 // ファイル一覧が変わるため、ハイライトキャッシュストアをクリア
@@ -2095,6 +2089,13 @@ impl App {
                 // selected_file が変更された場合、コメント位置キャッシュを再計算
                 if self.selected_file != old_selected {
                     self.update_file_comment_positions();
+                }
+                // Local mode: trigger lazy diff for the selected file even when
+                // auto-focus didn't move selection, so the user doesn't have to
+                // wait for the full batch order. Must be after DataState::Loaded
+                // so that self.files() returns the new file list.
+                if self.local_mode {
+                    self.request_lazy_diff();
                 }
                 // local mode: バッチ diff ロード → 完了後にプリフェッチ開始
                 // PR mode: 即座にプリフェッチ開始
