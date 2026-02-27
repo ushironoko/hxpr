@@ -36,7 +36,8 @@ jobs:
         run: |
           UNPINNED=$(grep -rn 'uses:' .github/workflows/*.yml \
             | grep -v '@[0-9a-f]\{40\}' \
-            | grep -v '^\s*#' || true)
+            | grep -v '^\s*#' \
+            | grep -v "grep -rn 'uses:'" || true)
           if [ -n "$UNPINNED" ]; then
             echo "::error::Found actions not pinned to commit SHA:"
             echo "$UNPINNED"
