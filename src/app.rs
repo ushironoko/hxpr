@@ -468,6 +468,8 @@ pub struct App {
     pub submission_result: Option<(bool, String)>,
     /// Timestamp when result was set (for auto-hide)
     submission_result_time: Option<Instant>,
+    /// Approve action was invoked with empty editor content; waiting for a/q confirmation.
+    pending_empty_approve_confirmation: bool,
     /// Spinner animation frame counter (incremented each tick)
     pub spinner_frame: usize,
     /// インラインコメントパネル内の選択インデックス
@@ -576,6 +578,7 @@ impl App {
             comment_submitting: false,
             submission_result: None,
             submission_result_time: None,
+            pending_empty_approve_confirmation: false,
             spinner_frame: 0,
             selected_inline_comment: 0,
             jump_stack: Vec::new(),
@@ -658,6 +661,7 @@ impl App {
             comment_submitting: false,
             submission_result: None,
             submission_result_time: None,
+            pending_empty_approve_confirmation: false,
             spinner_frame: 0,
             selected_inline_comment: 0,
             jump_stack: Vec::new(),
@@ -1856,6 +1860,11 @@ impl App {
         self.comment_submitting
     }
 
+    /// Empty approve confirmation prompt is active.
+    pub fn is_pending_empty_approve_confirmation(&self) -> bool {
+        self.pending_empty_approve_confirmation
+    }
+
     /// AI Rally イベントのポーリング
     fn poll_rally_events(&mut self) {
         let Some(ref mut rx) = self.rally_event_receiver else {
@@ -2329,12 +2338,28 @@ impl App {
                     }
 
                     // Loading状態ではqのみ受け付け
-                    if matches!(self.data_state, DataState::Loading) {
-                        if key.code == KeyCode::Char('q') {
-                            self.should_quit = true;
-                        }
-                        return Ok(());
+                if matches!(self.data_state, DataState::Loading) {
+                    if key.code == KeyCode::Char('q') {
+                        self.should_quit = true;
                     }
+                    return Ok(());
+                }
+
+                if self.pending_empty_approve_confirmation {
+                    match key.code {
+                        KeyCode::Char('a') => {
+                            self.pending_empty_approve_confirmation = false;
+                            self.submit_review_with_body(ReviewAction::Approve, "").await?;
+                        }
+                        KeyCode::Char('q') => {
+                            self.pending_empty_approve_confirmation = false;
+                            self.submission_result = None;
+                            self.submission_result_time = None;
+                        }
+                        _ => {}
+                    }
+                    return Ok(());
+                }
                 }
 
                 match self.state {
@@ -4184,12 +4209,22 @@ impl App {
         };
 
         let Some(body) = body else {
-            tracing::debug!("submit_review: body is None (cancelled)");
-            self.submission_result = Some((false, "Review cancelled".to_string()));
-            self.submission_result_time = Some(Instant::now());
+            tracing::debug!("submit_review: body is None");
+            if action == ReviewAction::Approve {
+                self.pending_empty_approve_confirmation = true;
+                self.submission_result = None;
+                self.submission_result_time = None;
+            } else {
+                self.submission_result = Some((false, "Review cancelled".to_string()));
+                self.submission_result_time = Some(Instant::now());
+            }
             return Ok(());
         };
 
+        self.submit_review_with_body(action, &body).await
+    }
+
+    async fn submit_review_with_body(&mut self, action: ReviewAction, body: &str) -> Result<()> {
         tracing::debug!(body_len = body.len(), "submit_review: calling GitHub API");
         match github::submit_review(&self.repo, self.pr_number(), action, &body).await {
             Ok(()) => {
@@ -4208,6 +4243,7 @@ impl App {
                 self.submission_result_time = Some(Instant::now());
             }
         }
+        self.pending_empty_approve_confirmation = false;
         Ok(())
     }
 
@@ -6065,6 +6101,7 @@ impl App {
             comment_submitting: false,
             submission_result: None,
             submission_result_time: None,
+            pending_empty_approve_confirmation: false,
             spinner_frame: 0,
             selected_inline_comment: 0,
             jump_stack: Vec::new(),
