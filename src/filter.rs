@@ -3,7 +3,6 @@
 /// PR一覧やファイル一覧でキーワードによる絞り込みを提供する。
 /// `matched_indices` は元リストへのインデックスを保持し、
 /// 既存のナビゲーションロジック（`selected_file`, `selected_pr`）との整合性を維持する。
-
 /// リストフィルタの状態
 pub struct ListFilter {
     /// フィルタ文字列
@@ -16,6 +15,12 @@ pub struct ListFilter {
     pub selected: Option<usize>,
     /// 入力バー表示中か
     pub input_active: bool,
+}
+
+impl Default for ListFilter {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ListFilter {

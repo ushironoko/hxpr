@@ -1354,16 +1354,17 @@ fn highlight_or_fallback(
 
 fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let help_text = if app.multiline_selection.is_some() {
-        "j/k/↑↓: extend selection | Enter/c: comment | s: suggest | Esc: cancel"
+        "j/k/↑↓: extend selection | c: comment | s: suggest | Esc: cancel".to_string()
     } else if app.comment_panel_open {
-        "j/k/↑↓: scroll | n/N: jump | Tab: switch | r: reply | c: comment | s: suggest | ←/h: back | Esc/q: close"
+        "j/k/↑↓: scroll | n/N: jump | Tab: switch | r: reply | c: comment | s: suggest | ←/h: back | Esc/q: close".to_string()
     } else if app.is_local_mode() {
-        "j/k/↑↓: move | M: markdown rich | Ctrl-d/u: page | ←/h/q: back"
+        "j/k/↑↓: move | M: markdown rich | Ctrl-d/u: page | ←/h/q: back".to_string()
     } else {
-        "j/k/↑↓: move | n/N: next/prev comment | Enter: comments | M: markdown rich | Ctrl-d/u: page | Shift+Enter: select range | ←/h/q: back"
+        let ms = app.config.keybindings.multiline_select.display();
+        format!("j/k/↑↓: move | n/N: next/prev comment | Enter: comments | M: markdown rich | Ctrl-d/u: page | {}/Shift+Enter: select range | ←/h/q: back", ms)
     };
 
-    let footer_line = super::footer::build_footer_line(app, help_text);
+    let footer_line = super::footer::build_footer_line(app, &help_text);
     let footer = Paragraph::new(footer_line).block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, area);
 }

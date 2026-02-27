@@ -11,6 +11,9 @@ pub mod text_area;
 
 use anyhow::Result;
 use crossterm::{
+    event::{
+        KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -23,23 +26,51 @@ use ratatui::{
     Frame, Terminal,
 };
 use std::io::{self, Stdout};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::app::{App, AppState, DataState};
+
+static KITTY_ENABLED: AtomicBool = AtomicBool::new(false);
 
 pub fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
+    // Enable Kitty keyboard protocol for Shift+Enter detection.
+    // Must be AFTER EnterAlternateScreen — some terminals reset keyboard
+    // enhancement flags on screen switch.
+    // Only DISAMBIGUATE_ESCAPE_CODES is needed; REPORT_EVENT_TYPES is omitted
+    // to avoid affecting existing key handling.
+    if execute!(
+        stdout,
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    )
+    .is_ok()
+    {
+        KITTY_ENABLED.store(true, Ordering::SeqCst);
+    }
     let backend = CrosstermBackend::new(stdout);
     let terminal = Terminal::new(backend)?;
     Ok(terminal)
 }
 
 pub fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
+    cleanup_keyboard_enhancement();
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
     Ok(())
+}
+
+/// Pop Kitty keyboard enhancement flags if previously pushed.
+/// Uses CAS to prevent double-pop. Safe to call multiple times.
+pub fn cleanup_keyboard_enhancement() {
+    if KITTY_ENABLED
+        .compare_exchange(true, false, Ordering::SeqCst, Ordering::Relaxed)
+        .is_ok()
+    {
+        let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
+    }
 }
 
 pub fn render(frame: &mut Frame, app: &mut App) {
