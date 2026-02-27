@@ -24,7 +24,7 @@ use crate::github::{self, ChangedFile, PrStateFilter, PullRequest, PullRequestSu
 use crate::keybinding::{
     event_to_keybinding, KeyBinding, KeySequence, SequenceMatch, SEQUENCE_TIMEOUT,
 };
-use crate::loader::{CommentSubmitResult, DataLoadResult};
+use crate::loader::{CommentSubmitResult, DataLoadResult, SingleFileDiffResult};
 use crate::syntax::ParserPool;
 use crate::ui;
 use crate::ui::text_area::{TextArea, TextAreaAction};
@@ -338,6 +338,8 @@ pub struct ViewSnapshot {
     pub review_comments: Option<Vec<ReviewComment>>,
     pub discussion_comments: Option<Vec<DiscussionComment>>,
     pub local_file_signatures: HashMap<String, u64>,
+    /// patch 内容を含む完全シグネチャ（バッチ diff 完了後に更新）
+    pub local_file_patch_signatures: HashMap<String, u64>,
 }
 
 /// PRデータの読み込み状態。
@@ -374,8 +376,10 @@ pub struct App {
     local_mode: bool,
     /// `--auto-focus` オプション（ローカル差分時）
     local_auto_focus: bool,
-    /// 直近のローカルファイル署名（差分変更を検出）
+    /// 直近のローカルファイル署名（差分変更を検出、base: patch 除外）
     local_file_signatures: HashMap<String, u64>,
+    /// patch 内容を含む完全シグネチャ（バッチ diff 完了後に更新）
+    local_file_patch_signatures: HashMap<String, u64>,
     /// CLI で指定された元の PR 番号（モード復帰用）
     original_pr_number: Option<u32>,
     /// PR モードのスナップショット
@@ -484,6 +488,12 @@ pub struct App {
     pub pr_list_filter: Option<ListFilter>,
     /// ファイル一覧のキーワードフィルタ
     pub file_list_filter: Option<ListFilter>,
+    /// BG バッチ diff ロード結果の受信チャネル（Phase 2）
+    batch_diff_receiver: Option<mpsc::Receiver<Vec<SingleFileDiffResult>>>,
+    /// 単一ファイル diff のオンデマンド受信チャネル
+    lazy_diff_receiver: Option<mpsc::Receiver<SingleFileDiffResult>>,
+    /// 現在オンデマンドロード要求中のファイル名（重複リクエスト防止）
+    lazy_diff_pending_file: Option<String>,
 }
 
 impl App {
@@ -510,6 +520,7 @@ impl App {
             local_mode: false,
             local_auto_focus: false,
             local_file_signatures: HashMap::new(),
+            local_file_patch_signatures: HashMap::new(),
             original_pr_number: Some(pr_number),
             saved_pr_snapshot: None,
             saved_local_snapshot: None,
@@ -575,6 +586,9 @@ impl App {
             markdown_rich: false,
             pr_list_filter: None,
             file_list_filter: None,
+            batch_diff_receiver: None,
+            lazy_diff_receiver: None,
+            lazy_diff_pending_file: None,
         };
 
         (app, tx)
@@ -653,6 +667,7 @@ impl App {
             local_mode: false,
             local_auto_focus: false,
             local_file_signatures: HashMap::new(),
+            local_file_patch_signatures: HashMap::new(),
             original_pr_number: None,
             saved_pr_snapshot: None,
             saved_local_snapshot: None,
@@ -662,6 +677,9 @@ impl App {
             markdown_rich: false,
             pr_list_filter: None,
             file_list_filter: None,
+            batch_diff_receiver: None,
+            lazy_diff_receiver: None,
+            lazy_diff_pending_file: None,
         }
     }
 
@@ -700,6 +718,8 @@ impl App {
             self.poll_comment_updates();
             self.poll_diff_cache_updates();
             self.poll_prefetch_updates();
+            self.poll_batch_diff_updates();
+            self.poll_lazy_diff_updates();
             self.poll_discussion_comment_updates();
             self.poll_comment_submit_updates();
             self.poll_mark_viewed_updates();
@@ -793,6 +813,10 @@ impl App {
 
         // PR モードの in-flight viewed mutation を破棄
         self.mark_viewed_receiver = None;
+        // Local モードの in-flight バッチ/lazy diff を破棄（クロスPRキャッシュ汚染防止）
+        self.batch_diff_receiver = None;
+        self.lazy_diff_receiver = None;
+        self.lazy_diff_pending_file = None;
 
         if self.local_mode {
             // Local → PR
@@ -975,6 +999,7 @@ impl App {
             review_comments: self.review_comments.take(),
             discussion_comments: self.discussion_comments.take(),
             local_file_signatures: std::mem::take(&mut self.local_file_signatures),
+            local_file_patch_signatures: std::mem::take(&mut self.local_file_patch_signatures),
         }
     }
 
@@ -993,6 +1018,7 @@ impl App {
         self.review_comments = snapshot.review_comments;
         self.discussion_comments = snapshot.discussion_comments;
         self.local_file_signatures = snapshot.local_file_signatures;
+        self.local_file_patch_signatures = snapshot.local_file_patch_signatures;
 
         // stale な in-flight view 系 receiver をクリア
         self.diff_cache_receiver = None;
@@ -1311,11 +1337,20 @@ impl App {
         self.prefetch_receiver = None;
 
         // キャッシュ済みファイルをスキップし、上限まで収集
+        // poll_prefetch_updates() で現在表示中のハイライト済みファイルはストアに格納されないため、
+        // ここでも同じ条件で除外する（除外しないとプリフェッチが永久ループする）
         let files: Vec<_> = self
             .files()
             .iter()
             .enumerate()
-            .filter(|(i, f)| f.patch.is_some() && !self.highlighted_cache_store.contains_key(i))
+            .filter(|(i, f)| {
+                f.patch.is_some()
+                    && !self.highlighted_cache_store.contains_key(i)
+                    && !self
+                        .diff_cache
+                        .as_ref()
+                        .is_some_and(|c| c.file_index == *i && c.highlighted)
+            })
             .take(MAX_PREFETCH_FILES)
             .map(|(i, f)| (i, f.filename.clone(), f.patch.clone().unwrap()))
             .collect();
@@ -1390,10 +1425,237 @@ impl App {
                 Err(mpsc::error::TryRecvError::Empty) => break,
                 Err(mpsc::error::TryRecvError::Disconnected) => {
                     self.prefetch_receiver = None;
+                    // プリフェッチ完了後、まだ未キャッシュのファイルがあれば再起動
+                    // （バッチ進行中に新しい patch が到着した分をカバーする）
+                    self.start_prefetch_all_files();
                     break;
                 }
             }
         }
+    }
+
+    // ========================================
+    // 2段階ロード: バッチ diff / オンデマンド diff
+    // ========================================
+
+    /// Phase 2: データロード後、BG バッチ diff ロードを開始（local mode 専用）
+    fn start_batch_diff_loading(&mut self) {
+        let mut tracked_filenames: Vec<String> = Vec::new();
+        let mut untracked_filenames: Vec<String> = Vec::new();
+
+        for f in self.files() {
+            if f.patch.is_some() {
+                continue;
+            }
+            if f.status == "added" {
+                // added かつ numstat が 0/0 → untracked の可能性が高い
+                // name-status に A として出てくるファイルは tracked（git add 済み）
+                // untracked はリスト順で merge_untracked_files_lazy で追加される
+                // status == "added" && additions == 0 && deletions == 0 → untracked
+                if f.additions == 0 && f.deletions == 0 {
+                    untracked_filenames.push(f.filename.clone());
+                } else {
+                    tracked_filenames.push(f.filename.clone());
+                }
+            } else {
+                tracked_filenames.push(f.filename.clone());
+            }
+        }
+
+        if tracked_filenames.is_empty() && untracked_filenames.is_empty() {
+            // 全ファイルが既に patch を持っている → プリフェッチ開始
+            self.start_prefetch_all_files();
+            return;
+        }
+
+        let total_batches =
+            (tracked_filenames.len() + untracked_filenames.len() + 19) / 20 + 1;
+        let (tx, rx) = mpsc::channel(total_batches);
+        self.batch_diff_receiver = Some(rx);
+
+        let working_dir = self.working_dir.clone();
+        tokio::spawn(async move {
+            crate::loader::fetch_local_diffs_batched(
+                working_dir,
+                tracked_filenames,
+                untracked_filenames,
+                20,
+                tx,
+            )
+            .await;
+        });
+    }
+
+    /// BG バッチ diff の結果をポーリングして files に適用
+    ///
+    /// poll_prefetch_updates() と同様にループで全バッチを一括ドレインする。
+    /// 1 tick に1バッチだと 340バッチ × 100ms = 34秒かかるため、
+    /// 利用可能な全バッチをまとめて処理する。
+    fn poll_batch_diff_updates(&mut self) {
+        let Some(ref mut rx) = self.batch_diff_receiver else {
+            return;
+        };
+
+        let mut current_file_updated = false;
+        let mut any_received = false;
+
+        // インデックスマップをループ外で1回だけ構築
+        let index_map: Option<HashMap<String, usize>> =
+            if let DataState::Loaded { ref files, .. } = self.data_state {
+                Some(
+                    files
+                        .iter()
+                        .enumerate()
+                        .map(|(i, f)| (f.filename.clone(), i))
+                        .collect(),
+                )
+            } else {
+                None
+            };
+
+        loop {
+            match rx.try_recv() {
+                Ok(results) => {
+                    any_received = true;
+
+                    if let DataState::Loaded { ref mut files, .. } = self.data_state {
+                        if let Some(ref index_map) = index_map {
+                            for result in &results {
+                                if let Some(&idx) = index_map.get(&result.filename) {
+                                    if files[idx].patch.is_none() {
+                                        files[idx].patch = result.patch.clone();
+                                        if idx == self.selected_file {
+                                            current_file_updated = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // SessionCache も更新
+                    if let Some(pr_number) = self.pr_number {
+                        let key = PrCacheKey {
+                            repo: self.repo.clone(),
+                            pr_number,
+                        };
+                        for result in &results {
+                            self.session_cache.update_file_patch(
+                                &key,
+                                &result.filename,
+                                result.patch.clone(),
+                            );
+                        }
+                    }
+                }
+                Err(mpsc::error::TryRecvError::Empty) => break,
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    self.batch_diff_receiver = None;
+                    // 全バッチ完了: patch 含むシグネチャを更新し、コンテンツ変更を検出
+                    if self.local_mode {
+                        self.update_patch_signatures_and_auto_focus();
+                    }
+                    break;
+                }
+            }
+        }
+
+        // ループ終了後にまとめて後処理
+        if current_file_updated {
+            self.diff_cache = None;
+            self.diff_cache_receiver = None;
+            self.lazy_diff_receiver = None;
+            self.lazy_diff_pending_file = None;
+            self.update_diff_line_count();
+            self.ensure_diff_cache();
+        }
+
+        if any_received && self.prefetch_receiver.is_none() {
+            self.start_prefetch_all_files();
+        }
+    }
+
+    /// 選択中ファイルの patch が None なら BG で単一 diff を即時取得
+    fn request_lazy_diff(&mut self) {
+        if !self.local_mode {
+            return;
+        }
+        let file = self.files().get(self.selected_file);
+        let Some(file) = file else { return };
+        if file.patch.is_some() {
+            return;
+        }
+
+        let filename = file.filename.clone();
+        if self.lazy_diff_pending_file.as_deref() == Some(&filename) {
+            return;
+        }
+
+        // untracked 判定: status == "added" && additions == 0 && deletions == 0
+        let is_untracked = file.status == "added" && file.additions == 0 && file.deletions == 0;
+
+        let (tx, rx) = mpsc::channel(1);
+        self.lazy_diff_receiver = Some(rx);
+        self.lazy_diff_pending_file = Some(filename.clone());
+
+        let working_dir = self.working_dir.clone();
+        tokio::spawn(async move {
+            crate::loader::fetch_single_file_diff(working_dir, filename, is_untracked, tx).await;
+        });
+    }
+
+    /// lazy diff の結果をポーリングして適用
+    fn poll_lazy_diff_updates(&mut self) {
+        let Some(ref mut rx) = self.lazy_diff_receiver else {
+            return;
+        };
+
+        match rx.try_recv() {
+            Ok(result) => {
+                self.lazy_diff_receiver = None;
+                self.lazy_diff_pending_file = None;
+
+                if let DataState::Loaded { ref mut files, .. } = self.data_state {
+                    if let Some(file) = files.iter_mut().find(|f| f.filename == result.filename) {
+                        // バッチが先に到着済みなら上書きしない（重複適用防止）
+                        if file.patch.is_none() {
+                            file.patch = result.patch.clone();
+                        }
+                    }
+                }
+
+                // SessionCache も更新
+                if let Some(pr_number) = self.pr_number {
+                    let key = PrCacheKey {
+                        repo: self.repo.clone(),
+                        pr_number,
+                    };
+                    self.session_cache
+                        .update_file_patch(&key, &result.filename, result.patch);
+                }
+
+                self.diff_cache = None;
+                self.diff_cache_receiver = None;
+                self.update_diff_line_count();
+                self.ensure_diff_cache();
+            }
+            Err(mpsc::error::TryRecvError::Empty) => {}
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                self.lazy_diff_receiver = None;
+                self.lazy_diff_pending_file = None;
+            }
+        }
+    }
+
+    /// UI 用: lazy diff がロード中かどうか
+    pub fn is_lazy_diff_loading(&self) -> bool {
+        self.lazy_diff_pending_file.is_some()
+            || (self.local_mode
+                && self
+                    .files()
+                    .get(self.selected_file)
+                    .is_some_and(|f| f.patch.is_none())
+                && self.batch_diff_receiver.is_some())
     }
 
     /// Discussion コメント取得のポーリング
@@ -1731,6 +1993,11 @@ impl App {
     }
 
     fn handle_data_result(&mut self, origin_pr: u32, result: DataLoadResult) {
+        // [Critical] watcher refresh 時に古いバッチ/lazy diff 結果が誤適用されるのを防止
+        self.batch_diff_receiver = None;
+        self.lazy_diff_receiver = None;
+        self.lazy_diff_pending_file = None;
+
         match result {
             DataLoadResult::Success { pr, files } => {
                 let changed_file_index = if self.local_mode && self.local_auto_focus {
@@ -1789,6 +2056,12 @@ impl App {
                 } else {
                     self.file_list_scroll_offset =
                         self.file_list_scroll_offset.min(self.selected_file);
+                    // Local mode: trigger lazy diff for the selected file even when
+                    // auto-focus didn't move selection, so the user doesn't have to
+                    // wait for the full batch order.
+                    if self.local_mode {
+                        self.request_lazy_diff();
+                    }
                 }
                 self.diff_line_count = Self::calc_diff_line_count(&files, self.selected_file);
                 // ファイル一覧が変わるため、ハイライトキャッシュストアをクリア
@@ -1823,8 +2096,13 @@ impl App {
                 if self.selected_file != old_selected {
                     self.update_file_comment_positions();
                 }
-                // 全ファイルのハイライトキャッシュを事前構築
-                self.start_prefetch_all_files();
+                // local mode: バッチ diff ロード → 完了後にプリフェッチ開始
+                // PR mode: 即座にプリフェッチ開始
+                if self.local_mode {
+                    self.start_batch_diff_loading();
+                } else {
+                    self.start_prefetch_all_files();
+                }
                 if should_start_rally {
                     self.start_ai_rally_on_load = false; // Clear the flag
                     self.start_ai_rally();
@@ -1854,7 +2132,17 @@ impl App {
         }
     }
 
+    /// base シグネチャ（patch 除外）: Phase 1 での構造変更検出用
     fn local_file_signature(file: &ChangedFile) -> u64 {
+        let signature = format!(
+            "{}|{}|{}|{}",
+            file.filename, file.status, file.additions, file.deletions
+        );
+        hash_string(&signature)
+    }
+
+    /// full シグネチャ（patch 含む）: Phase 2 でのコンテンツ変更検出用
+    fn local_file_full_signature(file: &ChangedFile) -> u64 {
         let patch = file.patch.as_deref().unwrap_or_default();
         let signature = format!(
             "{}|{}|{}|{}|{}",
@@ -1925,6 +2213,65 @@ impl App {
         for file in files {
             self.local_file_signatures
                 .insert(file.filename.clone(), Self::local_file_signature(file));
+        }
+    }
+
+    /// バッチ diff 完了後に patch 含む完全シグネチャを更新し、
+    /// コンテンツ変更を検出した場合はオートフォーカスする
+    fn update_patch_signatures_and_auto_focus(&mut self) {
+        let files = match &self.data_state {
+            DataState::Loaded { files, .. } => files,
+            _ => return,
+        };
+
+        // 初回バッチ完了時（前回の patch シグネチャが空）はシグネチャ保存のみ
+        let is_first_batch = self.local_file_patch_signatures.is_empty();
+
+        let mut changed_index: Option<usize> = None;
+        if !is_first_batch && self.local_auto_focus {
+            for (idx, file) in files.iter().enumerate() {
+                // patch がロードされたファイルのみ比較
+                if file.patch.is_none() {
+                    continue;
+                }
+                let new_sig = Self::local_file_full_signature(file);
+                match self.local_file_patch_signatures.get(&file.filename) {
+                    Some(old_sig) if *old_sig == new_sig => {}
+                    Some(_) => {
+                        // 内容が変わったファイルを発見
+                        changed_index = Some(idx);
+                        break;
+                    }
+                    None => {}
+                }
+            }
+        }
+
+        // patch シグネチャを更新
+        self.local_file_patch_signatures.clear();
+        for file in files {
+            if file.patch.is_some() {
+                self.local_file_patch_signatures
+                    .insert(file.filename.clone(), Self::local_file_full_signature(file));
+            }
+        }
+
+        // 変更検出時にオートフォーカス
+        if let Some(idx) = changed_index {
+            if idx != self.selected_file {
+                self.selected_file = idx;
+                self.file_list_scroll_offset = self.file_list_scroll_offset.min(idx);
+                self.diff_cache = None;
+                self.diff_cache_receiver = None;
+                self.selected_line = 0;
+                self.scroll_offset = 0;
+                self.comment_panel_open = false;
+                self.comment_panel_scroll = 0;
+                if matches!(self.state, AppState::FileList | AppState::SplitViewFileList) {
+                    self.state = AppState::SplitViewDiff;
+                }
+                self.sync_diff_to_selected_file();
+            }
         }
     }
 
@@ -3874,6 +4221,7 @@ impl App {
             self.load_review_comments();
         }
         self.update_file_comment_positions();
+        self.request_lazy_diff();
         self.ensure_diff_cache();
     }
 
@@ -5562,6 +5910,9 @@ impl App {
         self.diff_cache_receiver = None;
         self.prefetch_receiver = None;
         self.mark_viewed_receiver = None;
+        self.batch_diff_receiver = None;
+        self.lazy_diff_receiver = None;
+        self.lazy_diff_pending_file = None;
         self.highlighted_cache_store.clear();
         self.diff_cache = None;
         self.selected_file = 0;
@@ -5625,6 +5976,9 @@ impl App {
             self.discussion_comment_receiver = None;
             self.comment_submit_receiver = None;
             self.mark_viewed_receiver = None;
+            self.batch_diff_receiver = None;
+            self.lazy_diff_receiver = None;
+            self.lazy_diff_pending_file = None;
             self.comment_submitting = false;
             self.comments_loading = false;
             self.discussion_comments_loading = false;
@@ -5715,6 +6069,7 @@ impl App {
             local_mode: false,
             local_auto_focus: false,
             local_file_signatures: HashMap::new(),
+            local_file_patch_signatures: HashMap::new(),
             original_pr_number: None,
             saved_pr_snapshot: None,
             saved_local_snapshot: None,
@@ -5723,6 +6078,9 @@ impl App {
             markdown_rich: false,
             pr_list_filter: None,
             file_list_filter: None,
+            batch_diff_receiver: None,
+            lazy_diff_receiver: None,
+            lazy_diff_pending_file: None,
         }
     }
 
@@ -6611,20 +6969,20 @@ mod tests {
         app.set_local_auto_focus(true);
         app.selected_file = 1;
 
-        let make_file = |name: &str, patch: &str| ChangedFile {
+        let make_file = |name: &str, additions: u32| ChangedFile {
             filename: name.to_string(),
             status: "modified".to_string(),
-            additions: 1,
+            additions,
             deletions: 1,
-            patch: Some(patch.to_string()),
+            patch: Some("@@ -1,1 +1,1 @@\n-old\n+new".to_string()),
             viewed: false,
         };
 
         let initial_files = vec![
-            make_file("file_a.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),
-            make_file("file_b.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),
-            make_file("file_c.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),
-            make_file("file_d.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),
+            make_file("file_a.rs", 1),
+            make_file("file_b.rs", 1),
+            make_file("file_c.rs", 1),
+            make_file("file_d.rs", 1),
         ];
 
         let pr = Box::new(PullRequest {
@@ -6658,10 +7016,10 @@ mod tests {
             DataLoadResult::Success {
                 pr,
                 files: vec![
-                    make_file("file_a.rs", "@@ -1,1 +1,1 @@\n-old\n+new2"),
-                    make_file("file_b.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),
-                    make_file("file_c.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),
-                    make_file("file_d.rs", "@@ -1,1 +1,1 @@\n-old\n+new2"),
+                    make_file("file_a.rs", 2), // changed (additions: 1→2)
+                    make_file("file_b.rs", 1), // unchanged
+                    make_file("file_c.rs", 1), // unchanged
+                    make_file("file_d.rs", 2), // changed (additions: 1→2)
                 ],
             },
         );
@@ -6680,21 +7038,21 @@ mod tests {
         app.set_local_auto_focus(true);
         app.selected_file = 3;
 
-        let make_file = |name: &str, patch: &str| ChangedFile {
+        let make_file = |name: &str, additions: u32| ChangedFile {
             filename: name.to_string(),
             status: "modified".to_string(),
-            additions: 1,
+            additions,
             deletions: 1,
-            patch: Some(patch.to_string()),
+            patch: Some("@@ -1,1 +1,1 @@\n-old\n+new".to_string()),
             viewed: false,
         };
 
         let initial_files = vec![
-            make_file("file_a.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),
-            make_file("file_b.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),
-            make_file("file_c.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),
-            make_file("file_d.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),
-            make_file("file_e.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),
+            make_file("file_a.rs", 1),
+            make_file("file_b.rs", 1),
+            make_file("file_c.rs", 1),
+            make_file("file_d.rs", 1),
+            make_file("file_e.rs", 1),
         ];
 
         let pr = Box::new(PullRequest {
@@ -6728,11 +7086,11 @@ mod tests {
             DataLoadResult::Success {
                 pr,
                 files: vec![
-                    make_file("file_a.rs", "@@ -1,1 +1,1 @@\n-old\n+new2"), // changed before
-                    make_file("file_b.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),  // unchanged
-                    make_file("file_c.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),  // unchanged
-                    make_file("file_d.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),  // unchanged
-                    make_file("file_e.rs", "@@ -1,1 +1,1 @@\n-old\n+new2"), // changed after
+                    make_file("file_a.rs", 2), // changed before (additions: 1→2)
+                    make_file("file_b.rs", 1), // unchanged
+                    make_file("file_c.rs", 1), // unchanged
+                    make_file("file_d.rs", 1), // unchanged
+                    make_file("file_e.rs", 2), // changed after (additions: 1→2)
                 ],
             },
         );
@@ -6751,21 +7109,21 @@ mod tests {
         app.set_local_auto_focus(true);
         app.selected_file = 2;
 
-        let make_file = |name: &str, patch: &str| ChangedFile {
+        let make_file = |name: &str, additions: u32| ChangedFile {
             filename: name.to_string(),
             status: "modified".to_string(),
-            additions: 1,
+            additions,
             deletions: 1,
-            patch: Some(patch.to_string()),
+            patch: Some("@@ -1,1 +1,1 @@\n-old\n+new".to_string()),
             viewed: false,
         };
 
         let initial_files = vec![
-            make_file("file_a.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),
-            make_file("file_b.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),
-            make_file("file_c.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),
-            make_file("file_d.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),
-            make_file("file_e.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),
+            make_file("file_a.rs", 1),
+            make_file("file_b.rs", 1),
+            make_file("file_c.rs", 1),
+            make_file("file_d.rs", 1),
+            make_file("file_e.rs", 1),
         ];
 
         let pr = Box::new(PullRequest {
@@ -6799,11 +7157,11 @@ mod tests {
             DataLoadResult::Success {
                 pr,
                 files: vec![
-                    make_file("file_a.rs", "@@ -1,1 +1,1 @@\n-old\n+new"), // unchanged (index 0)
-                    make_file("file_b.rs", "@@ -1,1 +1,1 @@\n-old\n+new2"), // changed (index 1)
-                    make_file("file_c.rs", "@@ -1,1 +1,1 @@\n-old\n+new"), // unchanged (index 2)
-                    make_file("file_d.rs", "@@ -1,1 +1,1 @@\n-old\n+new2"), // changed (index 3)
-                    make_file("file_e.rs", "@@ -1,1 +1,1 @@\n-old\n+new"), // unchanged (index 4)
+                    make_file("file_a.rs", 1), // unchanged (index 0)
+                    make_file("file_b.rs", 2), // changed (index 1, additions: 1→2)
+                    make_file("file_c.rs", 1), // unchanged (index 2)
+                    make_file("file_d.rs", 2), // changed (index 3, additions: 1→2)
+                    make_file("file_e.rs", 1), // unchanged (index 4)
                 ],
             },
         );
@@ -7785,5 +8143,91 @@ mod tests {
         // Help状態ではLoadingガードがスキップされるので、qで戻れる
         app.apply_help_scroll(make_key(KeyCode::Char('q')), 30);
         assert_eq!(app.state, AppState::PullRequestList);
+    }
+
+    #[tokio::test]
+    async fn test_patch_signature_detects_same_numstat_different_patch() {
+        let config = Config::default();
+        let (mut app, _tx) = App::new_loading("owner/repo", 1, config);
+        app.set_local_mode(true);
+        app.set_local_auto_focus(true);
+        app.selected_file = 0;
+
+        let make_file = |name: &str, patch: &str| ChangedFile {
+            filename: name.to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 1,
+            patch: Some(patch.to_string()),
+            viewed: false,
+        };
+
+        // 初回: files をセットして patch シグネチャを記録
+        let initial_files = vec![
+            make_file("file_a.rs", "@@ -1,1 +1,1 @@\n-old\n+new"),
+            make_file("file_b.rs", "@@ -1,1 +1,1 @@\n-foo\n+bar"),
+        ];
+        app.data_state = DataState::Loaded {
+            pr: Box::new(PullRequest {
+                number: 1,
+                node_id: None,
+                title: "Test PR".to_string(),
+                body: None,
+                state: "open".to_string(),
+                head: crate::github::Branch {
+                    ref_name: "feature".to_string(),
+                    sha: "abc123".to_string(),
+                },
+                base: crate::github::Branch {
+                    ref_name: "main".to_string(),
+                    sha: "def456".to_string(),
+                },
+                user: crate::github::User {
+                    login: "user".to_string(),
+                },
+                updated_at: "2024-01-01T00:00:00Z".to_string(),
+            }),
+            files: initial_files,
+        };
+
+        // 初回バッチ完了: patch シグネチャを保存（オートフォーカスはスキップ）
+        app.update_patch_signatures_and_auto_focus();
+        assert_eq!(app.local_file_patch_signatures.len(), 2);
+        assert_eq!(app.selected_file, 0, "first batch should not auto-focus");
+
+        // ファイル内容が変わったが numstat は同じ（same additions=1, deletions=1）
+        let updated_files = vec![
+            make_file("file_a.rs", "@@ -1,1 +1,1 @@\n-old\n+new"), // unchanged
+            make_file("file_b.rs", "@@ -1,1 +1,1 @@\n-foo\n+baz"), // content changed!
+        ];
+        app.data_state = DataState::Loaded {
+            pr: Box::new(PullRequest {
+                number: 1,
+                node_id: None,
+                title: "Test PR".to_string(),
+                body: None,
+                state: "open".to_string(),
+                head: crate::github::Branch {
+                    ref_name: "feature".to_string(),
+                    sha: "abc123".to_string(),
+                },
+                base: crate::github::Branch {
+                    ref_name: "main".to_string(),
+                    sha: "def456".to_string(),
+                },
+                user: crate::github::User {
+                    login: "user".to_string(),
+                },
+                updated_at: "2024-01-01T00:00:00Z".to_string(),
+            }),
+            files: updated_files,
+        };
+
+        // 2回目バッチ完了: file_b.rs の patch が変わった → オートフォーカス
+        app.update_patch_signatures_and_auto_focus();
+        assert_eq!(
+            app.selected_file, 1,
+            "should auto-focus to file_b.rs whose patch content changed (same numstat)"
+        );
     }
 }

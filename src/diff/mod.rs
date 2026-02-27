@@ -243,6 +243,7 @@ pub fn parse_unified_diff(unified_diff: &str) -> HashMap<String, String> {
 
     let mut current_filename: Option<String> = None;
     let mut current_patch_start: Option<usize> = None;
+    let mut pending_minus_filename: Option<String> = None;
 
     for (i, line) in lines.iter().enumerate() {
         if line.starts_with("diff --git ") {
@@ -257,6 +258,23 @@ pub fn parse_unified_diff(unified_diff: &str) -> HashMap<String, String> {
             // Extract filename for new file
             current_filename = extract_filename(line);
             current_patch_start = Some(i);
+            pending_minus_filename = None;
+        } else if current_filename.is_none() && current_patch_start.is_some() {
+            // diff --git line was ambiguous; fall back to +++ / --- lines.
+            // Prefer +++ (new filename) over --- (old filename).
+            // --- is only used as fallback for deleted files where +++ is /dev/null.
+            if let Some(rest) = line.strip_prefix("+++ ") {
+                if rest != "/dev/null" {
+                    current_filename = strip_diff_prefix(rest);
+                } else if let Some(ref pending) = pending_minus_filename {
+                    current_filename = Some(pending.clone());
+                    pending_minus_filename = None;
+                }
+            } else if let Some(rest) = line.strip_prefix("--- ") {
+                if rest != "/dev/null" {
+                    pending_minus_filename = strip_diff_prefix(rest);
+                }
+            }
         }
     }
 
@@ -271,30 +289,95 @@ pub fn parse_unified_diff(unified_diff: &str) -> HashMap<String, String> {
     result
 }
 
+/// Strip the single-char diff prefix (a/, b/, w/, etc.) from a --- or +++ path.
+fn strip_diff_prefix(path: &str) -> Option<String> {
+    if path.len() >= 2 && path.as_bytes()[1] == b'/' {
+        Some(path[2..].to_string())
+    } else {
+        Some(path.to_string())
+    }
+}
+
 /// Extract filename from a "diff --git" line
 ///
 /// Handles various formats:
-/// - `diff --git a/src/foo.rs b/src/foo.rs` -> `src/foo.rs`
+/// - `diff --git a/src/foo.rs b/src/foo.rs` -> `src/foo.rs` (standard prefix)
+/// - `diff --git c/src/foo.rs w/src/foo.rs` -> `src/foo.rs` (mnemonicPrefix)
 /// - `diff --git a/file with spaces.rs b/file with spaces.rs` -> `file with spaces.rs`
 ///
-/// For renamed files, returns the new filename (from `b/` path).
+/// For renamed files, returns the new filename (from the second path).
+/// This matches the GitHub API convention where `ChangedFile.filename` is the new name.
+///
+/// Supports arbitrary single-char prefixes (`a/`, `b/`, `c/`, `w/`, `i/`, `o/`)
+/// to handle `diff.mnemonicPrefix = true` in git config.
+///
+/// Returns `None` for ambiguous cases (e.g. paths with spaces + subdirs that create
+/// false separator matches). Callers should fall back to `+++ `/ `--- ` lines.
 fn extract_filename(git_diff_line: &str) -> Option<String> {
-    // Format: "diff --git a/{path} b/{path}"
-    // We need to find "a/" and "b/" markers and extract the path between them
+    // Format: "diff --git {x}/{path} {y}/{path}"
+    // where x,y are single-char prefixes (a/b for standard, c/w/i/o for mnemonic)
+    //
+    // We extract the second path (new filename) to match GitHub API behavior
+    // and parse_name_status_output() convention.
 
     let content = git_diff_line.strip_prefix("diff --git ")?;
 
-    // Find "a/" at the start and " b/" separator
-    let a_path = content.strip_prefix("a/")?;
-
-    // Find " b/" which separates the two paths
-    // Handle case where filename might contain " b/" by finding the last occurrence
-    if let Some(b_pos) = a_path.rfind(" b/") {
-        let filename = &a_path[..b_pos];
-        return Some(filename.to_string());
+    // Verify format: must start with a single char + '/'
+    if content.len() < 2 || content.as_bytes()[1] != b'/' {
+        warn!("Failed to parse git diff line: {}", git_diff_line);
+        return None;
     }
 
-    warn!("Failed to parse git diff line: {}", git_diff_line);
+    let first_prefix = content.as_bytes()[0];
+    let first_path = &content[2..]; // skip "X/"
+
+    // Strategy 1: Assume non-rename (path1 == path2).
+    // Format after X/: "path1 Y/path2" where path1 == path2
+    // Total length = 2*path_len + 3 (space + Y + /)
+    let total_len = first_path.len();
+    if total_len >= 3 && (total_len - 3) % 2 == 0 {
+        let path_len = (total_len - 3) / 2;
+        if path_len > 0 {
+            let bytes = first_path.as_bytes();
+            let sep = path_len;
+            if bytes[sep] == b' ' && bytes[sep + 2] == b'/' {
+                let path1 = &first_path[..path_len];
+                let path2 = &first_path[sep + 3..];
+                if path1 == path2 {
+                    return Some(path2.to_string());
+                }
+            }
+        }
+    }
+
+    // Strategy 2: For renames, use the expected second prefix character to reduce
+    // false positives. Known prefix pairs: a→b, c→w, i→w, o→w.
+    let second_prefix = match first_prefix {
+        b'a' => b'b',
+        b'c' | b'i' | b'o' => b'w',
+        _ => {
+            warn!("Failed to parse git diff line (unknown prefix): {}", git_diff_line);
+            return None;
+        }
+    };
+
+    let bytes = first_path.as_bytes();
+    let mut matches: Vec<usize> = Vec::new();
+    for i in 0..bytes.len().saturating_sub(2) {
+        if bytes[i] == b' ' && bytes[i + 1] == second_prefix && bytes[i + 2] == b'/' {
+            matches.push(i);
+        }
+    }
+
+    // Only return if there's exactly one match (unambiguous)
+    if matches.len() == 1 {
+        let path2 = &first_path[matches[0] + 3..];
+        if !path2.is_empty() {
+            return Some(path2.to_string());
+        }
+    }
+
+    // Ambiguous or no match — caller should use +++ line fallback
     None
 }
 
@@ -499,11 +582,30 @@ Binary files /dev/null and b/image.png differ
 
     #[test]
     fn test_extract_filename_renamed() {
-        // For renamed files, we use the "a/" path (old name) because
-        // GitHub API returns the old filename in its response
+        // For renamed files, we use the "b/" path (new name) to match
+        // GitHub API's ChangedFile.filename and parse_name_status_output()
         assert_eq!(
             extract_filename("diff --git a/src/old_name.rs b/src/new_name.rs"),
-            Some("src/old_name.rs".to_string())
+            Some("src/new_name.rs".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_filename_mnemonic_prefix() {
+        // diff.mnemonicPrefix = true: c/ (committed) と w/ (working tree)
+        assert_eq!(
+            extract_filename("diff --git c/src/foo.rs w/src/foo.rs"),
+            Some("src/foo.rs".to_string())
+        );
+        // i/ (index) と w/ (working tree)
+        assert_eq!(
+            extract_filename("diff --git i/src/bar.rs w/src/bar.rs"),
+            Some("src/bar.rs".to_string())
+        );
+        // mnemonic prefix での rename
+        assert_eq!(
+            extract_filename("diff --git c/src/old.rs w/src/new.rs"),
+            Some("src/new.rs".to_string())
         );
     }
 
@@ -514,9 +616,66 @@ Binary files /dev/null and b/image.png differ
     }
 
     #[test]
-    fn test_extract_filename_no_b_separator() {
-        // " b/" が存在しない場合 → warn! パスを通って None
+    fn test_extract_filename_no_separator() {
+        // 2つ目のパスが見つからない場合 → None
         assert_eq!(extract_filename("diff --git a/file nob"), None);
+    }
+
+    #[test]
+    fn test_extract_filename_spaces_with_subdir() {
+        // Regression: paths with spaces + directory boundaries must not
+        // be truncated by false separator matches inside the path.
+        assert_eq!(
+            extract_filename("diff --git a/my Folder/src/file.rs b/my Folder/src/file.rs"),
+            Some("my Folder/src/file.rs".to_string())
+        );
+        // Space + single-char dir name that looks like a prefix
+        assert_eq!(
+            extract_filename("diff --git a/a b/c d/file.rs b/a b/c d/file.rs"),
+            Some("a b/c d/file.rs".to_string())
+        );
+        // Deeply nested path with spaces
+        assert_eq!(
+            extract_filename(
+                "diff --git a/docs/my project/sub b/notes.md b/docs/my project/sub b/notes.md"
+            ),
+            Some("docs/my project/sub b/notes.md".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_filename_ambiguous_falls_back_to_none() {
+        // Rename where both old and new paths contain " b/" — truly ambiguous
+        // from the diff --git line alone; extract_filename should return None
+        // and let parse_unified_diff fall back to +++ line.
+        assert_eq!(
+            extract_filename("diff --git a/x b/old.rs b/x b/new.rs"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_parse_unified_diff_plusplus_fallback() {
+        // When extract_filename cannot determine the filename (ambiguous paths),
+        // parse_unified_diff should fall back to the +++ line.
+        let diff = "\
+diff --git a/x b/old.rs b/x b/new.rs
+index 1234567..abcdefg 100644
+--- a/x b/old.rs
++++ b/x b/new.rs
+@@ -1,3 +1,3 @@
+ line1
+-old
++new";
+        let result = parse_unified_diff(diff);
+        assert!(result.contains_key("x b/new.rs"), "expected key 'x b/new.rs', got: {:?}", result.keys().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_strip_diff_prefix() {
+        assert_eq!(strip_diff_prefix("b/src/file.rs"), Some("src/file.rs".to_string()));
+        assert_eq!(strip_diff_prefix("w/file.rs"), Some("file.rs".to_string()));
+        assert_eq!(strip_diff_prefix("file.rs"), Some("file.rs".to_string()));
     }
 
     #[test]
@@ -598,9 +757,9 @@ Binary files /dev/null and b/image.png differ
     #[test]
     fn test_parse_renamed_file() {
         let result = parse_unified_diff(UNIFIED_DIFF_RENAMED);
-        // Uses old filename (from a/ path) for matching with GitHub API
+        // Uses new filename (from b/ path) for matching with GitHub API and local diff
         assert_snapshot!(format_parsed_diff(&result), @r#"
-        [src/old_name.rs]
+        [src/new_name.rs]
         diff --git a/src/old_name.rs b/src/new_name.rs
         similarity index 95%
         rename from src/old_name.rs
