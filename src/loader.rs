@@ -18,6 +18,12 @@ pub enum DataLoadResult {
     Error(String),
 }
 
+/// 単一ファイルの diff 結果（バッチ/オンデマンド共通）
+pub struct SingleFileDiffResult {
+    pub filename: String,
+    pub patch: Option<String>,
+}
+
 /// コメント送信結果
 pub enum CommentSubmitResult {
     /// 送信成功
@@ -51,7 +57,10 @@ pub async fn fetch_pr_data(
     }
 }
 
-/// ローカル `git diff` から PR データを再構築して読み込み
+/// ローカル `git diff` から PR データを再構築して読み込み（2段階ロード版）
+///
+/// Phase 1: name-status + numstat のみ → ファイル一覧（patch: None）を即座に送信
+/// Phase 2: バッチ diff ロードは app.rs 側で start_batch_diff_loading() 経由で行う
 pub async fn fetch_local_diff(
     _repo: String,
     working_dir: Option<String>,
@@ -59,30 +68,27 @@ pub async fn fetch_local_diff(
 ) {
     let current_workdir = working_dir.as_deref();
 
-    let diff_output = match run_git_diff(current_workdir).await {
+    // 1. name-status（ファイル名 + ステータス）— 高速
+    let name_status_output = match run_git_name_status(current_workdir).await {
         Ok(output) => output,
         Err(e) => {
             let _ = tx.send(DataLoadResult::Error(e.to_string())).await;
             return;
         }
     };
+    let file_statuses = parse_name_status_output(&name_status_output);
 
+    // 2. numstat（additions/deletions）— 高速
     let numstat_output = run_git_numstat(current_workdir).await.ok();
     let file_changes = parse_numstat_output(numstat_output.as_deref());
 
-    let mut patches = diff::parse_unified_diff(&diff_output);
-    let mut files = build_changed_files(&mut patches, &file_changes);
+    // 3. ChangedFile を patch: None で構築
+    let mut files = build_changed_files_lazy(&file_statuses, &file_changes);
 
-    if files.is_empty() || files.len() < file_changes.len() {
-        merge_missing_local_changes(current_workdir, &file_changes, &mut files).await;
-    }
+    // 4. untracked ファイルもリストのみ取得（patch: None）
+    merge_untracked_files_lazy(current_workdir, &mut files).await;
 
-    if files.is_empty() {
-        merge_name_only_files(current_workdir, &mut files).await;
-    }
-
-    merge_untracked_files(current_workdir, &mut files).await;
-
+    // 5. PR情報を構築して即座に送信
     let pr = PullRequest {
         number: 0,
         node_id: None,
@@ -113,87 +119,82 @@ pub async fn fetch_local_diff(
         .await;
 }
 
-async fn merge_missing_local_changes(
-    working_dir: Option<&str>,
-    file_changes: &HashMap<String, (u32, u32)>,
-    files: &mut Vec<ChangedFile>,
+/// バッチ diff ロード: ファイルリスト順にバッチで diff を取得し、チャネルに送信
+pub async fn fetch_local_diffs_batched(
+    working_dir: Option<String>,
+    filenames: Vec<String>,
+    untracked_filenames: Vec<String>,
+    batch_size: usize,
+    tx: mpsc::Sender<Vec<SingleFileDiffResult>>,
 ) {
-    for (filename, (additions, deletions)) in file_changes {
-        if files.iter().any(|f| f.filename == *filename) {
-            continue;
-        }
+    let wd = working_dir.as_deref();
 
-        let patch = run_git_diff_file(working_dir, filename)
-            .await
-            .unwrap_or_default();
-        files.push(ChangedFile {
-            filename: filename.clone(),
-            status: status_from_patch(&patch)
-                .unwrap_or_else(|| infer_status(*additions, *deletions)),
-            additions: *additions,
-            deletions: *deletions,
-            patch: if patch.is_empty() { None } else { Some(patch) },
-            viewed: false,
-        });
+    // tracked ファイルをバッチで処理
+    for batch in filenames.chunks(batch_size) {
+        let mut args = vec!["diff", "HEAD", "--"];
+        let batch_strs: Vec<&str> = batch.iter().map(|s| s.as_str()).collect();
+        args.extend(&batch_strs);
+
+        let output = run_git_command(wd, &args).await;
+        let mut patches = match output {
+            Ok(diff_output) => diff::parse_unified_diff(&diff_output),
+            Err(_) => HashMap::new(),
+        };
+
+        let results: Vec<SingleFileDiffResult> = batch
+            .iter()
+            .map(|filename| SingleFileDiffResult {
+                filename: filename.clone(),
+                patch: patches.remove(filename),
+            })
+            .collect();
+
+        if tx.send(results).await.is_err() {
+            return;
+        }
     }
 
-    files.sort_unstable_by(|a, b| a.filename.cmp(&b.filename));
+    // untracked ファイルは per-file で git diff --no-index（バッチ不可）
+    for batch in untracked_filenames.chunks(batch_size) {
+        let mut results = Vec::with_capacity(batch.len());
+        for filename in batch {
+            let patch = run_git_no_index_diff(wd, filename).await.ok();
+            let patch = patch.filter(|p| !p.is_empty());
+            results.push(SingleFileDiffResult {
+                filename: filename.clone(),
+                patch,
+            });
+        }
+        if tx.send(results).await.is_err() {
+            return;
+        }
+    }
 }
 
-async fn merge_name_only_files(working_dir: Option<&str>, files: &mut Vec<ChangedFile>) {
-    let name_only_output = match run_git_name_only(working_dir).await {
-        Ok(output) => output,
-        Err(_) => return,
-    };
-    let names = parse_path_list(&name_only_output);
+/// 単一ファイルの diff をオンデマンド取得（tracked + untracked 自動判別）
+pub async fn fetch_single_file_diff(
+    working_dir: Option<String>,
+    filename: String,
+    is_untracked: bool,
+    tx: mpsc::Sender<SingleFileDiffResult>,
+) {
+    let wd = working_dir.as_deref();
 
-    for filename in names {
-        if files.iter().any(|f| f.filename == filename) {
-            continue;
-        }
-
-        let patch = run_git_diff_file(working_dir, &filename)
+    let patch = if is_untracked {
+        run_git_no_index_diff(wd, &filename)
             .await
-            .unwrap_or_default();
-        files.push(ChangedFile {
-            filename: filename.clone(),
-            status: status_from_patch(&patch).unwrap_or_else(|| "modified".to_string()),
-            additions: 0,
-            deletions: 0,
-            patch: if patch.is_empty() { None } else { Some(patch) },
-            viewed: false,
-        });
-    }
-
-    files.sort_unstable_by(|a, b| a.filename.cmp(&b.filename));
-}
-
-async fn merge_untracked_files(working_dir: Option<&str>, files: &mut Vec<ChangedFile>) {
-    let untracked_output = match run_git_untracked(working_dir).await {
-        Ok(output) => output,
-        Err(_) => return,
-    };
-    let names = parse_path_list(&untracked_output);
-
-    for filename in names {
-        if files.iter().any(|f| f.filename == filename) {
-            continue;
-        }
-
-        let patch = run_git_no_index_diff(working_dir, &filename)
+            .ok()
+            .filter(|p| !p.is_empty())
+    } else {
+        run_git_diff_file(wd, &filename)
             .await
-            .unwrap_or_default();
-        files.push(ChangedFile {
-            filename: filename.clone(),
-            status: "added".to_string(),
-            additions: 0,
-            deletions: 0,
-            patch: if patch.is_empty() { None } else { Some(patch) },
-            viewed: false,
-        });
-    }
+            .ok()
+            .filter(|p| !p.is_empty())
+    };
 
-    files.sort_unstable_by(|a, b| a.filename.cmp(&b.filename));
+    let _ = tx
+        .send(SingleFileDiffResult { filename, patch })
+        .await;
 }
 
 async fn fetch_and_send(repo: &str, pr_number: u32, tx: mpsc::Sender<DataLoadResult>) {
@@ -270,16 +271,115 @@ async fn check_for_updates(
     }
 }
 
-async fn run_git_diff(working_dir: Option<&str>) -> Result<String> {
-    run_git_command(working_dir, &["diff", "HEAD"]).await
-}
-
 async fn run_git_numstat(working_dir: Option<&str>) -> Result<String> {
     run_git_command(working_dir, &["diff", "--numstat", "HEAD"]).await
 }
 
-async fn run_git_name_only(working_dir: Option<&str>) -> Result<String> {
-    run_git_command(working_dir, &["diff", "--name-only", "HEAD"]).await
+async fn run_git_name_status(working_dir: Option<&str>) -> Result<String> {
+    run_git_command(working_dir, &["diff", "--name-status", "HEAD"]).await
+}
+
+/// name-status 出力をパース。rename/copy の3カラム形式にも対応:
+///   "M\tsrc/foo.rs"           → ("src/foo.rs", "modified")
+///   "A\tsrc/new.rs"           → ("src/new.rs", "added")
+///   "D\tsrc/old.rs"           → ("src/old.rs", "removed")
+///   "R100\told.rs\tnew.rs"    → ("new.rs", "renamed")
+///   "C100\tsrc.rs\tdst.rs"    → ("dst.rs", "copied")
+fn parse_name_status_output(output: &str) -> Vec<(String, String)> {
+    let mut result = Vec::new();
+
+    for line in output.lines() {
+        let parts: Vec<&str> = line.split('\t').collect();
+        if parts.len() < 2 {
+            continue;
+        }
+        let status_code = parts[0];
+        let first_char = status_code.chars().next().unwrap_or(' ');
+
+        match first_char {
+            'R' | 'C' => {
+                // Rename/Copy: 3カラム形式 "R100\told\tnew" or "C100\tsrc\tdst"
+                if parts.len() >= 3 {
+                    let new_name = parts[2].to_string();
+                    let status = if first_char == 'R' {
+                        "renamed"
+                    } else {
+                        "copied"
+                    };
+                    result.push((new_name, status.to_string()));
+                }
+            }
+            'M' => {
+                result.push((parts[1].to_string(), "modified".to_string()));
+            }
+            'A' => {
+                result.push((parts[1].to_string(), "added".to_string()));
+            }
+            'D' => {
+                result.push((parts[1].to_string(), "removed".to_string()));
+            }
+            'T' => {
+                // Type change
+                result.push((parts[1].to_string(), "modified".to_string()));
+            }
+            _ => {
+                // Unknown status, treat as modified
+                result.push((parts[1].to_string(), "modified".to_string()));
+            }
+        }
+    }
+
+    result
+}
+
+/// name-status + numstat から ChangedFile（patch: None）を構築
+fn build_changed_files_lazy(
+    name_status: &[(String, String)],
+    numstat: &HashMap<String, (u32, u32)>,
+) -> Vec<ChangedFile> {
+    let mut files: Vec<ChangedFile> = name_status
+        .iter()
+        .map(|(filename, status)| {
+            let (additions, deletions) = numstat.get(filename).copied().unwrap_or((0, 0));
+            ChangedFile {
+                filename: filename.clone(),
+                status: status.clone(),
+                additions,
+                deletions,
+                patch: None,
+                viewed: false,
+            }
+        })
+        .collect();
+
+    files.sort_unstable_by(|a, b| a.filename.cmp(&b.filename));
+    files
+}
+
+/// untracked ファイルをリストのみ取得（patch: None）
+async fn merge_untracked_files_lazy(working_dir: Option<&str>, files: &mut Vec<ChangedFile>) {
+    let untracked_output = match run_git_untracked(working_dir).await {
+        Ok(output) => output,
+        Err(_) => return,
+    };
+    let names = parse_path_list(&untracked_output);
+
+    for filename in names {
+        if files.iter().any(|f| f.filename == filename) {
+            continue;
+        }
+
+        files.push(ChangedFile {
+            filename,
+            status: "added".to_string(),
+            additions: 0,
+            deletions: 0,
+            patch: None,
+            viewed: false,
+        });
+    }
+
+    files.sort_unstable_by(|a, b| a.filename.cmp(&b.filename));
 }
 
 async fn current_head_sha(working_dir: Option<&str>) -> Result<String> {
@@ -339,53 +439,6 @@ fn parse_path_list(output: &str) -> Vec<String> {
         .map(|line| line.trim().to_string())
         .filter(|line| !line.is_empty())
         .collect()
-}
-
-fn infer_status(additions: u32, deletions: u32) -> String {
-    match (additions, deletions) {
-        (0, _) => "removed".to_string(),
-        (_, 0) => "added".to_string(),
-        _ => "modified".to_string(),
-    }
-}
-
-fn status_from_patch(patch: &str) -> Option<String> {
-    if patch.contains("new file mode") {
-        Some("added".to_string())
-    } else if patch.contains("deleted file mode") {
-        Some("removed".to_string())
-    } else if patch.contains("rename from") || patch.contains("rename to") {
-        Some("renamed".to_string())
-    } else {
-        Some("modified".to_string())
-    }
-}
-
-fn build_changed_files(
-    patches: &mut HashMap<String, String>,
-    numstat: &HashMap<String, (u32, u32)>,
-) -> Vec<ChangedFile> {
-    let mut filenames: Vec<_> = patches.keys().cloned().collect();
-    filenames.sort_unstable();
-
-    let mut files = Vec::with_capacity(filenames.len());
-
-    for filename in filenames {
-        if let Some(patch) = patches.remove(&filename) {
-            let (additions, deletions) = numstat.get(&filename).copied().unwrap_or((0, 0));
-            let status = status_from_patch(&patch).unwrap_or_else(|| "modified".to_string());
-            files.push(ChangedFile {
-                filename,
-                status,
-                additions,
-                deletions,
-                patch: Some(patch),
-                viewed: false,
-            });
-        }
-    }
-
-    files
 }
 
 async fn run_git_diff_file(working_dir: Option<&str>, filename: &str) -> Result<String> {
@@ -563,7 +616,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_fetch_local_diff_for_untracked_file_returns_full_patch() {
+    async fn test_fetch_local_diff_for_untracked_file_returns_lazy() {
         let tempdir = tempdir().unwrap();
         let workdir = tempdir.path();
 
@@ -611,11 +664,262 @@ mod tests {
             .find(|file| file.filename == "src/new_feature.rs")
             .expect("untracked file should appear in local diff");
 
-        let patch = new_file
-            .patch
-            .as_deref()
-            .expect("untracked file should have a patch");
-        assert!(patch.contains("new file mode"));
+        // 2段階ロードでは patch は None（バッチロードで後から取得）
+        assert!(new_file.patch.is_none());
+        assert_eq!(new_file.status, "added");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_single_file_diff_for_tracked_file() {
+        let tempdir = tempdir().unwrap();
+        let workdir = tempdir.path();
+
+        run_git(
+            &mut Command::new("git"),
+            workdir,
+            &["init", "-b", "main"],
+            "failed to initialize temp git repo",
+        );
+        write_file(&workdir.join("src/main.rs"), "fn main() {}\n");
+        run_git(
+            &mut Command::new("git"),
+            workdir,
+            &["add", "src/main.rs"],
+            "failed to add initial file",
+        );
+        run_git(
+            &mut Command::new("git"),
+            workdir,
+            &["commit", "-m", "initial commit"],
+            "failed to create initial commit",
+        );
+
+        write_file(
+            &workdir.join("src/main.rs"),
+            "fn main() { println!(\"hello\"); }\n",
+        );
+
+        let (tx, mut rx) = mpsc::channel::<SingleFileDiffResult>(1);
+        fetch_single_file_diff(
+            Some(workdir.to_string_lossy().to_string()),
+            "src/main.rs".to_string(),
+            false,
+            tx,
+        )
+        .await;
+
+        let result = rx.recv().await.unwrap();
+        assert_eq!(result.filename, "src/main.rs");
+        let patch = result.patch.expect("tracked file should have a patch");
+        assert!(patch.contains("+fn main() { println!(\"hello\"); }"));
+    }
+
+    #[tokio::test]
+    async fn test_fetch_single_file_diff_for_untracked_file() {
+        let tempdir = tempdir().unwrap();
+        let workdir = tempdir.path();
+
+        run_git(
+            &mut Command::new("git"),
+            workdir,
+            &["init", "-b", "main"],
+            "failed to initialize temp git repo",
+        );
+        write_file(&workdir.join("README.md"), "hello\n");
+        run_git(
+            &mut Command::new("git"),
+            workdir,
+            &["add", "README.md"],
+            "failed to add initial file",
+        );
+        run_git(
+            &mut Command::new("git"),
+            workdir,
+            &["commit", "-m", "initial commit"],
+            "failed to create initial commit",
+        );
+
+        write_file(
+            &workdir.join("src/new_feature.rs"),
+            "pub fn hello() {\n    1 + 1\n}\n",
+        );
+
+        let (tx, mut rx) = mpsc::channel::<SingleFileDiffResult>(1);
+        fetch_single_file_diff(
+            Some(workdir.to_string_lossy().to_string()),
+            "src/new_feature.rs".to_string(),
+            true,
+            tx,
+        )
+        .await;
+
+        let result = rx.recv().await.unwrap();
+        assert_eq!(result.filename, "src/new_feature.rs");
+        let patch = result.patch.expect("untracked file should have a patch");
         assert!(patch.contains("+pub fn hello()"));
+    }
+
+    #[test]
+    fn test_parse_name_status_output() {
+        let output = "M\tsrc/foo.rs\nA\tsrc/new.rs\nD\tsrc/old.rs\nR100\told.rs\tnew.rs\nC100\tsrc.rs\tdst.rs\n";
+        let result = parse_name_status_output(output);
+
+        assert_eq!(result.len(), 5);
+        assert_eq!(result[0], ("src/foo.rs".to_string(), "modified".to_string()));
+        assert_eq!(result[1], ("src/new.rs".to_string(), "added".to_string()));
+        assert_eq!(result[2], ("src/old.rs".to_string(), "removed".to_string()));
+        assert_eq!(result[3], ("new.rs".to_string(), "renamed".to_string()));
+        assert_eq!(result[4], ("dst.rs".to_string(), "copied".to_string()));
+    }
+
+    #[test]
+    fn test_parse_name_status_output_empty() {
+        let result = parse_name_status_output("");
+        assert!(result.is_empty());
+    }
+
+    /// parse_unified_diff のキーと parse_name_status_output のファイル名が
+    /// rename ファイルでも一致することを検証する。
+    /// これが失敗すると fetch_local_diffs_batched の patches.remove(filename) が
+    /// None を返し、rename ファイルの diff が取得できなくなる。
+    #[test]
+    fn test_parse_unified_diff_filename_matches_name_status_for_rename() {
+        let name_status_output = "R100\tsrc/old_name.rs\tsrc/new_name.rs\n";
+        let name_status = parse_name_status_output(name_status_output);
+        assert_eq!(name_status[0].0, "src/new_name.rs");
+
+        let unified_diff = "\
+diff --git a/src/old_name.rs b/src/new_name.rs
+similarity index 95%
+rename from src/old_name.rs
+rename to src/new_name.rs
+index 1234567..abcdefg 100644
+--- a/src/old_name.rs
++++ b/src/new_name.rs
+@@ -1,3 +1,3 @@
+-fn old_name() {
++fn new_name() {
+ }";
+        let mut patches = diff::parse_unified_diff(unified_diff);
+
+        // name_status のファイル名で patch を取得できること
+        let patch = patches.remove(&name_status[0].0);
+        assert!(
+            patch.is_some(),
+            "parse_unified_diff key must match parse_name_status_output filename for renamed files"
+        );
+    }
+
+    /// parse_unified_diff のキーと parse_name_status_output のファイル名が
+    /// 通常の変更ファイルで一致することを検証する。
+    #[test]
+    fn test_parse_unified_diff_filename_matches_name_status_for_modified() {
+        let name_status_output = "M\tsrc/main.rs\n";
+        let name_status = parse_name_status_output(name_status_output);
+        assert_eq!(name_status[0].0, "src/main.rs");
+
+        let unified_diff = "\
+diff --git a/src/main.rs b/src/main.rs
+index 1234567..abcdefg 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,3 +1,4 @@
+ fn main() {
++    println!(\"Hello\");
+ }";
+        let mut patches = diff::parse_unified_diff(unified_diff);
+
+        let patch = patches.remove(&name_status[0].0);
+        assert!(
+            patch.is_some(),
+            "parse_unified_diff key must match parse_name_status_output filename for modified files"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fetch_local_diffs_batched_handles_renamed_file() {
+        let tempdir = tempdir().unwrap();
+        let workdir = tempdir.path();
+
+        run_git(
+            &mut Command::new("git"),
+            workdir,
+            &["init", "-b", "main"],
+            "failed to initialize temp git repo",
+        );
+        write_file(&workdir.join("src/old_name.rs"), "fn old_name() {}\n");
+        run_git(
+            &mut Command::new("git"),
+            workdir,
+            &["add", "src/old_name.rs"],
+            "failed to add initial file",
+        );
+        run_git(
+            &mut Command::new("git"),
+            workdir,
+            &["commit", "-m", "initial commit"],
+            "failed to create initial commit",
+        );
+
+        // git mv でリネーム + 内容変更
+        run_git(
+            &mut Command::new("git"),
+            workdir,
+            &["mv", "src/old_name.rs", "src/new_name.rs"],
+            "failed to rename file",
+        );
+        write_file(&workdir.join("src/new_name.rs"), "fn new_name() {}\n");
+        run_git(
+            &mut Command::new("git"),
+            workdir,
+            &["add", "src/new_name.rs"],
+            "failed to stage renamed file",
+        );
+
+        // バッチ diff で新ファイル名を使って patch が取得できることを検証
+        let (tx, mut rx) = mpsc::channel::<Vec<SingleFileDiffResult>>(2);
+        fetch_local_diffs_batched(
+            Some(workdir.to_string_lossy().to_string()),
+            vec!["src/new_name.rs".to_string()],
+            vec![],
+            20,
+            tx,
+        )
+        .await;
+
+        let results = rx.recv().await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].filename, "src/new_name.rs");
+        assert!(
+            results[0].patch.is_some(),
+            "renamed file must have a patch when queried with new filename"
+        );
+    }
+
+    #[test]
+    fn test_build_changed_files_lazy() {
+        let name_status = vec![
+            ("src/foo.rs".to_string(), "modified".to_string()),
+            ("src/new.rs".to_string(), "added".to_string()),
+        ];
+        let mut numstat = HashMap::new();
+        numstat.insert("src/foo.rs".to_string(), (3u32, 1u32));
+        numstat.insert("src/new.rs".to_string(), (10u32, 0u32));
+
+        let files = build_changed_files_lazy(&name_status, &numstat);
+
+        assert_eq!(files.len(), 2);
+        // ソートされるので foo が先
+        assert_eq!(files[0].filename, "src/foo.rs");
+        assert_eq!(files[0].status, "modified");
+        assert_eq!(files[0].additions, 3);
+        assert_eq!(files[0].deletions, 1);
+        assert!(files[0].patch.is_none());
+
+        assert_eq!(files[1].filename, "src/new.rs");
+        assert_eq!(files[1].status, "added");
+        assert_eq!(files[1].additions, 10);
+        assert_eq!(files[1].deletions, 0);
+        assert!(files[1].patch.is_none());
     }
 }
