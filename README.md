@@ -9,7 +9,7 @@
 
 [日本語](./README-jp.md)
 
-A TUI tool for GitHub PR review. Handles diffs with 6,000+ files and 300,000+ lines. Two AI agents automatically review and iterate on corrections until approval.
+View and review GitHub PR diffs and local diffs exceeding 6,000 files and 300,000 lines — right in your terminal. Two AI agents automatically review and iterate on corrections until approval.
 
 ## Features
 
