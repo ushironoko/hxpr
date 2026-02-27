@@ -34,20 +34,21 @@ static KITTY_ENABLED: AtomicBool = AtomicBool::new(false);
 
 pub fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
     enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen)?;
     // Enable Kitty keyboard protocol for Shift+Enter detection.
-    // Non-supporting terminals safely ignore the CSI sequence.
+    // Must be AFTER EnterAlternateScreen — some terminals reset keyboard
+    // enhancement flags on screen switch.
     // Only DISAMBIGUATE_ESCAPE_CODES is needed; REPORT_EVENT_TYPES is omitted
     // to avoid affecting existing key handling.
     if execute!(
-        io::stdout(),
+        stdout,
         PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
     )
     .is_ok()
     {
         KITTY_ENABLED.store(true, Ordering::SeqCst);
     }
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let terminal = Terminal::new(backend)?;
     Ok(terminal)

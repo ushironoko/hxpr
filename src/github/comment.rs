@@ -100,6 +100,10 @@ pub async fn create_review_comment(
 ///
 /// GitHub API の `line`/`start_line`/`side`/`start_side` パラメータを使用。
 /// `start_line` < `line` であること。単一行の場合は `create_review_comment` を使用。
+///
+/// NOTE: `subject_type` は送信しない。GitHub API の oneOf スキーマで
+/// positioning パラメータと競合し 422 を返すため。`line`/`side` が存在すれば
+/// API は自動的に line-level コメントとして扱う。
 #[allow(clippy::too_many_arguments)]
 pub async fn create_multiline_review_comment(
     repo: &str,
@@ -124,7 +128,6 @@ pub async fn create_multiline_review_comment(
             ("line", FieldValue::Raw(&end_line_str)),
             ("start_side", FieldValue::String(side)),
             ("side", FieldValue::String(side)),
-            ("subject_type", FieldValue::String("line")),
         ],
     )
     .await?;
