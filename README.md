@@ -9,13 +9,12 @@
 
 [日本語](./README-jp.md)
 
-You can view and review local diffs exceeding 6,000 files and 300,000 lines in the terminal for GitHub PRs. Two AI agents will automatically review and iterate on corrections until approval.
+A TUI tool for GitHub PR review. Handles diffs with 6,000+ files and 300,000+ lines. Two AI agents automatically review and iterate on corrections until approval.
 
 ## Features
 
 ### Performance
 - Fast startup with intelligent caching
-- Achieves high memory efficiency and safety by eliminating inconsistent states at the implementation level.
 - Tested with 6,000+ files and 300,000+ lines
 
 ### AI Rally
