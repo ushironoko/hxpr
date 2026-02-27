@@ -2992,8 +2992,9 @@ impl App {
                 return Ok(());
             }
 
-            // Enter / c: 選択範囲でコメント入力を開始
-            if key.code == KeyCode::Enter || self.matches_single_key(&key, &kb.comment) {
+            // c: 選択範囲でコメント入力を開始
+            // Enter は使わない — c/s で明示的にコメント/サジェスチョンを選択させる
+            if self.matches_single_key(&key, &kb.comment) {
                 self.enter_multiline_comment_input();
                 return Ok(());
             }

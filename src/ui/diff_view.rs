@@ -1354,7 +1354,7 @@ fn highlight_or_fallback(
 
 fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let help_text = if app.multiline_selection.is_some() {
-        "j/k/↑↓: extend selection | Enter/c: comment | s: suggest | Esc: cancel".to_string()
+        "j/k/↑↓: extend selection | c: comment | s: suggest | Esc: cancel".to_string()
     } else if app.comment_panel_open {
         "j/k/↑↓: scroll | n/N: jump | Tab: switch | r: reply | c: comment | s: suggest | ←/h: back | Esc/q: close".to_string()
     } else if app.is_local_mode() {

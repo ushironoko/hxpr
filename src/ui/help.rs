@@ -336,7 +336,7 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )),
         Line::from(format!(
             "{}  Comment on selection",
-            fmt_key("Enter/c", key_width)
+            fmt_key(&kb.comment.display(), key_width)
         )),
         Line::from(format!(
             "{}  Suggest on selection",
