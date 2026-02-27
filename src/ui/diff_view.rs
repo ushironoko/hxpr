@@ -1162,7 +1162,13 @@ pub(crate) fn render_diff_content(frame: &mut Frame, app: &App, area: ratatui::l
                     &app.file_comment_lines,
                     app.config.diff.tab_width,
                 ),
-                None => vec![Line::from("No diff available")],
+                None => {
+                    if app.is_lazy_diff_loading() {
+                        vec![Line::from("Loading diff...")]
+                    } else {
+                        vec![Line::from("No diff available")]
+                    }
+                }
             },
             None => vec![Line::from("No file selected")],
         }

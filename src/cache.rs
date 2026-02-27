@@ -186,6 +186,15 @@ impl SessionCache {
         self.discussion_comments.remove(key);
     }
 
+    /// 特定ファイルの patch を更新（lazy diff ロード結果の反映用）
+    pub fn update_file_patch(&mut self, key: &PrCacheKey, filename: &str, patch: Option<String>) {
+        if let Some(pr_data) = self.pr_data.get_mut(key) {
+            if let Some(file) = pr_data.files.iter_mut().find(|f| f.filename == filename) {
+                file.patch = patch;
+            }
+        }
+    }
+
     pub fn invalidate_all(&mut self) {
         self.pr_data.clear();
         self.access_order.clear();
