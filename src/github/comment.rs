@@ -100,6 +100,7 @@ pub async fn create_review_comment(
 ///
 /// GitHub API の `line`/`start_line`/`side`/`start_side` パラメータを使用。
 /// `start_line` < `line` であること。単一行の場合は `create_review_comment` を使用。
+#[allow(clippy::too_many_arguments)]
 pub async fn create_multiline_review_comment(
     repo: &str,
     pr_number: u32,

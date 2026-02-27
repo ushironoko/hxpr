@@ -320,7 +320,10 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
         )),
         Line::from(format!(
             "{}  Multiline select mode",
-            fmt_key("Shift+Enter", key_width)
+            fmt_key(
+                &format!("{}/Shift+Enter", kb.multiline_select.display()),
+                key_width,
+            )
         )),
         Line::from(vec![Span::styled(
             "  Multiline Select Mode:",

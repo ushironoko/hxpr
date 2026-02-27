@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use lasso::{Rodeo, Spur};
 use ratatui::{backend::CrosstermBackend, style::Style, Terminal};
 use smallvec::SmallVec;
@@ -1469,7 +1469,7 @@ impl App {
         }
 
         let total_batches =
-            (tracked_filenames.len() + untracked_filenames.len() + 19) / 20 + 1;
+            (tracked_filenames.len() + untracked_filenames.len()).div_ceil(20) + 1;
         let (tx, rx) = mpsc::channel(total_batches);
         self.batch_diff_receiver = Some(rx);
 
@@ -2309,6 +2309,12 @@ impl App {
     ) -> Result<()> {
         if event::poll(std::time::Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
+                // Kitty keyboard protocol が有効な場合、Release/Repeat イベントも
+                // 報告されるため、Press のみ処理して二重実行を防止する。
+                if key.kind != KeyEventKind::Press {
+                    return Ok(());
+                }
+
                 // PR一覧画面は独自のLoading処理があるためスキップ
                 // Help画面はデータ状態に依存しないためスキップ
                 if self.state != AppState::PullRequestList && self.state != AppState::Help {
@@ -2398,10 +2404,8 @@ impl App {
         }
 
         // Esc: フィルタ適用中なら解除
-        if key.code == KeyCode::Esc {
-            if self.handle_filter_esc("file") {
-                return Ok(());
-            }
+        if key.code == KeyCode::Esc && self.handle_filter_esc("file") {
+            return Ok(());
         }
 
         // Move down (j or Down arrow - arrows always work)
@@ -3249,8 +3253,10 @@ impl App {
 
         // Common single-key bindings
 
-        // Shift+Enter: 複数行選択モードに入る
-        if key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::SHIFT) {
+        // Shift+Enter or fallback key (V): 複数行選択モードに入る
+        if (key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::SHIFT))
+            || self.matches_single_key(&key, &kb.multiline_select)
+        {
             self.enter_multiline_selection();
             return Ok(());
         }
@@ -5433,7 +5439,7 @@ impl App {
                     "file" => self.file_list_filter = None,
                     _ => {}
                 }
-                return true;
+                true
             }
             KeyCode::Enter => {
                 // 入力を確定（フィルタ適用維持、入力バーを閉じる）
@@ -5454,7 +5460,7 @@ impl App {
                         f.input_active = false;
                     }
                 }
-                return true;
+                true
             }
             KeyCode::Backspace => {
                 let filter = match target {
@@ -5466,7 +5472,7 @@ impl App {
                     f.delete_char();
                     self.reapply_filter(target);
                 }
-                return true;
+                true
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 let filter = match target {
@@ -5478,7 +5484,7 @@ impl App {
                     f.clear_query();
                     self.reapply_filter(target);
                 }
-                return true;
+                true
             }
             KeyCode::Up => {
                 let filter = match target {
@@ -5495,7 +5501,7 @@ impl App {
                         }
                     }
                 }
-                return true;
+                true
             }
             KeyCode::Down => {
                 let filter = match target {
@@ -5512,7 +5518,7 @@ impl App {
                         }
                     }
                 }
-                return true;
+                true
             }
             KeyCode::Char(c) => {
                 // Ctrl+文字は通常のフィルタ入力ではない
@@ -5528,9 +5534,9 @@ impl App {
                     f.insert_char(c);
                     self.reapply_filter(target);
                 }
-                return true;
+                true
             }
-            _ => return true, // 入力中は他のキーを消費
+            _ => true, // 入力中は他のキーを消費
         }
     }
 
@@ -5715,10 +5721,8 @@ impl App {
         }
 
         // Esc: フィルタ適用中なら解除
-        if key.code == KeyCode::Esc {
-            if self.handle_filter_esc("pr") {
-                return Ok(());
-            }
+        if key.code == KeyCode::Esc && self.handle_filter_esc("pr") {
+            return Ok(());
         }
 
         // gg/G/Space+/ シーケンス処理
@@ -8230,5 +8234,38 @@ mod tests {
             app.selected_file, 1,
             "should auto-focus to file_b.rs whose patch content changed (same numstat)"
         );
+    }
+
+    // --- KeyEventKind::Press filter tests ---
+
+    /// Verify that only KeyEventKind::Press events should be processed.
+    /// handle_input gates on key.kind == KeyEventKind::Press; Release and Repeat
+    /// events must be ignored to prevent double-execution when Kitty keyboard
+    /// protocol is enabled.
+    #[test]
+    fn test_key_event_kind_press_only() {
+        let press = event::KeyEvent {
+            code: KeyCode::Char('j'),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        };
+        let release = event::KeyEvent {
+            code: KeyCode::Char('j'),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Release,
+            state: KeyEventState::NONE,
+        };
+        let repeat = event::KeyEvent {
+            code: KeyCode::Char('j'),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Repeat,
+            state: KeyEventState::NONE,
+        };
+
+        // Only Press should be accepted by the filter in handle_input
+        assert_eq!(press.kind, KeyEventKind::Press);
+        assert_ne!(release.kind, KeyEventKind::Press);
+        assert_ne!(repeat.kind, KeyEventKind::Press);
     }
 }

@@ -115,6 +115,9 @@ pub struct KeybindingsConfig {
 
     // List filter
     pub filter: KeySequence,
+
+    // Multiline selection (fallback for Shift+Enter)
+    pub multiline_select: KeySequence,
 }
 
 impl Default for AiConfig {
@@ -188,6 +191,9 @@ impl Default for KeybindingsConfig {
 
             // List filter
             filter: KeySequence::double(KeyBinding::char(' '), KeyBinding::char('/')),
+
+            // Multiline selection (fallback for Shift+Enter)
+            multiline_select: KeySequence::single(KeyBinding::char('V')),
         }
     }
 }
@@ -235,6 +241,7 @@ impl KeybindingsConfig {
             ("toggle_auto_focus", &self.toggle_auto_focus),
             ("toggle_markdown_rich", &self.toggle_markdown_rich),
             ("filter", &self.filter),
+            ("multiline_select", &self.multiline_select),
         ];
 
         for (name, seq) in &bindings {
@@ -369,6 +376,7 @@ impl Serialize for KeybindingsConfig {
         map.serialize_entry("toggle_auto_focus", &seq_to_value(&self.toggle_auto_focus))?;
         map.serialize_entry("toggle_markdown_rich", &seq_to_value(&self.toggle_markdown_rich))?;
         map.serialize_entry("filter", &seq_to_value(&self.filter))?;
+        map.serialize_entry("multiline_select", &seq_to_value(&self.multiline_select))?;
 
         map.end()
     }
@@ -642,5 +650,46 @@ mod tests {
             deserialized.filter.display(),
             config.filter.display()
         );
+    }
+
+    #[test]
+    fn test_serialize_roundtrip_includes_multiline_select() {
+        let config = KeybindingsConfig::default();
+        let serialized = toml::to_string(&config).unwrap();
+        assert!(
+            serialized.contains("multiline_select"),
+            "Serialized output should include multiline_select"
+        );
+        let deserialized: KeybindingsConfig = toml::from_str(&serialized).unwrap();
+        assert_eq!(
+            deserialized.multiline_select.display(),
+            config.multiline_select.display()
+        );
+    }
+
+    #[test]
+    fn test_multiline_select_default_key() {
+        let config = KeybindingsConfig::default();
+        assert_eq!(config.multiline_select.display(), "V");
+    }
+
+    #[test]
+    fn test_parse_multiline_select_custom() {
+        let toml_str = r#"
+            [keybindings]
+            multiline_select = "v"
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.keybindings.multiline_select.display(), "v");
+    }
+
+    #[test]
+    fn test_backwards_compatible_without_multiline_select() {
+        let toml_str = r#"
+            [keybindings]
+            move_down = "j"
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.keybindings.multiline_select.display(), "V");
     }
 }
