@@ -238,10 +238,15 @@ fn render_file_list_pane(
         "←/h: focus files"
     };
     let footer_line = super::footer::build_footer_line(app, help_text);
+    let footer_border_color = if app.is_pending_empty_approve_confirmation() {
+        Color::Yellow
+    } else {
+        border_color
+    };
     let footer = Paragraph::new(footer_line).block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(border_color)),
+            .border_style(Style::default().fg(footer_border_color)),
     );
     frame.render_widget(footer, chunks[next_chunk]);
 }
@@ -359,10 +364,15 @@ fn render_diff_footer(
     border_color: Color,
 ) {
     let footer_line = super::footer::build_footer_line(app, help_text);
+    let footer_border_color = if app.is_pending_empty_approve_confirmation() {
+        Color::Yellow
+    } else {
+        border_color
+    };
     let footer = Paragraph::new(footer_line).block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(border_color)),
+            .border_style(Style::default().fg(footer_border_color)),
     );
     frame.render_widget(footer, area);
 }

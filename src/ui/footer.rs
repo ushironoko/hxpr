@@ -1,6 +1,7 @@
 use ratatui::{
     style::{Color, Style},
     text::{Line, Span},
+    widgets::{Block, Borders},
 };
 
 use crate::app::App;
@@ -11,7 +12,12 @@ use crate::app::App;
 /// (full-width override). Otherwise, it shows the normal help text with
 /// optional comments loading indicator appended.
 pub fn build_footer_line<'a>(app: &'a App, help_text: &'a str) -> Line<'a> {
-    if app.is_submitting_comment() {
+    if app.is_pending_empty_approve_confirmation() {
+        Line::from(Span::styled(
+            "a: approve without comment | q: cancel approval",
+            Style::default().fg(Color::Yellow),
+        ))
+    } else if app.is_submitting_comment() {
         Line::from(Span::styled(
             format!("{} Submitting...", app.spinner_char()),
             Style::default().fg(Color::Yellow),
@@ -37,6 +43,15 @@ pub fn build_footer_line<'a>(app: &'a App, help_text: &'a str) -> Line<'a> {
         }
         Line::from(spans)
     }
+}
+
+pub fn build_footer_block(app: &App) -> Block<'static> {
+    let style = if app.is_pending_empty_approve_confirmation() {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default()
+    };
+    Block::default().borders(Borders::ALL).border_style(style)
 }
 
 #[cfg(test)]
