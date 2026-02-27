@@ -9,22 +9,33 @@
 
 [日本語](./README-jp.md)
 
-A TUI tool for GitHub PR review with Vim-style keybindings.
+You can view and review local diffs exceeding 6,000 files and 300,000 lines in the terminal for GitHub PRs. Two AI agents will automatically review and iterate on corrections until approval.
 
 ## Features
 
-- Browse changed files in a PR
-- Split view with file list and diff preview side by side
-- View diffs with syntax highlighting (Markdown rich display mode with `M` key)
-- Add inline comments on specific lines
-- Add code suggestions
+### Performance
+- Fast startup with intelligent caching
+- Achieves high memory efficiency and safety by eliminating inconsistent states at the implementation level.
+- Tested with 6,000+ files and 300,000+ lines
+
+### AI Rally
+Automated PR review and fix cycle using AI agents. A reviewer agent analyzes diffs and posts comments, then a reviewee agent fixes issues and commits — looping until approved.
+
+### Local Diff Mode
+Preview local `git diff HEAD` in real time with file watcher — no PR required. Toggle between PR mode and Local mode on the fly (`L` key).
+
+### PR Review
+- Split view with file list and diff preview
+- Syntax highlighting with powered by tree-sitter
+- Add inline comments and code suggestions on specific lines
 - View and navigate review comments with jump-to-line
 - Submit reviews (Approve / Request Changes / Comment)
-- Fast startup with intelligent caching
-- **Local Diff Mode**: Preview local `git diff HEAD` in real time with file watcher — no PR required
-- Toggle between PR mode and Local mode on the fly (`L` key)
-- Configurable keybindings and editor
-- **AI Rally**: Automated PR review and fix cycle using AI agents
+- Vim-like symbol search(`gd`), on-the-fly file display and editing(`gf`)
+
+### Customization
+- Fully configurable keybindings and editor
+- Customizable AI-Rally prompt templates
+- Customizable with any syntax highlighting theme.
 
 ## Requirements
 
