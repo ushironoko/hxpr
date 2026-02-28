@@ -1365,7 +1365,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     };
 
     let footer_line = super::footer::build_footer_line(app, &help_text);
-    let footer = Paragraph::new(footer_line).block(Block::default().borders(Borders::ALL));
+    let footer = Paragraph::new(footer_line).block(super::footer::build_footer_block(app));
     frame.render_widget(footer, area);
 }
 

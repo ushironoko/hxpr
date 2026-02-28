@@ -289,6 +289,13 @@ pub enum ReviewAction {
     Comment,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingApproveChoice {
+    None,
+    SubmitWithoutComment,
+    Cancel,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum CommentTab {
     #[default]
@@ -468,6 +475,8 @@ pub struct App {
     pub submission_result: Option<(bool, String)>,
     /// Timestamp when result was set (for auto-hide)
     submission_result_time: Option<Instant>,
+    /// Approve action was invoked with empty editor content; waiting for a/q confirmation.
+    pending_empty_approve_confirmation: bool,
     /// Spinner animation frame counter (incremented each tick)
     pub spinner_frame: usize,
     /// インラインコメントパネル内の選択インデックス
@@ -576,6 +585,7 @@ impl App {
             comment_submitting: false,
             submission_result: None,
             submission_result_time: None,
+            pending_empty_approve_confirmation: false,
             spinner_frame: 0,
             selected_inline_comment: 0,
             jump_stack: Vec::new(),
@@ -658,6 +668,7 @@ impl App {
             comment_submitting: false,
             submission_result: None,
             submission_result_time: None,
+            pending_empty_approve_confirmation: false,
             spinner_frame: 0,
             selected_inline_comment: 0,
             jump_stack: Vec::new(),
@@ -1856,6 +1867,11 @@ impl App {
         self.comment_submitting
     }
 
+    /// Empty approve confirmation prompt is active.
+    pub fn is_pending_empty_approve_confirmation(&self) -> bool {
+        self.pending_empty_approve_confirmation
+    }
+
     /// AI Rally イベントのポーリング
     fn poll_rally_events(&mut self) {
         let Some(ref mut rx) = self.rally_event_receiver else {
@@ -2329,12 +2345,22 @@ impl App {
                     }
 
                     // Loading状態ではqのみ受け付け
-                    if matches!(self.data_state, DataState::Loading) {
-                        if key.code == KeyCode::Char('q') {
-                            self.should_quit = true;
-                        }
-                        return Ok(());
+                if matches!(self.data_state, DataState::Loading) {
+                    if key.code == KeyCode::Char('q') {
+                        self.should_quit = true;
                     }
+                    return Ok(());
+                }
+
+                if self.pending_empty_approve_confirmation {
+                    match self.handle_pending_empty_approve_choice(key.code) {
+                        PendingApproveChoice::SubmitWithoutComment => {
+                            self.submit_review_with_body(ReviewAction::Approve, "").await?;
+                        }
+                        PendingApproveChoice::Cancel | PendingApproveChoice::None => {}
+                    }
+                    return Ok(());
+                }
                 }
 
                 match self.state {
@@ -4184,12 +4210,15 @@ impl App {
         };
 
         let Some(body) = body else {
-            tracing::debug!("submit_review: body is None (cancelled)");
-            self.submission_result = Some((false, "Review cancelled".to_string()));
-            self.submission_result_time = Some(Instant::now());
+            tracing::debug!("submit_review: body is None");
+            self.handle_empty_review_body(action);
             return Ok(());
         };
 
+        self.submit_review_with_body(action, &body).await
+    }
+
+    async fn submit_review_with_body(&mut self, action: ReviewAction, body: &str) -> Result<()> {
         tracing::debug!(body_len = body.len(), "submit_review: calling GitHub API");
         match github::submit_review(&self.repo, self.pr_number(), action, &body).await {
             Ok(()) => {
@@ -4208,7 +4237,38 @@ impl App {
                 self.submission_result_time = Some(Instant::now());
             }
         }
+        self.pending_empty_approve_confirmation = false;
         Ok(())
+    }
+
+    fn handle_empty_review_body(&mut self, action: ReviewAction) {
+        if action == ReviewAction::Approve {
+            self.pending_empty_approve_confirmation = true;
+            self.submission_result = None;
+            self.submission_result_time = None;
+        } else {
+            self.submission_result = Some((false, "Review cancelled".to_string()));
+            self.submission_result_time = Some(Instant::now());
+        }
+    }
+
+    fn handle_pending_empty_approve_choice(&mut self, key: KeyCode) -> PendingApproveChoice {
+        if !self.pending_empty_approve_confirmation {
+            return PendingApproveChoice::None;
+        }
+        match key {
+            KeyCode::Char('a') => {
+                self.pending_empty_approve_confirmation = false;
+                PendingApproveChoice::SubmitWithoutComment
+            }
+            KeyCode::Char('q') => {
+                self.pending_empty_approve_confirmation = false;
+                self.submission_result = None;
+                self.submission_result_time = None;
+                PendingApproveChoice::Cancel
+            }
+            _ => PendingApproveChoice::None,
+        }
     }
 
     fn update_diff_line_count(&mut self) {
@@ -6065,6 +6125,7 @@ impl App {
             comment_submitting: false,
             submission_result: None,
             submission_result_time: None,
+            pending_empty_approve_confirmation: false,
             spinner_frame: 0,
             selected_inline_comment: 0,
             jump_stack: Vec::new(),
@@ -6094,6 +6155,11 @@ impl App {
     #[cfg(test)]
     pub fn set_submitting_for_test(&mut self, submitting: bool) {
         self.comment_submitting = submitting;
+    }
+
+    #[cfg(test)]
+    pub fn set_pending_empty_approve_confirmation_for_test(&mut self, pending: bool) {
+        self.pending_empty_approve_confirmation = pending;
     }
 }
 
@@ -8268,5 +8334,41 @@ mod tests {
         assert_eq!(press.kind, KeyEventKind::Press);
         assert_ne!(release.kind, KeyEventKind::Press);
         assert_ne!(repeat.kind, KeyEventKind::Press);
+    }
+
+    #[test]
+    fn test_handle_empty_review_body_approve_sets_pending_confirmation() {
+        let mut app = App::new_for_test();
+        app.handle_empty_review_body(ReviewAction::Approve);
+
+        assert!(app.pending_empty_approve_confirmation);
+        assert!(app.submission_result.is_none());
+        assert!(app.submission_result_time.is_none());
+    }
+
+    #[test]
+    fn test_pending_empty_approve_choice_q_cancels_and_clears_prompt() {
+        let mut app = App::new_for_test();
+        app.pending_empty_approve_confirmation = true;
+        app.submission_result = Some((true, "placeholder".to_string()));
+        app.submission_result_time = Some(Instant::now());
+
+        let choice = app.handle_pending_empty_approve_choice(KeyCode::Char('q'));
+
+        assert_eq!(choice, PendingApproveChoice::Cancel);
+        assert!(!app.pending_empty_approve_confirmation);
+        assert!(app.submission_result.is_none());
+        assert!(app.submission_result_time.is_none());
+    }
+
+    #[test]
+    fn test_pending_empty_approve_choice_a_submits_without_comment() {
+        let mut app = App::new_for_test();
+        app.pending_empty_approve_confirmation = true;
+
+        let choice = app.handle_pending_empty_approve_choice(KeyCode::Char('a'));
+
+        assert_eq!(choice, PendingApproveChoice::SubmitWithoutComment);
+        assert!(!app.pending_empty_approve_confirmation);
     }
 }
