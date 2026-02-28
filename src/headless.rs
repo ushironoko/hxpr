@@ -79,9 +79,11 @@ pub async fn run_headless_rally_local(
 ) -> Result<bool> {
     eprintln!("[Headless] Running local diff rally...");
 
-    let wd = working_dir
-        .map(|s| s.to_string())
-        .or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string()));
+    let wd = working_dir.map(|s| s.to_string()).or_else(|| {
+        std::env::current_dir()
+            .ok()
+            .map(|p| p.to_string_lossy().to_string())
+    });
 
     let dir = wd.as_deref().unwrap_or(".");
     let base_branch = detect_local_base_branch(Some(dir)).unwrap_or_else(|| "main".to_string());
@@ -121,10 +123,7 @@ pub async fn run_headless_rally_local(
             base_branch
         );
         let fallback_output = tokio::process::Command::new("git")
-            .args([
-                "diff",
-                &format!("origin/{}...HEAD", base_branch),
-            ])
+            .args(["diff", &format!("origin/{}...HEAD", base_branch)])
             .current_dir(dir)
             .output()
             .await?;
@@ -133,10 +132,7 @@ pub async fn run_headless_rally_local(
             diff = String::from_utf8_lossy(&fallback_output.stdout).to_string();
         } else {
             let stderr = String::from_utf8_lossy(&fallback_output.stderr);
-            eprintln!(
-                "[Headless] Fallback diff also failed: {}",
-                stderr.trim()
-            );
+            eprintln!("[Headless] Fallback diff also failed: {}", stderr.trim());
         }
     }
 
@@ -434,7 +430,10 @@ pub fn format_review_output(output: &ReviewerOutput) -> String {
                 CommentSeverity::Suggestion => "suggestion",
             };
             let location = format!("{}:{}", comment.path, comment.line);
-            lines.push(format!("    - {} [{}] {}", location, severity, comment.body));
+            lines.push(format!(
+                "    - {} [{}] {}",
+                location, severity, comment.body
+            ));
         }
     }
 
@@ -546,13 +545,11 @@ async fn collect_untracked_diff(dir: &str) -> String {
         .await;
 
     let untracked_files: Vec<String> = match ls_output {
-        Ok(output) if output.status.success() => {
-            String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .filter(|l| !l.is_empty())
-                .map(|l| l.to_string())
-                .collect()
-        }
+        Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| l.to_string())
+            .collect(),
         _ => return String::new(),
     };
 

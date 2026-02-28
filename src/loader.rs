@@ -192,9 +192,7 @@ pub async fn fetch_single_file_diff(
             .filter(|p| !p.is_empty())
     };
 
-    let _ = tx
-        .send(SingleFileDiffResult { filename, patch })
-        .await;
+    let _ = tx.send(SingleFileDiffResult { filename, patch }).await;
 }
 
 async fn fetch_and_send(repo: &str, pr_number: u32, tx: mpsc::Sender<DataLoadResult>) {
@@ -845,7 +843,10 @@ mod tests {
         let result = parse_name_status_output(output);
 
         assert_eq!(result.len(), 5);
-        assert_eq!(result[0], ("src/foo.rs".to_string(), "modified".to_string()));
+        assert_eq!(
+            result[0],
+            ("src/foo.rs".to_string(), "modified".to_string())
+        );
         assert_eq!(result[1], ("src/new.rs".to_string(), "added".to_string()));
         assert_eq!(result[2], ("src/old.rs".to_string(), "removed".to_string()));
         assert_eq!(result[3], ("new.rs".to_string(), "renamed".to_string()));
@@ -1011,10 +1012,7 @@ index 1234567..abcdefg 100644
     #[test]
     fn test_unquote_git_path_cquoted_non_ascii() {
         // \343\201\202 = UTF-8 encoding of 'あ' (U+3042)
-        assert_eq!(
-            unquote_git_path(r#""src/\343\201\202.rs""#),
-            "src/あ.rs"
-        );
+        assert_eq!(unquote_git_path(r#""src/\343\201\202.rs""#), "src/あ.rs");
     }
 
     #[test]
@@ -1056,7 +1054,10 @@ index 1234567..abcdefg 100644
         let result = parse_numstat_output(Some(&output));
 
         assert_eq!(result.len(), 1);
-        assert!(result.contains_key("src/あ.rs"), "numstat should decode quoted paths");
+        assert!(
+            result.contains_key("src/あ.rs"),
+            "numstat should decode quoted paths"
+        );
         assert_eq!(result["src/あ.rs"], (3, 1));
     }
 

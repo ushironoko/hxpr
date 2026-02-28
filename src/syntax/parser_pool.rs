@@ -335,14 +335,20 @@ mod tests {
     fn test_query_cache_markdown() {
         let mut pool = ParserPool::new();
         let query = pool.get_or_create_query(SupportedLanguage::Markdown);
-        assert!(query.is_some(), "Should compile Markdown block highlight query");
+        assert!(
+            query.is_some(),
+            "Should compile Markdown block highlight query"
+        );
     }
 
     #[test]
     fn test_query_cache_markdown_inline() {
         let mut pool = ParserPool::new();
         let query = pool.get_or_create_query(SupportedLanguage::MarkdownInline);
-        assert!(query.is_some(), "Should compile MarkdownInline highlight query");
+        assert!(
+            query.is_some(),
+            "Should compile MarkdownInline highlight query"
+        );
     }
 
     #[test]

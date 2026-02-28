@@ -420,12 +420,16 @@ impl Orchestrator {
                             match self.wait_for_command().await {
                                 Some(OrchestratorCommand::ClarificationResponse(answer)) => {
                                     // Handle clarification response
-                                    if let Err(e) = self.handle_clarification_response(&answer).await {
+                                    if let Err(e) =
+                                        self.handle_clarification_response(&answer).await
+                                    {
                                         self.session.update_state(RallyState::Error);
                                         let _ = write_session(&self.session);
                                         self.send_event(RallyEvent::Error(e.to_string())).await;
-                                        self.send_event(RallyEvent::StateChanged(RallyState::Error))
-                                            .await;
+                                        self.send_event(RallyEvent::StateChanged(
+                                            RallyState::Error,
+                                        ))
+                                        .await;
                                         return Ok(RallyResult::Error {
                                             iteration,
                                             error: e.to_string(),
@@ -452,11 +456,16 @@ impl Orchestrator {
                                                 iteration,
                                                 &HistoryEntryType::Fix(output.clone()),
                                             ) {
-                                                warn!("Failed to write follow-up fix history: {}", e);
+                                                warn!(
+                                                    "Failed to write follow-up fix history: {}",
+                                                    e
+                                                );
                                             }
 
                                             // Post fix comment to PR (with confirmation if auto_post is false)
-                                            if let Err(e) = self.maybe_post_fix_comment(&output).await {
+                                            if let Err(e) =
+                                                self.maybe_post_fix_comment(&output).await
+                                            {
                                                 // Check if abort was triggered during post confirmation
                                                 if self.session.state == RallyState::Aborted {
                                                     return Ok(RallyResult::Aborted {
@@ -470,8 +479,10 @@ impl Orchestrator {
                                                 );
                                             }
 
-                                            self.send_event(RallyEvent::FixCompleted(output.clone()))
-                                                .await;
+                                            self.send_event(RallyEvent::FixCompleted(
+                                                output.clone(),
+                                            ))
+                                            .await;
                                             self.last_fix = Some(output);
                                         }
                                         Err(e) => {
@@ -486,8 +497,10 @@ impl Orchestrator {
 
                                     // Notify TUI of state change
                                     self.session.update_state(RallyState::RevieweeFix);
-                                    self.send_event(RallyEvent::StateChanged(RallyState::RevieweeFix))
-                                        .await;
+                                    self.send_event(RallyEvent::StateChanged(
+                                        RallyState::RevieweeFix,
+                                    ))
+                                    .await;
                                     let _ = write_session(&self.session);
                                     // Continue loop
                                     break;
@@ -558,9 +571,12 @@ impl Orchestrator {
                                         )))
                                         .await;
 
-                                        let prompt =
-                                            build_permission_denied_prompt(&perm.action, &perm.reason);
-                                        match self.reviewee_adapter.continue_reviewee(&prompt).await {
+                                        let prompt = build_permission_denied_prompt(
+                                            &perm.action,
+                                            &perm.reason,
+                                        );
+                                        match self.reviewee_adapter.continue_reviewee(&prompt).await
+                                        {
                                             Ok(output) => {
                                                 // Write history entry for the follow-up fix
                                                 if let Err(e) = write_history_entry(
@@ -576,7 +592,9 @@ impl Orchestrator {
                                                 }
 
                                                 // Post fix comment to PR (with confirmation if auto_post is false)
-                                                if let Err(e) = self.maybe_post_fix_comment(&output).await {
+                                                if let Err(e) =
+                                                    self.maybe_post_fix_comment(&output).await
+                                                {
                                                     // Check if abort was triggered during post confirmation
                                                     if self.session.state == RallyState::Aborted {
                                                         return Ok(RallyResult::Aborted {
@@ -628,7 +646,8 @@ impl Orchestrator {
                                     // Stale/invalid command for this state (e.g. PostConfirmResponse) - ignore and re-wait
                                     warn!("Received invalid command during WaitingForPermission, ignoring");
                                     self.send_event(RallyEvent::Log(
-                                        "Received invalid command, still waiting for permission...".to_string(),
+                                        "Received invalid command, still waiting for permission..."
+                                            .to_string(),
                                     ))
                                     .await;
                                     continue;
@@ -880,17 +899,13 @@ impl Orchestrator {
         loop {
             match self.wait_for_command().await {
                 Some(OrchestratorCommand::PostConfirmResponse(true)) => {
-                    self.send_event(RallyEvent::Log(
-                        "User approved review posting".to_string(),
-                    ))
-                    .await;
+                    self.send_event(RallyEvent::Log("User approved review posting".to_string()))
+                        .await;
                     return self.post_review_to_pr(review).await;
                 }
                 Some(OrchestratorCommand::PostConfirmResponse(false)) => {
-                    self.send_event(RallyEvent::Log(
-                        "User skipped review posting".to_string(),
-                    ))
-                    .await;
+                    self.send_event(RallyEvent::Log("User skipped review posting".to_string()))
+                        .await;
                     return Ok(());
                 }
                 Some(OrchestratorCommand::Abort) | None => {
@@ -1345,8 +1360,9 @@ fn split_shell_commands(command: &str) -> Vec<&str> {
 
     while i < len {
         // Check for two-character separators (&& and ||) first
-        let is_double =
-            i + 1 < len && ((bytes[i] == b'&' && bytes[i + 1] == b'&') || (bytes[i] == b'|' && bytes[i + 1] == b'|'));
+        let is_double = i + 1 < len
+            && ((bytes[i] == b'&' && bytes[i + 1] == b'&')
+                || (bytes[i] == b'|' && bytes[i + 1] == b'|'));
         if is_double {
             results.push(&command[start..i]);
             i += 2;
@@ -1694,10 +1710,7 @@ mod tests {
         );
 
         // Without wildcard suffix
-        assert_eq!(
-            extract_bash_command("Bash(git push)"),
-            Some("git push")
-        );
+        assert_eq!(extract_bash_command("Bash(git push)"), Some("git push"));
 
         // Not a Bash pattern
         assert_eq!(extract_bash_command("Read"), None);

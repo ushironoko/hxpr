@@ -177,7 +177,8 @@ pub fn build_diff_cache(
 
         // CST path: use tree-sitter with full AST context
         // Use injection-aware highlighting for SFC languages (Svelte, Vue)
-        let line_highlights = if ext == "svelte" || ext == "vue" || ext == "md" || ext == "markdown" {
+        let line_highlights = if ext == "svelte" || ext == "vue" || ext == "md" || ext == "markdown"
+        {
             // Injection path: query is obtained inside the function to avoid borrow conflicts
             // Note: priming_lines offset is handled when applying highlights to diff lines
             collect_line_highlights_with_injections(
@@ -270,7 +271,12 @@ fn apply_markdown_rich_transforms(lines: &mut [CachedDiffLine], interner: &mut R
         if is_removed {
             // Removed lines go through syntect fallback and don't have sentinel colors.
             // Apply text-based transforms for consistent rendering with added/context lines.
-            apply_markdown_rich_transforms_text_based(line, interner, bullet_spur, bullet_space_spur);
+            apply_markdown_rich_transforms_text_based(
+                line,
+                interner,
+                bullet_spur,
+                bullet_space_spur,
+            );
         } else {
             // Added/context lines have sentinel colors from CST highlighting.
             apply_markdown_rich_transforms_sentinel(
@@ -314,10 +320,7 @@ fn apply_markdown_rich_transforms_sentinel(
                         removals.push(i + 1);
                     }
                 }
-            } else if content.trim() == "-"
-                || content.trim() == "+"
-                || content.trim() == "*"
-            {
+            } else if content.trim() == "-" || content.trim() == "+" || content.trim() == "*" {
                 // List marker (may include trailing space) → replace with ・
                 let spur = if content.ends_with(' ') {
                     bullet_space_spur
@@ -355,9 +358,7 @@ fn apply_markdown_rich_transforms_sentinel(
     // Spans intentionally left as-is (backticks, code-fence delimiters, blockquote
     // markers, etc.) still carry sentinel colors which are nearly invisible.
     for span in line.spans[1..].iter_mut() {
-        if span.style.fg == Some(block_punct_color)
-            || span.style.fg == Some(inline_punct_color)
-        {
+        if span.style.fg == Some(block_punct_color) || span.style.fg == Some(inline_punct_color) {
             span.style = span.style.fg(Color::DarkGray);
         }
     }
@@ -402,12 +403,7 @@ fn apply_markdown_rich_transforms_text_based(
             && trimmed.len() > 1
             && trimmed.chars().nth(1) == Some(' ')
         {
-            replace_leading_marker_with_bullet(
-                line,
-                interner,
-                bullet_spur,
-                bullet_space_spur,
-            );
+            replace_leading_marker_with_bullet(line, interner, bullet_spur, bullet_space_spur);
         }
     }
 
@@ -430,7 +426,8 @@ fn remove_leading_chars_from_spans(
         }
         let content = interner.resolve(&line.spans[i].content).to_string();
         // Skip leading whitespace spans (they are indentation, not heading markers)
-        if removals.is_empty() && content.chars().all(|c| c.is_whitespace()) && !content.is_empty() {
+        if removals.is_empty() && content.chars().all(|c| c.is_whitespace()) && !content.is_empty()
+        {
             continue;
         }
         let char_count = content.chars().count();
@@ -467,8 +464,12 @@ fn replace_leading_marker_with_bullet(
         if let Some(first) = trimmed.chars().next() {
             if first == '-' || first == '+' || first == '*' {
                 // Replace marker character(s) with bullet
-                if trimmed.starts_with("- ") || trimmed.starts_with("+ ") || trimmed.starts_with("* ") {
-                    let leading_ws: String = content.chars().take_while(|c| c.is_whitespace()).collect();
+                if trimmed.starts_with("- ")
+                    || trimmed.starts_with("+ ")
+                    || trimmed.starts_with("* ")
+                {
+                    let leading_ws: String =
+                        content.chars().take_while(|c| c.is_whitespace()).collect();
                     let after_marker: String = trimmed.chars().skip(2).collect();
                     if leading_ws.is_empty() && after_marker.is_empty() {
                         line.spans[i].content = bullet_space_spur;
@@ -533,8 +534,10 @@ fn apply_markdown_table_transforms(lines: &mut [CachedDiffLine], interner: &mut 
             continue;
         }
 
-        let is_separator =
-            !trimmed.is_empty() && trimmed.chars().all(|c| c == '|' || c == '-' || c == ':' || c == ' ');
+        let is_separator = !trimmed.is_empty()
+            && trimmed
+                .chars()
+                .all(|c| c == '|' || c == '-' || c == ':' || c == ' ');
 
         if is_separator {
             table_line_info.push(Some(TableLineKind::Separator));
@@ -1243,7 +1246,14 @@ fn parse_patch_to_lines(
     // This ensures consistent behavior with cached path
     // Creates a temporary ParserPool - this is acceptable for this rarely-used fallback path
     let mut parser_pool = ParserPool::new();
-    let cache = build_diff_cache(patch, filename, theme_name, &mut parser_pool, false, tab_width);
+    let cache = build_diff_cache(
+        patch,
+        filename,
+        theme_name,
+        &mut parser_pool,
+        false,
+        tab_width,
+    );
 
     cache
         .lines
@@ -1815,7 +1825,14 @@ mod tests {
  function increment() {"#;
 
         let mut parser_pool = ParserPool::new();
-        let cache = build_diff_cache(patch, "Component.vue", "Dracula", &mut parser_pool, false, 4);
+        let cache = build_diff_cache(
+            patch,
+            "Component.vue",
+            "Dracula",
+            &mut parser_pool,
+            false,
+            4,
+        );
 
         // Line 2 is "+const doubled = computed(() => count.value * 2);" (Added line)
         let added_line = &cache.lines[2];
@@ -2022,7 +2039,14 @@ mod tests {
         let mut parser_pool = ParserPool::new();
 
         let plain = build_plain_diff_cache(patch, 4);
-        let highlighted = build_diff_cache(patch, "foo.rs", "base16-ocean.dark", &mut parser_pool, false, 4);
+        let highlighted = build_diff_cache(
+            patch,
+            "foo.rs",
+            "base16-ocean.dark",
+            &mut parser_pool,
+            false,
+            4,
+        );
 
         assert_eq!(plain.lines.len(), highlighted.lines.len());
 
@@ -2044,7 +2068,14 @@ mod tests {
         let mut parser_pool = ParserPool::new();
 
         let plain = build_plain_diff_cache(patch, 4);
-        let highlighted = build_diff_cache(patch, "foo.rs", "base16-ocean.dark", &mut parser_pool, false, 4);
+        let highlighted = build_diff_cache(
+            patch,
+            "foo.rs",
+            "base16-ocean.dark",
+            &mut parser_pool,
+            false,
+            4,
+        );
 
         assert_eq!(plain.lines.len(), highlighted.lines.len());
 
@@ -2056,9 +2087,16 @@ mod tests {
         );
 
         // render_cached_lines でコメントマーカーが挿入されること
-        let plain_rendered = render_cached_lines(&plain, 0..plain.lines.len(), 0, &comment_lines, false, None);
-        let hl_rendered =
-            render_cached_lines(&highlighted, 0..highlighted.lines.len(), 0, &comment_lines, false, None);
+        let plain_rendered =
+            render_cached_lines(&plain, 0..plain.lines.len(), 0, &comment_lines, false, None);
+        let hl_rendered = render_cached_lines(
+            &highlighted,
+            0..highlighted.lines.len(),
+            0,
+            &comment_lines,
+            false,
+            None,
+        );
 
         for &line_idx in &[4usize, 6] {
             let plain_line_text: String = plain_rendered[line_idx]
@@ -2149,7 +2187,8 @@ mod tests {
 +added line"#;
 
         let comment_lines = HashSet::new();
-        let lines = parse_patch_to_lines(patch, 0, "test.rs", "base16-ocean.dark", &comment_lines, 4);
+        let lines =
+            parse_patch_to_lines(patch, 0, "test.rs", "base16-ocean.dark", &comment_lines, 4);
 
         // 4行: header, context, removed, added
         assert_eq!(lines.len(), 4);
@@ -2165,7 +2204,8 @@ mod tests {
         let mut comment_lines = HashSet::new();
         comment_lines.insert(2); // added 行にコメント
 
-        let lines = parse_patch_to_lines(patch, 2, "test.rs", "base16-ocean.dark", &comment_lines, 4);
+        let lines =
+            parse_patch_to_lines(patch, 2, "test.rs", "base16-ocean.dark", &comment_lines, 4);
 
         assert_eq!(lines.len(), 4);
 
@@ -2196,7 +2236,8 @@ mod tests {
         let comment_lines = HashSet::new();
 
         // tab_width = 2: tab should expand to 2 spaces
-        let lines = parse_patch_to_lines(patch, 0, "test.rs", "base16-ocean.dark", &comment_lines, 2);
+        let lines =
+            parse_patch_to_lines(patch, 0, "test.rs", "base16-ocean.dark", &comment_lines, 2);
         let line_text: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(
             line_text.contains("  indented"),
@@ -2205,7 +2246,8 @@ mod tests {
         );
 
         // tab_width = 8: tab should expand to 8 spaces
-        let lines = parse_patch_to_lines(patch, 0, "test.rs", "base16-ocean.dark", &comment_lines, 8);
+        let lines =
+            parse_patch_to_lines(patch, 0, "test.rs", "base16-ocean.dark", &comment_lines, 8);
         let line_text: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(
             line_text.contains("        indented"),
@@ -2405,7 +2447,14 @@ mod priming_diff_tests {
  author: world"#;
 
         let mut parser_pool = ParserPool::new();
-        let cache = build_diff_cache(patch, "data.yaml", "base16-ocean.dark", &mut parser_pool, false, 4);
+        let cache = build_diff_cache(
+            patch,
+            "data.yaml",
+            "base16-ocean.dark",
+            &mut parser_pool,
+            false,
+            4,
+        );
 
         // 行数が正しいこと（header + 4 content lines = 5）
         assert_eq!(cache.lines.len(), 5);
@@ -2433,7 +2482,14 @@ mod priming_diff_tests {
 -old line"#;
 
         let mut parser_pool = ParserPool::new();
-        let cache = build_diff_cache(patch, "file.unknown", "base16-ocean.dark", &mut parser_pool, false, 4);
+        let cache = build_diff_cache(
+            patch,
+            "file.unknown",
+            "base16-ocean.dark",
+            &mut parser_pool,
+            false,
+            4,
+        );
 
         assert_eq!(cache.lines.len(), 4);
 
@@ -2516,12 +2572,26 @@ mod priming_diff_tests {
         let mut parser_pool = ParserPool::new();
 
         // markdown_rich = false
-        let cache_normal = build_diff_cache(patch, "README.md", "base16-ocean.dark", &mut parser_pool, false, 4);
+        let cache_normal = build_diff_cache(
+            patch,
+            "README.md",
+            "base16-ocean.dark",
+            &mut parser_pool,
+            false,
+            4,
+        );
         assert!(!cache_normal.markdown_rich);
         assert!(cache_normal.highlighted);
 
         // markdown_rich = true
-        let cache_rich = build_diff_cache(patch, "README.md", "base16-ocean.dark", &mut parser_pool, true, 4);
+        let cache_rich = build_diff_cache(
+            patch,
+            "README.md",
+            "base16-ocean.dark",
+            &mut parser_pool,
+            true,
+            4,
+        );
         assert!(cache_rich.markdown_rich);
         assert!(cache_rich.highlighted);
     }
@@ -2535,7 +2605,14 @@ mod priming_diff_tests {
  fn bar() {}"#;
 
         let mut parser_pool = ParserPool::new();
-        let cache = build_diff_cache(patch, "test.rs", "base16-ocean.dark", &mut parser_pool, true, 4);
+        let cache = build_diff_cache(
+            patch,
+            "test.rs",
+            "base16-ocean.dark",
+            &mut parser_pool,
+            true,
+            4,
+        );
         // Flag is stored regardless of file type
         assert!(cache.markdown_rich);
     }
@@ -2549,8 +2626,22 @@ mod priming_diff_tests {
  Some text"#;
 
         let mut parser_pool = ParserPool::new();
-        let cache_normal = build_diff_cache(patch, "README.md", "base16-ocean.dark", &mut parser_pool, false, 4);
-        let cache_rich = build_diff_cache(patch, "README.md", "base16-ocean.dark", &mut parser_pool, true, 4);
+        let cache_normal = build_diff_cache(
+            patch,
+            "README.md",
+            "base16-ocean.dark",
+            &mut parser_pool,
+            false,
+            4,
+        );
+        let cache_rich = build_diff_cache(
+            patch,
+            "README.md",
+            "base16-ocean.dark",
+            &mut parser_pool,
+            true,
+            4,
+        );
 
         // Both should be highlighted
         assert!(cache_normal.highlighted);
@@ -2573,7 +2664,14 @@ mod priming_diff_tests {
 +```"#;
 
         let mut parser_pool = ParserPool::new();
-        let cache = build_diff_cache(patch, "test.md", "base16-ocean.dark", &mut parser_pool, false, 4);
+        let cache = build_diff_cache(
+            patch,
+            "test.md",
+            "base16-ocean.dark",
+            &mut parser_pool,
+            false,
+            4,
+        );
         assert!(cache.highlighted);
         assert!(!cache.lines.is_empty());
     }
@@ -2587,7 +2685,14 @@ mod priming_diff_tests {
  End"#;
 
         let mut parser_pool = ParserPool::new();
-        let cache = build_diff_cache(patch, "doc.markdown", "base16-ocean.dark", &mut parser_pool, false, 4);
+        let cache = build_diff_cache(
+            patch,
+            "doc.markdown",
+            "base16-ocean.dark",
+            &mut parser_pool,
+            false,
+            4,
+        );
         assert!(cache.highlighted);
         assert!(!cache.lines.is_empty());
     }
@@ -2677,7 +2782,14 @@ mod priming_diff_tests {
  More text"#;
 
         let mut parser_pool = ParserPool::new();
-        let cache = build_diff_cache(patch, "README.md", "base16-ocean.dark", &mut parser_pool, false, 4);
+        let cache = build_diff_cache(
+            patch,
+            "README.md",
+            "base16-ocean.dark",
+            &mut parser_pool,
+            false,
+            4,
+        );
 
         assert!(cache.highlighted);
         assert_snapshot!(format_diff_cache_spans(&cache), @r###"
@@ -2699,8 +2811,22 @@ mod priming_diff_tests {
  plain text"#;
 
         let mut parser_pool = ParserPool::new();
-        let cache_normal = build_diff_cache(patch, "test.md", "base16-ocean.dark", &mut parser_pool, false, 4);
-        let cache_rich = build_diff_cache(patch, "test.md", "base16-ocean.dark", &mut parser_pool, true, 4);
+        let cache_normal = build_diff_cache(
+            patch,
+            "test.md",
+            "base16-ocean.dark",
+            &mut parser_pool,
+            false,
+            4,
+        );
+        let cache_rich = build_diff_cache(
+            patch,
+            "test.md",
+            "base16-ocean.dark",
+            &mut parser_pool,
+            true,
+            4,
+        );
 
         let snapshot_normal = format_diff_cache_spans(&cache_normal);
         let snapshot_rich = format_diff_cache_spans(&cache_rich);
@@ -2721,10 +2847,7 @@ mod priming_diff_tests {
     #[test]
     fn test_build_table_separator() {
         // Spaces are preserved from the original separator format
-        assert_eq!(
-            build_table_separator("| --- | --- |"),
-            "├ ─── ┼ ─── ┤"
-        );
+        assert_eq!(build_table_separator("| --- | --- |"), "├ ─── ┼ ─── ┤");
         assert_eq!(build_table_separator("| --- |"), "├ ─── ┤");
         assert_eq!(
             build_table_separator("| --- | --- | --- |"),
@@ -2733,10 +2856,7 @@ mod priming_diff_tests {
         // Compact format without spaces
         assert_eq!(build_table_separator("|---|---|"), "├───┼───┤");
         // No trailing pipe: last pipe is a column separator, not a closing border
-        assert_eq!(
-            build_table_separator("| --- | ---"),
-            "├ ─── ┼ ───"
-        );
+        assert_eq!(build_table_separator("| --- | ---"), "├ ─── ┼ ───");
         assert_eq!(build_table_separator("|---|---"), "├───┼───");
         // Single column, no trailing pipe
         assert_eq!(build_table_separator("| ---"), "├ ───");
@@ -2754,8 +2874,14 @@ mod priming_diff_tests {
  plain text"#;
 
         let mut parser_pool = ParserPool::new();
-        let cache =
-            build_diff_cache(patch, "test.md", "base16-ocean.dark", &mut parser_pool, true, 4);
+        let cache = build_diff_cache(
+            patch,
+            "test.md",
+            "base16-ocean.dark",
+            &mut parser_pool,
+            true,
+            4,
+        );
 
         assert_snapshot!(format_diff_cache_spans(&cache), @r#"
         L0: "@@ -1,5 +1,5 @@" [fg:Cyan]
@@ -2778,8 +2904,14 @@ mod priming_diff_tests {
  plain text"#;
 
         let mut parser_pool = ParserPool::new();
-        let cache =
-            build_diff_cache(patch, "test.md", "base16-ocean.dark", &mut parser_pool, true, 4);
+        let cache = build_diff_cache(
+            patch,
+            "test.md",
+            "base16-ocean.dark",
+            &mut parser_pool,
+            true,
+            4,
+        );
 
         assert_snapshot!(format_diff_cache_spans(&cache), @r#"
         L0: "@@ -1,4 +1,4 @@" [fg:Cyan]
@@ -2846,7 +2978,14 @@ mod priming_diff_tests {
     fn test_build_diff_cache_with_tabs() {
         let patch = "@@ -1 +1 @@\n+\tindented";
         let mut parser_pool = ParserPool::new();
-        let cache = build_diff_cache(patch, "test.rs", "base16-ocean.dark", &mut parser_pool, false, 4);
+        let cache = build_diff_cache(
+            patch,
+            "test.rs",
+            "base16-ocean.dark",
+            &mut parser_pool,
+            false,
+            4,
+        );
 
         // Tab characters should be expanded to spaces in highlighted path too
         let line_content: String = cache.lines[1]

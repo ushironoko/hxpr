@@ -356,7 +356,10 @@ fn extract_filename(git_diff_line: &str) -> Option<String> {
         b'a' => b'b',
         b'c' | b'i' | b'o' => b'w',
         _ => {
-            warn!("Failed to parse git diff line (unknown prefix): {}", git_diff_line);
+            warn!(
+                "Failed to parse git diff line (unknown prefix): {}",
+                git_diff_line
+            );
             return None;
         }
     };
@@ -668,12 +671,19 @@ index 1234567..abcdefg 100644
 -old
 +new";
         let result = parse_unified_diff(diff);
-        assert!(result.contains_key("x b/new.rs"), "expected key 'x b/new.rs', got: {:?}", result.keys().collect::<Vec<_>>());
+        assert!(
+            result.contains_key("x b/new.rs"),
+            "expected key 'x b/new.rs', got: {:?}",
+            result.keys().collect::<Vec<_>>()
+        );
     }
 
     #[test]
     fn test_strip_diff_prefix() {
-        assert_eq!(strip_diff_prefix("b/src/file.rs"), Some("src/file.rs".to_string()));
+        assert_eq!(
+            strip_diff_prefix("b/src/file.rs"),
+            Some("src/file.rs".to_string())
+        );
         assert_eq!(strip_diff_prefix("w/file.rs"), Some("file.rs".to_string()));
         assert_eq!(strip_diff_prefix("file.rs"), Some("file.rs".to_string()));
     }
@@ -1005,8 +1015,7 @@ index 1234567..abcdefg 100644
     #[test]
     fn test_validate_multiline_range_removed_lines_in_middle() {
         // Removed lines scattered between added/context lines
-        let patch =
-            "@@ -1,5 +1,4 @@\n context1\n+added1\n-removed_mid\n context2\n+added2";
+        let patch = "@@ -1,5 +1,4 @@\n context1\n+added1\n-removed_mid\n context2\n+added2";
         // Range 1..=4 includes removed line at index 3 → invalid
         assert!(!validate_multiline_range(patch, 1, 4));
         // Range 1..=2 is context+added only → valid
@@ -1026,8 +1035,7 @@ index 1234567..abcdefg 100644
     /// This ensures the GitHub API will receive a valid start_line..line range.
     #[test]
     fn test_multiline_range_new_side_lines_contiguous() {
-        let patch =
-            "@@ -1,4 +1,5 @@\n context1\n+added1\n+added2\n context2\n+added3";
+        let patch = "@@ -1,4 +1,5 @@\n context1\n+added1\n+added2\n context2\n+added3";
         // Valid range: indices 1..=4 → all are Added or Context
         assert!(validate_multiline_range(patch, 1, 4));
 
@@ -1048,8 +1056,7 @@ index 1234567..abcdefg 100644
     /// When start < end, start_line should be Some (multiline API call).
     #[test]
     fn test_single_line_vs_multiline_dispatch() {
-        let patch =
-            "@@ -1,3 +1,4 @@\n context1\n+added1\n+added2\n context2";
+        let patch = "@@ -1,3 +1,4 @@\n context1\n+added1\n+added2\n context2";
 
         // Single line selection: start == end → should dispatch as single-line comment
         let info = get_line_info(patch, 2).unwrap();

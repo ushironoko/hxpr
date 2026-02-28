@@ -374,7 +374,10 @@ impl Serialize for KeybindingsConfig {
         map.serialize_entry("open_in_browser", &seq_to_value(&self.open_in_browser))?;
         map.serialize_entry("toggle_local_mode", &seq_to_value(&self.toggle_local_mode))?;
         map.serialize_entry("toggle_auto_focus", &seq_to_value(&self.toggle_auto_focus))?;
-        map.serialize_entry("toggle_markdown_rich", &seq_to_value(&self.toggle_markdown_rich))?;
+        map.serialize_entry(
+            "toggle_markdown_rich",
+            &seq_to_value(&self.toggle_markdown_rich),
+        )?;
         map.serialize_entry("filter", &seq_to_value(&self.filter))?;
         map.serialize_entry("multiline_select", &seq_to_value(&self.multiline_select))?;
 
@@ -646,10 +649,7 @@ mod tests {
             "Serialized output should include filter"
         );
         let deserialized: KeybindingsConfig = toml::from_str(&serialized).unwrap();
-        assert_eq!(
-            deserialized.filter.display(),
-            config.filter.display()
-        );
+        assert_eq!(deserialized.filter.display(), config.filter.display());
     }
 
     #[test]

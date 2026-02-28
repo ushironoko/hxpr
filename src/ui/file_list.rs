@@ -62,11 +62,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 );
             frame.render_widget(empty, chunks[1]);
         } else {
-            let filtered: Vec<&ChangedFile> = filter
-                .matched_indices
-                .iter()
-                .map(|&i| &files[i])
-                .collect();
+            let filtered: Vec<&ChangedFile> =
+                filter.matched_indices.iter().map(|&i| &files[i]).collect();
             let display_selected = filter.selected.unwrap_or(0);
             let display_count = filtered.len();
 
@@ -93,8 +90,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                     .begin_symbol(Some("▲"))
                     .end_symbol(Some("▼"));
 
-                let mut scrollbar_state = ScrollbarState::new(display_count.saturating_sub(1))
-                    .position(display_selected);
+                let mut scrollbar_state =
+                    ScrollbarState::new(display_count.saturating_sub(1)).position(display_selected);
 
                 frame.render_stateful_widget(
                     scrollbar,
@@ -194,14 +191,22 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     frame.render_widget(footer, chunks[next_chunk]);
 }
 
-fn render_filter_bar(frame: &mut Frame, area: ratatui::layout::Rect, filter: &crate::filter::ListFilter) {
+fn render_filter_bar(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    filter: &crate::filter::ListFilter,
+) {
     let cursor_display = format!("/{}", filter.query);
     let filter_bar = Paragraph::new(Line::from(vec![
         Span::styled("Filter: ", Style::default().fg(Color::Cyan)),
         Span::styled(cursor_display, Style::default().fg(Color::White)),
         Span::styled("│", Style::default().fg(Color::DarkGray)),
     ]))
-    .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Cyan)));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
     frame.render_widget(filter_bar, area);
 }
 
@@ -300,10 +305,7 @@ pub(crate) fn build_file_list_items<'a>(
 }
 
 /// フィルタ済みファイル一覧のリストアイテムを構築する
-fn build_file_list_items_ref<'a>(
-    files: &[&'a ChangedFile],
-    selected: usize,
-) -> Vec<ListItem<'a>> {
+fn build_file_list_items_ref<'a>(files: &[&'a ChangedFile], selected: usize) -> Vec<ListItem<'a>> {
     files
         .iter()
         .enumerate()

@@ -666,8 +666,7 @@ mod tests {
     #[test]
     fn test_markdown_rich_overrides_idempotent() {
         let theme = get_theme("base16-ocean.dark");
-        let once = ThemeStyleCache::new(theme)
-            .with_markdown_rich_overrides();
+        let once = ThemeStyleCache::new(theme).with_markdown_rich_overrides();
         let twice = once.clone().with_markdown_rich_overrides();
 
         assert_eq!(once.get("text.title"), twice.get("text.title"));
@@ -688,7 +687,10 @@ mod tests {
         // text.title: rich should use Yellow (not the theme's markup.heading color)
         let base_title = base_cache.get("text.title");
         let rich_title = rich_cache.get("text.title");
-        assert_ne!(base_title, rich_title, "Rich title should differ from base theme");
+        assert_ne!(
+            base_title, rich_title,
+            "Rich title should differ from base theme"
+        );
         assert_eq!(rich_title.fg, Some(Color::Yellow));
     }
 

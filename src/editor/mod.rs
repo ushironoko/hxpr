@@ -433,8 +433,7 @@ mod tests {
         env::set_var("EDITOR", "sh");
 
         // Args from the non-existent editor should NOT carry over
-        let (cmd, args) =
-            resolve_and_split_editor(Some("__nonexistent__ --flag")).unwrap();
+        let (cmd, args) = resolve_and_split_editor(Some("__nonexistent__ --flag")).unwrap();
         assert_eq!(cmd, "sh");
         assert!(args.is_empty());
 
@@ -454,8 +453,7 @@ mod tests {
         env::set_var("PATH", empty_dir.path());
 
         // All candidates missing from PATH → returns the first parsed one
-        let (cmd, _) =
-            resolve_and_split_editor(Some("__nonexistent_config__")).unwrap();
+        let (cmd, _) = resolve_and_split_editor(Some("__nonexistent_config__")).unwrap();
         assert_eq!(cmd, "__nonexistent_config__");
 
         // Restore
@@ -471,8 +469,7 @@ mod tests {
     #[test]
     fn test_run_editor_command_not_found() {
         let command = Command::new("__octorus_nonexistent_editor__");
-        let err = run_editor_command("__octorus_nonexistent_editor__", command)
-            .unwrap_err();
+        let err = run_editor_command("__octorus_nonexistent_editor__", command).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("not found"),
