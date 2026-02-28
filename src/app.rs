@@ -291,8 +291,8 @@ pub enum ReviewAction {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PendingApproveChoice {
-    None,
-    SubmitWithoutComment,
+    Ignore,
+    Submit,
     Cancel,
 }
 
@@ -475,8 +475,8 @@ pub struct App {
     pub submission_result: Option<(bool, String)>,
     /// Timestamp when result was set (for auto-hide)
     submission_result_time: Option<Instant>,
-    /// Approve action was invoked with empty editor content; waiting for a/q confirmation.
-    pending_empty_approve_confirmation: bool,
+    /// Approve confirmation: holds the review body (empty string = no comment, Some(text) = with comment).
+    pending_approve_body: Option<String>,
     /// Spinner animation frame counter (incremented each tick)
     pub spinner_frame: usize,
     /// インラインコメントパネル内の選択インデックス
@@ -585,7 +585,7 @@ impl App {
             comment_submitting: false,
             submission_result: None,
             submission_result_time: None,
-            pending_empty_approve_confirmation: false,
+            pending_approve_body: None,
             spinner_frame: 0,
             selected_inline_comment: 0,
             jump_stack: Vec::new(),
@@ -668,7 +668,7 @@ impl App {
             comment_submitting: false,
             submission_result: None,
             submission_result_time: None,
-            pending_empty_approve_confirmation: false,
+            pending_approve_body: None,
             spinner_frame: 0,
             selected_inline_comment: 0,
             jump_stack: Vec::new(),
@@ -1479,8 +1479,7 @@ impl App {
             return;
         }
 
-        let total_batches =
-            (tracked_filenames.len() + untracked_filenames.len()).div_ceil(20) + 1;
+        let total_batches = (tracked_filenames.len() + untracked_filenames.len()).div_ceil(20) + 1;
         let (tx, rx) = mpsc::channel(total_batches);
         self.batch_diff_receiver = Some(rx);
 
@@ -1786,10 +1785,8 @@ impl App {
                 match error {
                     Some(err) => {
                         if marked_paths.is_empty() {
-                            self.submission_result = Some((
-                                false,
-                                format!("Mark {} failed: {}", action_label, err),
-                            ));
+                            self.submission_result =
+                                Some((false, format!("Mark {} failed: {}", action_label, err)));
                         } else {
                             self.submission_result = Some((
                                 false,
@@ -1806,11 +1803,7 @@ impl App {
                     None => {
                         self.submission_result = Some((
                             true,
-                            format!(
-                                "Marked {} file(s) as {}",
-                                marked_paths.len(),
-                                action_label
-                            ),
+                            format!("Marked {} file(s) as {}", marked_paths.len(), action_label),
                         ));
                     }
                 }
@@ -1867,9 +1860,19 @@ impl App {
         self.comment_submitting
     }
 
-    /// Empty approve confirmation prompt is active.
-    pub fn is_pending_empty_approve_confirmation(&self) -> bool {
-        self.pending_empty_approve_confirmation
+    /// Approve confirmation prompt is active.
+    pub fn is_pending_approve_confirmation(&self) -> bool {
+        self.pending_approve_body.is_some()
+    }
+
+    /// Build dynamic footer text for approve confirmation prompt.
+    pub fn approve_confirmation_footer_text(&self) -> String {
+        let kb = &self.config.keybindings;
+        format!(
+            "{}: confirm approve | {}/Esc: cancel",
+            kb.approve.display(),
+            kb.quit.display(),
+        )
     }
 
     /// AI Rally イベントのポーリング
@@ -2345,22 +2348,24 @@ impl App {
                     }
 
                     // Loading状態ではqのみ受け付け
-                if matches!(self.data_state, DataState::Loading) {
-                    if key.code == KeyCode::Char('q') {
-                        self.should_quit = true;
-                    }
-                    return Ok(());
-                }
-
-                if self.pending_empty_approve_confirmation {
-                    match self.handle_pending_empty_approve_choice(key.code) {
-                        PendingApproveChoice::SubmitWithoutComment => {
-                            self.submit_review_with_body(ReviewAction::Approve, "").await?;
+                    if matches!(self.data_state, DataState::Loading) {
+                        if key.code == KeyCode::Char('q') {
+                            self.should_quit = true;
                         }
-                        PendingApproveChoice::Cancel | PendingApproveChoice::None => {}
+                        return Ok(());
                     }
-                    return Ok(());
-                }
+
+                    if self.pending_approve_body.is_some() {
+                        match self.handle_pending_approve_choice(&key) {
+                            PendingApproveChoice::Submit => {
+                                let body = self.pending_approve_body.take().unwrap_or_default();
+                                self.submit_review_with_body(ReviewAction::Approve, &body)
+                                    .await?;
+                            }
+                            PendingApproveChoice::Cancel | PendingApproveChoice::Ignore => {}
+                        }
+                        return Ok(());
+                    }
                 }
 
                 match self.state {
@@ -4116,14 +4121,10 @@ impl App {
             self.state = self.previous_state;
         } else if Self::is_shift_char_shortcut(&key, 'j') {
             // Page down (J / Shift+j)
-            self.help_scroll_offset = self
-                .help_scroll_offset
-                .saturating_add(visible_lines.max(1));
+            self.help_scroll_offset = self.help_scroll_offset.saturating_add(visible_lines.max(1));
         } else if Self::is_shift_char_shortcut(&key, 'k') {
             // Page up (K / Shift+k)
-            self.help_scroll_offset = self
-                .help_scroll_offset
-                .saturating_sub(visible_lines.max(1));
+            self.help_scroll_offset = self.help_scroll_offset.saturating_sub(visible_lines.max(1));
         } else if Self::is_shift_char_shortcut(&key, 'g') {
             // Jump to bottom (G / Shift+g)
             self.help_scroll_offset = usize::MAX;
@@ -4211,16 +4212,28 @@ impl App {
 
         let Some(body) = body else {
             tracing::debug!("submit_review: body is None");
-            self.handle_empty_review_body(action);
+            if action == ReviewAction::Approve {
+                // Empty comment → show approve confirmation UI
+                self.pending_approve_body = Some(String::new());
+            } else {
+                self.submission_result = Some((false, "Review cancelled".to_string()));
+                self.submission_result_time = Some(Instant::now());
+            }
             return Ok(());
         };
 
+        if action == ReviewAction::Approve {
+            // With comment → also show approve confirmation UI
+            self.pending_approve_body = Some(body);
+            return Ok(());
+        }
+        // Comment/RequestChanges: submit immediately
         self.submit_review_with_body(action, &body).await
     }
 
     async fn submit_review_with_body(&mut self, action: ReviewAction, body: &str) -> Result<()> {
         tracing::debug!(body_len = body.len(), "submit_review: calling GitHub API");
-        match github::submit_review(&self.repo, self.pr_number(), action, &body).await {
+        match github::submit_review(&self.repo, self.pr_number(), action, body).await {
             Ok(()) => {
                 let action_str = match action {
                     ReviewAction::Approve => "approved",
@@ -4237,37 +4250,25 @@ impl App {
                 self.submission_result_time = Some(Instant::now());
             }
         }
-        self.pending_empty_approve_confirmation = false;
+        self.pending_approve_body = None;
         Ok(())
     }
 
-    fn handle_empty_review_body(&mut self, action: ReviewAction) {
-        if action == ReviewAction::Approve {
-            self.pending_empty_approve_confirmation = true;
+    fn handle_pending_approve_choice(&mut self, key: &KeyEvent) -> PendingApproveChoice {
+        if self.pending_approve_body.is_none() {
+            return PendingApproveChoice::Ignore;
+        }
+        if self.matches_single_key(key, &self.config.keybindings.approve) {
+            PendingApproveChoice::Submit
+        } else if self.matches_single_key(key, &self.config.keybindings.quit)
+            || key.code == KeyCode::Esc
+        {
+            self.pending_approve_body = None;
             self.submission_result = None;
             self.submission_result_time = None;
+            PendingApproveChoice::Cancel
         } else {
-            self.submission_result = Some((false, "Review cancelled".to_string()));
-            self.submission_result_time = Some(Instant::now());
-        }
-    }
-
-    fn handle_pending_empty_approve_choice(&mut self, key: KeyCode) -> PendingApproveChoice {
-        if !self.pending_empty_approve_confirmation {
-            return PendingApproveChoice::None;
-        }
-        match key {
-            KeyCode::Char('a') => {
-                self.pending_empty_approve_confirmation = false;
-                PendingApproveChoice::SubmitWithoutComment
-            }
-            KeyCode::Char('q') => {
-                self.pending_empty_approve_confirmation = false;
-                self.submission_result = None;
-                self.submission_result_time = None;
-                PendingApproveChoice::Cancel
-            }
-            _ => PendingApproveChoice::None,
+            PendingApproveChoice::Ignore
         }
     }
 
@@ -5643,11 +5644,7 @@ impl App {
     }
 
     /// フィルタ適用中のナビゲーション（j/k/↑/↓）。処理した場合は true を返す。
-    fn handle_filter_navigation(
-        &mut self,
-        target: &str,
-        is_down: bool,
-    ) -> bool {
+    fn handle_filter_navigation(&mut self, target: &str, is_down: bool) -> bool {
         let filter = match target {
             "pr" => self.pr_list_filter.as_mut(),
             "file" => self.file_list_filter.as_mut(),
@@ -5971,6 +5968,7 @@ impl App {
         self.pr_number = Some(pr_number);
         self.state = AppState::FileList;
         self.file_list_filter = None;
+        self.pending_approve_body = None;
 
         // PR遷移時にバックグラウンドキャッシュをクリア（staleキャッシュ防止）
         self.diff_cache_receiver = None;
@@ -6046,6 +6044,7 @@ impl App {
             self.lazy_diff_receiver = None;
             self.lazy_diff_pending_file = None;
             self.comment_submitting = false;
+            self.pending_approve_body = None;
             self.comments_loading = false;
             self.discussion_comments_loading = false;
             self.highlighted_cache_store.clear();
@@ -6125,7 +6124,7 @@ impl App {
             comment_submitting: false,
             submission_result: None,
             submission_result_time: None,
-            pending_empty_approve_confirmation: false,
+            pending_approve_body: None,
             spinner_frame: 0,
             selected_inline_comment: 0,
             jump_stack: Vec::new(),
@@ -6158,8 +6157,8 @@ impl App {
     }
 
     #[cfg(test)]
-    pub fn set_pending_empty_approve_confirmation_for_test(&mut self, pending: bool) {
-        self.pending_empty_approve_confirmation = pending;
+    pub fn set_pending_approve_body_for_test(&mut self, body: Option<String>) {
+        self.pending_approve_body = body;
     }
 }
 
@@ -7637,7 +7636,10 @@ mod tests {
 
         // File should NOT be updated because origin_pr != current pr_number
         if let DataState::Loaded { files, .. } = &app.data_state {
-            assert!(!files[0].viewed, "File should remain unviewed due to PR mismatch");
+            assert!(
+                !files[0].viewed,
+                "File should remain unviewed due to PR mismatch"
+            );
         } else {
             panic!("Expected DataState::Loaded");
         }
@@ -8337,38 +8339,53 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_empty_review_body_approve_sets_pending_confirmation() {
+    fn test_pending_approve_choice_q_cancels_and_clears_prompt() {
         let mut app = App::new_for_test();
-        app.handle_empty_review_body(ReviewAction::Approve);
-
-        assert!(app.pending_empty_approve_confirmation);
-        assert!(app.submission_result.is_none());
-        assert!(app.submission_result_time.is_none());
-    }
-
-    #[test]
-    fn test_pending_empty_approve_choice_q_cancels_and_clears_prompt() {
-        let mut app = App::new_for_test();
-        app.pending_empty_approve_confirmation = true;
+        app.pending_approve_body = Some(String::new());
         app.submission_result = Some((true, "placeholder".to_string()));
         app.submission_result_time = Some(Instant::now());
 
-        let choice = app.handle_pending_empty_approve_choice(KeyCode::Char('q'));
+        let choice = app.handle_pending_approve_choice(&make_key(KeyCode::Char('q')));
 
         assert_eq!(choice, PendingApproveChoice::Cancel);
-        assert!(!app.pending_empty_approve_confirmation);
+        assert!(app.pending_approve_body.is_none());
         assert!(app.submission_result.is_none());
         assert!(app.submission_result_time.is_none());
     }
 
     #[test]
-    fn test_pending_empty_approve_choice_a_submits_without_comment() {
+    fn test_pending_approve_choice_esc_cancels() {
         let mut app = App::new_for_test();
-        app.pending_empty_approve_confirmation = true;
+        app.pending_approve_body = Some("some body".to_string());
 
-        let choice = app.handle_pending_empty_approve_choice(KeyCode::Char('a'));
+        let choice = app.handle_pending_approve_choice(&make_key(KeyCode::Esc));
 
-        assert_eq!(choice, PendingApproveChoice::SubmitWithoutComment);
-        assert!(!app.pending_empty_approve_confirmation);
+        assert_eq!(choice, PendingApproveChoice::Cancel);
+        assert!(app.pending_approve_body.is_none());
+    }
+
+    #[test]
+    fn test_pending_approve_choice_a_submits_empty_body() {
+        let mut app = App::new_for_test();
+        app.pending_approve_body = Some(String::new());
+
+        let choice = app.handle_pending_approve_choice(&make_key(KeyCode::Char('a')));
+
+        assert_eq!(choice, PendingApproveChoice::Submit);
+        // pending_approve_body is NOT taken by handle_pending_approve_choice;
+        // it is taken by the caller (handle_input) before calling submit_review_with_body.
+        assert!(app.pending_approve_body.is_some());
+    }
+
+    #[test]
+    fn test_pending_approve_choice_a_submits_with_body() {
+        let mut app = App::new_for_test();
+        app.pending_approve_body = Some("LGTM!".to_string());
+
+        let choice = app.handle_pending_approve_choice(&make_key(KeyCode::Char('a')));
+
+        assert_eq!(choice, PendingApproveChoice::Submit);
+        assert!(app.pending_approve_body.is_some());
+        assert_eq!(app.pending_approve_body.as_deref(), Some("LGTM!"));
     }
 }
