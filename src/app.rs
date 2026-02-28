@@ -4222,12 +4222,7 @@ impl App {
             return Ok(());
         };
 
-        if action == ReviewAction::Approve {
-            // With comment → also show approve confirmation UI
-            self.pending_approve_body = Some(body);
-            return Ok(());
-        }
-        // Comment/RequestChanges: submit immediately
+        // All actions with non-empty body: submit immediately
         self.submit_review_with_body(action, &body).await
     }
 
