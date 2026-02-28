@@ -1181,10 +1181,7 @@ pub fn is_markdown_ext(ext: &str) -> bool {
 
 /// Check if a filename has a markdown extension.
 pub fn is_markdown_ext_from_filename(filename: &str) -> bool {
-    filename
-        .rsplit('.')
-        .next()
-        .is_some_and(is_markdown_ext)
+    filename.rsplit('.').next().is_some_and(is_markdown_ext)
 }
 
 #[cfg(test)]
@@ -1631,7 +1628,10 @@ mod tests {
     #[test]
     fn test_markdown_default_extension() {
         assert_eq!(SupportedLanguage::Markdown.default_extension(), "md");
-        assert_eq!(SupportedLanguage::MarkdownInline.default_extension(), "md_inline");
+        assert_eq!(
+            SupportedLanguage::MarkdownInline.default_extension(),
+            "md_inline"
+        );
     }
 
     #[test]

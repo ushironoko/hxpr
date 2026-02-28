@@ -118,11 +118,8 @@ fn render_file_list_pane(
                 );
             frame.render_widget(empty, chunks[1]);
         } else {
-            let filtered: Vec<&ChangedFile> = filter
-                .matched_indices
-                .iter()
-                .map(|&i| &files[i])
-                .collect();
+            let filtered: Vec<&ChangedFile> =
+                filter.matched_indices.iter().map(|&i| &files[i]).collect();
             let display_selected = filter.selected.unwrap_or(0);
             let display_count = filtered.len();
 
@@ -150,8 +147,8 @@ fn render_file_list_pane(
                     .begin_symbol(Some("▲"))
                     .end_symbol(Some("▼"));
 
-                let mut scrollbar_state = ScrollbarState::new(display_count.saturating_sub(1))
-                    .position(display_selected);
+                let mut scrollbar_state =
+                    ScrollbarState::new(display_count.saturating_sub(1)).position(display_selected);
 
                 frame.render_stateful_widget(
                     scrollbar,
@@ -238,23 +235,14 @@ fn render_file_list_pane(
         "←/h: focus files"
     };
     let footer_line = super::footer::build_footer_line(app, help_text);
-    let footer_border_color = if app.is_pending_empty_approve_confirmation() {
-        Color::Yellow
-    } else {
-        border_color
-    };
-    let footer = Paragraph::new(footer_line).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(footer_border_color)),
-    );
+    let footer = Paragraph::new(footer_line).block(super::footer::build_footer_block_with_border(
+        app,
+        Style::default().fg(border_color),
+    ));
     frame.render_widget(footer, chunks[next_chunk]);
 }
 
-fn build_file_list_items_ref<'a>(
-    files: &[&'a ChangedFile],
-    selected: usize,
-) -> Vec<ListItem<'a>> {
+fn build_file_list_items_ref<'a>(files: &[&'a ChangedFile], selected: usize) -> Vec<ListItem<'a>> {
     use ratatui::style::Modifier;
 
     files
@@ -364,16 +352,10 @@ fn render_diff_footer(
     border_color: Color,
 ) {
     let footer_line = super::footer::build_footer_line(app, help_text);
-    let footer_border_color = if app.is_pending_empty_approve_confirmation() {
-        Color::Yellow
-    } else {
-        border_color
-    };
-    let footer = Paragraph::new(footer_line).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(footer_border_color)),
-    );
+    let footer = Paragraph::new(footer_line).block(super::footer::build_footer_block_with_border(
+        app,
+        Style::default().fg(border_color),
+    ));
     frame.render_widget(footer, area);
 }
 

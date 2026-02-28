@@ -13,10 +13,7 @@ use crate::app::App;
 use crate::github::PullRequestSummary;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
-    let has_filter_bar = app
-        .pr_list_filter
-        .as_ref()
-        .is_some_and(|f| f.input_active);
+    let has_filter_bar = app.pr_list_filter.as_ref().is_some_and(|f| f.input_active);
 
     let mut constraints = vec![
         Constraint::Length(3), // Header
@@ -62,17 +59,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 if let Some(ref filter) = app.pr_list_filter {
                     if filter.matched_indices.is_empty() {
                         // マッチ0件
-                        let empty_msg =
-                            format!("No matches for '{}'", filter.query);
+                        let empty_msg = format!("No matches for '{}'", filter.query);
                         let empty = Paragraph::new(empty_msg)
                             .style(Style::default().fg(Color::DarkGray))
                             .block(
                                 Block::default()
                                     .borders(Borders::ALL)
-                                    .title(format!(
-                                        "Pull Requests (0/{})",
-                                        prs.len()
-                                    )),
+                                    .title(format!("Pull Requests (0/{})", prs.len())),
                             );
                         frame.render_widget(empty, chunks[1]);
 
@@ -86,11 +79,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                         render_footer(frame, chunks[footer_idx], app);
                         return;
                     }
-                    let filtered: Vec<&PullRequestSummary> = filter
-                        .matched_indices
-                        .iter()
-                        .map(|&i| &prs[i])
-                        .collect();
+                    let filtered: Vec<&PullRequestSummary> =
+                        filter.matched_indices.iter().map(|&i| &prs[i]).collect();
                     let sel = filter.selected.unwrap_or(0);
                     let total = filtered.len();
                     (filtered, sel, total)
@@ -172,14 +162,22 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_footer(frame, chunks[footer_idx], app);
 }
 
-fn render_filter_bar(frame: &mut Frame, area: ratatui::layout::Rect, filter: &crate::filter::ListFilter) {
+fn render_filter_bar(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    filter: &crate::filter::ListFilter,
+) {
     let cursor_display = format!("/{}", filter.query);
     let filter_bar = Paragraph::new(Line::from(vec![
         Span::styled("Filter: ", Style::default().fg(Color::Cyan)),
         Span::styled(cursor_display, Style::default().fg(Color::White)),
         Span::styled("│", Style::default().fg(Color::DarkGray)),
     ]))
-    .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Cyan)));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
     frame.render_widget(filter_bar, area);
 }
 

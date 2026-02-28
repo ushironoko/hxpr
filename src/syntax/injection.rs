@@ -201,8 +201,14 @@ mod tests {
 
     #[test]
     fn test_normalize_language_name_markdown_inline() {
-        assert_eq!(normalize_language_name("markdown_inline"), "markdown_inline");
-        assert_eq!(normalize_language_name("markdown-inline"), "markdown_inline");
+        assert_eq!(
+            normalize_language_name("markdown_inline"),
+            "markdown_inline"
+        );
+        assert_eq!(
+            normalize_language_name("markdown-inline"),
+            "markdown_inline"
+        );
     }
 
     #[test]

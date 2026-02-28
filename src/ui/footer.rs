@@ -12,9 +12,9 @@ use crate::app::App;
 /// (full-width override). Otherwise, it shows the normal help text with
 /// optional comments loading indicator appended.
 pub fn build_footer_line<'a>(app: &'a App, help_text: &'a str) -> Line<'a> {
-    if app.is_pending_empty_approve_confirmation() {
+    if app.is_pending_approve_confirmation() {
         Line::from(Span::styled(
-            "a: approve without comment | q: cancel approval",
+            app.approve_confirmation_footer_text(),
             Style::default().fg(Color::Yellow),
         ))
     } else if app.is_submitting_comment() {
@@ -46,10 +46,14 @@ pub fn build_footer_line<'a>(app: &'a App, help_text: &'a str) -> Line<'a> {
 }
 
 pub fn build_footer_block(app: &App) -> Block<'static> {
-    let style = if app.is_pending_empty_approve_confirmation() {
+    build_footer_block_with_border(app, Style::default())
+}
+
+pub fn build_footer_block_with_border(app: &App, base_style: Style) -> Block<'static> {
+    let style = if app.is_pending_approve_confirmation() {
         Style::default().fg(Color::Yellow)
     } else {
-        Style::default()
+        base_style
     };
     Block::default().borders(Borders::ALL).border_style(style)
 }
@@ -129,28 +133,27 @@ mod tests {
     }
 
     #[test]
-    fn test_pending_empty_approve_confirmation_shows_prompt() {
+    fn test_pending_approve_confirmation_shows_prompt() {
         let mut app = App::new_for_test();
-        app.set_pending_empty_approve_confirmation_for_test(true);
+        app.set_pending_approve_body_for_test(Some(String::new()));
 
+        let expected = app.approve_confirmation_footer_text();
         let line = build_footer_line(&app, HELP);
         let text = line_to_string(&line);
-        assert_eq!(text, "a: approve without comment | q: cancel approval");
+        assert_eq!(text, expected);
         assert_eq!(line.spans[0].style.fg, Some(Color::Yellow));
     }
 
     #[test]
-    fn test_pending_empty_approve_confirmation_reverts_to_help_when_cleared() {
+    fn test_pending_approve_confirmation_reverts_to_help_when_cleared() {
         let mut app = App::new_for_test();
-        app.set_pending_empty_approve_confirmation_for_test(true);
+        app.set_pending_approve_body_for_test(Some(String::new()));
 
+        let expected = app.approve_confirmation_footer_text();
         let pending_line = build_footer_line(&app, HELP);
-        assert_eq!(
-            line_to_string(&pending_line),
-            "a: approve without comment | q: cancel approval"
-        );
+        assert_eq!(line_to_string(&pending_line), expected);
 
-        app.set_pending_empty_approve_confirmation_for_test(false);
+        app.set_pending_approve_body_for_test(None);
         let normal_line = build_footer_line(&app, HELP);
         assert_eq!(line_to_string(&normal_line), HELP);
     }

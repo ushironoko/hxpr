@@ -109,7 +109,14 @@ fn bench_selected_line_rendering(c: &mut Criterion) {
     for line_count in [100, 500, 1000] {
         let patch = generate_diff_patch(line_count);
         let mut parser_pool = ParserPool::new();
-        let cache = build_diff_cache(&patch, "test.rs", "base16-ocean.dark", &mut parser_pool, false, 4);
+        let cache = build_diff_cache(
+            &patch,
+            "test.rs",
+            "base16-ocean.dark",
+            &mut parser_pool,
+            false,
+            4,
+        );
         let empty_comments: HashSet<usize> = HashSet::new();
 
         // Benchmark current approach: resolve and clone each span, add REVERSED
@@ -188,7 +195,14 @@ fn bench_visible_range_processing(c: &mut Criterion) {
     for total_lines in [1000, 5000] {
         let patch = generate_diff_patch(total_lines);
         let mut parser_pool = ParserPool::new();
-        let cache = build_diff_cache(&patch, "test.rs", "base16-ocean.dark", &mut parser_pool, false, 4);
+        let cache = build_diff_cache(
+            &patch,
+            "test.rs",
+            "base16-ocean.dark",
+            &mut parser_pool,
+            false,
+            4,
+        );
         let empty_comments: HashSet<usize> = HashSet::new();
 
         let visible_height = 50_usize;
@@ -379,7 +393,14 @@ fn bench_archive_selected_line(c: &mut Criterion) {
     for line_count in [100, 500, 1000] {
         let patch = generate_diff_patch(line_count);
         let mut parser_pool = ParserPool::new();
-        let cache = build_diff_cache(&patch, "test.rs", "base16-ocean.dark", &mut parser_pool, false, 4);
+        let cache = build_diff_cache(
+            &patch,
+            "test.rs",
+            "base16-ocean.dark",
+            &mut parser_pool,
+            false,
+            4,
+        );
 
         group.bench_with_input(
             BenchmarkId::new("line_style", line_count),
@@ -430,7 +451,14 @@ fn bench_archive_visible_range(c: &mut Criterion) {
     for total_lines in [1000, 5000] {
         let patch = generate_diff_patch(total_lines);
         let mut parser_pool = ParserPool::new();
-        let cache = build_diff_cache(&patch, "test.rs", "base16-ocean.dark", &mut parser_pool, false, 4);
+        let cache = build_diff_cache(
+            &patch,
+            "test.rs",
+            "base16-ocean.dark",
+            &mut parser_pool,
+            false,
+            4,
+        );
 
         let visible_height = 50_usize;
         let scroll_offset = total_lines / 2;

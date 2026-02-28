@@ -50,11 +50,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 
     let scroll_info = if total_lines > content_height {
-        format!(
-            " ({}/{})",
-            app.help_scroll_offset + 1,
-            max_scroll + 1
-        )
+        format!(" ({}/{})", app.help_scroll_offset + 1, max_scroll + 1)
     } else {
         String::new()
     };
@@ -70,8 +66,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     // Scrollbar
     if total_lines > content_height {
-        let mut scrollbar_state = ScrollbarState::new(max_scroll + 1)
-            .position(app.help_scroll_offset);
+        let mut scrollbar_state =
+            ScrollbarState::new(max_scroll + 1).position(app.help_scroll_offset);
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(None)
             .end_symbol(None);

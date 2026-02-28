@@ -171,8 +171,12 @@ fn render_waiting_prompt(frame: &mut Frame, area: Rect, state: &AiRallyState) {
                 let files_display = if info.files_modified.len() <= 5 {
                     info.files_modified.join(", ")
                 } else {
-                    let shown: Vec<&str> =
-                        info.files_modified.iter().take(5).map(|s| s.as_str()).collect();
+                    let shown: Vec<&str> = info
+                        .files_modified
+                        .iter()
+                        .take(5)
+                        .map(|s| s.as_str())
+                        .collect();
                     format!(
                         "{} (+{} more)",
                         shown.join(", "),
