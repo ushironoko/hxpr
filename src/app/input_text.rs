@@ -161,7 +161,7 @@ impl App {
                 .await;
         });
     }
-    pub(crate) fn handle_pending_approve_choice(&mut self, key: &KeyEvent) -> PendingApproveChoice {
+    pub(super) fn handle_pending_approve_choice(&mut self, key: &KeyEvent) -> PendingApproveChoice {
         if self.pending_approve_body.is_none() {
             return PendingApproveChoice::Ignore;
         }

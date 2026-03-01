@@ -158,7 +158,7 @@ impl App {
 
         Ok(())
     }
-    pub(crate) async fn handle_diff_input_common(
+    pub(super) async fn handle_diff_input_common(
         &mut self,
         key: event::KeyEvent,
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,

@@ -151,7 +151,7 @@ pub enum AppState {
 
 /// Variant for diff view handling (fullscreen vs split pane)
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum DiffViewVariant {
+pub(super) enum DiffViewVariant {
     /// Fullscreen diff view
     Fullscreen,
     /// Split pane diff view (right pane)
@@ -256,7 +256,7 @@ pub enum ReviewAction {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PendingApproveChoice {
+pub(super) enum PendingApproveChoice {
     Ignore,
     Submit,
     Cancel,
@@ -278,7 +278,7 @@ pub enum RefreshRequest {
 
 /// PRファイルの viewed 変更結果
 #[derive(Debug, Clone)]
-pub enum MarkViewedResult {
+pub(super) enum MarkViewedResult {
     Completed {
         marked_paths: Vec<String>,
         total_targets: usize,

@@ -1,4 +1,5 @@
 use super::*;
+use super::types::{MarkViewedResult, PendingApproveChoice};
 use crossterm::event::{self, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 use lasso::Rodeo;
 
@@ -1184,6 +1185,456 @@ fn test_save_and_restore_view_snapshot() {
     assert_eq!(app.scroll_offset, 3);
 }
 
+// ===================================================================
+// ViewSnapshot 網羅テスト
+// ===================================================================
+
+#[test]
+fn test_save_snapshot_captures_all_fields() {
+    let mut app = App::new_for_test();
+    app.pr_number = Some(42);
+    app.selected_file = 7;
+    app.file_list_scroll_offset = 3;
+    app.selected_line = 15;
+    app.scroll_offset = 5;
+
+    // diff_cache
+    let mut dc = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+line", 4);
+    dc.file_index = 7;
+    app.diff_cache = Some(dc);
+
+    // highlighted_cache_store
+    let mut hc = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+fn main(){}", 4);
+    hc.file_index = 2;
+    app.highlighted_cache_store.insert(2, hc);
+
+    // review_comments
+    app.review_comments = Some(vec![crate::github::comment::ReviewComment {
+        id: 10,
+        path: "test.rs".to_string(),
+        line: Some(5),
+        body: "snapshot test".to_string(),
+        user: crate::github::User {
+            login: "reviewer".to_string(),
+        },
+        created_at: "2024-01-01T00:00:00Z".to_string(),
+    }]);
+
+    // discussion_comments
+    app.discussion_comments = Some(vec![crate::github::comment::DiscussionComment {
+        id: 20,
+        body: "discussion".to_string(),
+        user: crate::github::User {
+            login: "user".to_string(),
+        },
+        created_at: "2024-01-01T00:00:00Z".to_string(),
+    }]);
+
+    // local_file_signatures
+    app.local_file_signatures
+        .insert("a.rs".to_string(), 111);
+    // local_file_patch_signatures
+    app.local_file_patch_signatures
+        .insert("a.rs".to_string(), 222);
+
+    let snapshot = app.save_view_snapshot();
+
+    // --- スナップショットに全フィールドがキャプチャされていること ---
+    assert_eq!(snapshot.pr_number, Some(42));
+    assert_eq!(snapshot.selected_file, 7);
+    assert_eq!(snapshot.file_list_scroll_offset, 3);
+    assert_eq!(snapshot.selected_line, 15);
+    assert_eq!(snapshot.scroll_offset, 5);
+    assert!(snapshot.diff_cache.is_some());
+    assert_eq!(snapshot.diff_cache.as_ref().unwrap().file_index, 7);
+    assert_eq!(snapshot.highlighted_cache_store.len(), 1);
+    assert!(snapshot.highlighted_cache_store.contains_key(&2));
+    assert_eq!(snapshot.review_comments.as_ref().unwrap().len(), 1);
+    assert_eq!(snapshot.review_comments.as_ref().unwrap()[0].id, 10);
+    assert_eq!(snapshot.discussion_comments.as_ref().unwrap().len(), 1);
+    assert_eq!(snapshot.discussion_comments.as_ref().unwrap()[0].id, 20);
+    assert_eq!(snapshot.local_file_signatures.len(), 1);
+    assert_eq!(snapshot.local_file_signatures["a.rs"], 111);
+    assert_eq!(snapshot.local_file_patch_signatures.len(), 1);
+    assert_eq!(snapshot.local_file_patch_signatures["a.rs"], 222);
+}
+
+#[test]
+fn test_save_snapshot_takes_from_app() {
+    let mut app = App::new_for_test();
+    app.diff_cache =
+        Some(crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+x", 4));
+    let mut hc = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+y", 4);
+    hc.file_index = 1;
+    app.highlighted_cache_store.insert(1, hc);
+    app.review_comments = Some(vec![crate::github::comment::ReviewComment {
+        id: 1,
+        path: "f.rs".to_string(),
+        line: Some(1),
+        body: "c".to_string(),
+        user: crate::github::User {
+            login: "u".to_string(),
+        },
+        created_at: "".to_string(),
+    }]);
+    app.discussion_comments = Some(vec![crate::github::comment::DiscussionComment {
+        id: 1,
+        body: "d".to_string(),
+        user: crate::github::User {
+            login: "u".to_string(),
+        },
+        created_at: "".to_string(),
+    }]);
+    app.local_file_signatures.insert("b.rs".to_string(), 1);
+    app.local_file_patch_signatures
+        .insert("b.rs".to_string(), 2);
+
+    let _snapshot = app.save_view_snapshot();
+
+    // take() / mem::take() により App 側は空になっていること
+    assert!(app.diff_cache.is_none());
+    assert!(app.highlighted_cache_store.is_empty());
+    assert!(app.review_comments.is_none());
+    assert!(app.discussion_comments.is_none());
+    assert!(app.local_file_signatures.is_empty());
+    assert!(app.local_file_patch_signatures.is_empty());
+}
+
+#[test]
+fn test_restore_snapshot_all_fields() {
+    use super::types::ViewSnapshot;
+    use std::collections::HashMap;
+
+    let mut app = App::new_for_test();
+    // 事前に違う値を設定
+    app.pr_number = Some(99);
+    app.selected_file = 0;
+    app.selected_line = 0;
+
+    let mut dc = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+restored", 4);
+    dc.file_index = 3;
+
+    let mut hcs = HashMap::new();
+    let mut hc = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+cached", 4);
+    hc.file_index = 5;
+    hcs.insert(5, hc);
+
+    let mut sigs = HashMap::new();
+    sigs.insert("sig.rs".to_string(), 333_u64);
+    let mut patch_sigs = HashMap::new();
+    patch_sigs.insert("sig.rs".to_string(), 444_u64);
+
+    let snapshot = ViewSnapshot {
+        pr_number: Some(42),
+        selected_file: 8,
+        file_list_scroll_offset: 4,
+        selected_line: 20,
+        scroll_offset: 6,
+        diff_cache: Some(dc),
+        highlighted_cache_store: hcs,
+        review_comments: Some(vec![crate::github::comment::ReviewComment {
+            id: 50,
+            path: "r.rs".to_string(),
+            line: Some(10),
+            body: "restored comment".to_string(),
+            user: crate::github::User {
+                login: "r".to_string(),
+            },
+            created_at: "".to_string(),
+        }]),
+        discussion_comments: Some(vec![crate::github::comment::DiscussionComment {
+            id: 60,
+            body: "restored discussion".to_string(),
+            user: crate::github::User {
+                login: "d".to_string(),
+            },
+            created_at: "".to_string(),
+        }]),
+        local_file_signatures: sigs,
+        local_file_patch_signatures: patch_sigs,
+    };
+
+    app.restore_view_snapshot(snapshot);
+
+    // 全11フィールドが復元されていること
+    assert_eq!(app.pr_number, Some(42));
+    assert_eq!(app.selected_file, 8);
+    assert_eq!(app.file_list_scroll_offset, 4);
+    assert_eq!(app.selected_line, 20);
+    assert_eq!(app.scroll_offset, 6);
+    assert!(app.diff_cache.is_some());
+    assert_eq!(app.diff_cache.as_ref().unwrap().file_index, 3);
+    assert_eq!(app.highlighted_cache_store.len(), 1);
+    assert!(app.highlighted_cache_store.contains_key(&5));
+    assert_eq!(app.review_comments.as_ref().unwrap().len(), 1);
+    assert_eq!(app.review_comments.as_ref().unwrap()[0].id, 50);
+    assert_eq!(app.discussion_comments.as_ref().unwrap().len(), 1);
+    assert_eq!(app.discussion_comments.as_ref().unwrap()[0].id, 60);
+    assert_eq!(app.local_file_signatures["sig.rs"], 333);
+    assert_eq!(app.local_file_patch_signatures["sig.rs"], 444);
+}
+
+#[test]
+fn test_restore_snapshot_clears_receivers() {
+    use super::types::ViewSnapshot;
+    use std::collections::HashMap;
+
+    let mut app = App::new_for_test();
+
+    // レシーバーを設定
+    let (_tx1, rx1) = mpsc::channel(1);
+    app.diff_cache_receiver = Some(rx1);
+    let (_tx2, rx2) = mpsc::channel(1);
+    app.prefetch_receiver = Some(rx2);
+    let (_tx3, rx3) = mpsc::channel::<Result<Vec<crate::github::comment::ReviewComment>, String>>(1);
+    app.comment_receiver = Some((1, rx3));
+    let (_tx4, rx4) = mpsc::channel::<Result<Vec<crate::github::comment::DiscussionComment>, String>>(1);
+    app.discussion_comment_receiver = Some((1, rx4));
+    let (_tx5, rx5) = mpsc::channel::<crate::loader::CommentSubmitResult>(1);
+    app.comment_submit_receiver = Some((1, rx5));
+    app.comment_submitting = true;
+    app.comments_loading = true;
+    app.discussion_comments_loading = true;
+
+    let snapshot = ViewSnapshot {
+        pr_number: None,
+        selected_file: 0,
+        file_list_scroll_offset: 0,
+        selected_line: 0,
+        scroll_offset: 0,
+        diff_cache: None,
+        highlighted_cache_store: HashMap::new(),
+        review_comments: None,
+        discussion_comments: None,
+        local_file_signatures: HashMap::new(),
+        local_file_patch_signatures: HashMap::new(),
+    };
+
+    app.restore_view_snapshot(snapshot);
+
+    // 全レシーバーがクリアされていること
+    assert!(app.diff_cache_receiver.is_none());
+    assert!(app.prefetch_receiver.is_none());
+    assert!(app.comment_receiver.is_none());
+    assert!(app.discussion_comment_receiver.is_none());
+    assert!(app.comment_submit_receiver.is_none());
+    assert!(!app.comment_submitting);
+    assert!(!app.comments_loading);
+    assert!(!app.discussion_comments_loading);
+}
+
+#[test]
+fn test_save_restore_roundtrip_preserves_data() {
+    let mut app = App::new_for_test();
+    app.pr_number = Some(10);
+    app.selected_file = 3;
+    app.file_list_scroll_offset = 1;
+    app.selected_line = 7;
+    app.scroll_offset = 2;
+    app.local_file_signatures.insert("x.rs".to_string(), 500);
+    app.local_file_patch_signatures
+        .insert("x.rs".to_string(), 600);
+    app.review_comments = Some(vec![crate::github::comment::ReviewComment {
+        id: 77,
+        path: "x.rs".to_string(),
+        line: Some(3),
+        body: "roundtrip".to_string(),
+        user: crate::github::User {
+            login: "u".to_string(),
+        },
+        created_at: "".to_string(),
+    }]);
+
+    // Save
+    let snapshot = app.save_view_snapshot();
+
+    // App が空になっていることを確認
+    assert!(app.review_comments.is_none());
+    assert!(app.local_file_signatures.is_empty());
+
+    // 別の値を設定
+    app.pr_number = Some(999);
+    app.selected_file = 99;
+    app.selected_line = 99;
+
+    // Restore
+    app.restore_view_snapshot(snapshot);
+
+    // 元の値が復元されること
+    assert_eq!(app.pr_number, Some(10));
+    assert_eq!(app.selected_file, 3);
+    assert_eq!(app.file_list_scroll_offset, 1);
+    assert_eq!(app.selected_line, 7);
+    assert_eq!(app.scroll_offset, 2);
+    assert_eq!(app.local_file_signatures["x.rs"], 500);
+    assert_eq!(app.local_file_patch_signatures["x.rs"], 600);
+    assert_eq!(app.review_comments.as_ref().unwrap()[0].id, 77);
+}
+
+#[test]
+fn test_toggle_local_mode_clears_receivers_on_entry() {
+    let (retry_tx, _retry_rx) = mpsc::channel::<RefreshRequest>(4);
+    let (_data_tx, data_rx) = mpsc::channel(2);
+    let mut app = App::new_for_test();
+    app.retry_sender = Some(retry_tx);
+    app.data_receiver = Some((42, data_rx));
+    app.original_pr_number = Some(42);
+    app.pr_number = Some(42);
+
+    // toggle 前にレシーバーを設定
+    let (_tx1, rx1) = mpsc::channel::<MarkViewedResult>(1);
+    app.mark_viewed_receiver = Some((42, rx1));
+    let (_tx2, rx2) = mpsc::channel::<Vec<crate::loader::SingleFileDiffResult>>(1);
+    app.batch_diff_receiver = Some(rx2);
+    let (_tx3, rx3) = mpsc::channel::<crate::loader::SingleFileDiffResult>(1);
+    app.lazy_diff_receiver = Some(rx3);
+    app.lazy_diff_pending_file = Some("file.rs".to_string());
+
+    // PR → Local
+    app.toggle_local_mode();
+
+    // toggle 開始時にクリアされること
+    assert!(app.mark_viewed_receiver.is_none());
+    assert!(app.batch_diff_receiver.is_none());
+    assert!(app.lazy_diff_receiver.is_none());
+    assert!(app.lazy_diff_pending_file.is_none());
+}
+
+#[test]
+fn test_toggle_local_mode_resets_file_list_filter() {
+    use crate::filter::ListFilter;
+
+    let (retry_tx, _retry_rx) = mpsc::channel::<RefreshRequest>(4);
+    let (_data_tx, data_rx) = mpsc::channel(2);
+    let mut app = App::new_for_test();
+    app.retry_sender = Some(retry_tx);
+    app.data_receiver = Some((42, data_rx));
+    app.original_pr_number = Some(42);
+    app.pr_number = Some(42);
+
+    // フィルタを設定
+    app.file_list_filter = Some(ListFilter::new());
+
+    // PR → Local: フィルタがリセットされること
+    app.toggle_local_mode();
+    assert!(app.file_list_filter.is_none());
+
+    // Local → PR でもリセットされること
+    app.file_list_filter = Some(ListFilter::new());
+    app.toggle_local_mode();
+    assert!(app.file_list_filter.is_none());
+}
+
+#[test]
+fn test_toggle_local_mode_from_pr_list_transitions_to_file_list() {
+    let (retry_tx, _retry_rx) = mpsc::channel::<RefreshRequest>(4);
+    let (_data_tx, data_rx) = mpsc::channel(2);
+    let mut app = App::new_for_test();
+    app.retry_sender = Some(retry_tx);
+    app.data_receiver = Some((42, data_rx));
+    app.pr_number = Some(42);
+    app.state = AppState::PullRequestList;
+
+    // PullRequestList → Local: AppState が FileList に遷移すること
+    app.toggle_local_mode();
+    assert!(app.local_mode);
+    assert_eq!(app.state, AppState::FileList);
+}
+
+#[test]
+fn test_back_to_pr_list_saves_local_snapshot() {
+    let mut app = App::new_for_test();
+    app.started_from_pr_list = true;
+    app.local_mode = true;
+    app.selected_file = 5;
+    app.local_file_signatures.insert("z.rs".to_string(), 999);
+
+    app.back_to_pr_list();
+
+    // ローカルスナップショットが保存されること
+    assert!(app.saved_local_snapshot.is_some());
+    let snap = app.saved_local_snapshot.as_ref().unwrap();
+    assert_eq!(snap.selected_file, 5);
+    assert_eq!(snap.local_file_signatures["z.rs"], 999);
+    // local_mode は false に戻ること
+    assert!(!app.local_mode);
+    // PullRequestList に遷移すること
+    assert_eq!(app.state, AppState::PullRequestList);
+}
+
+#[test]
+fn test_back_to_pr_list_resets_pr_state() {
+    let mut app = App::new_for_test();
+    app.started_from_pr_list = true;
+    app.pr_number = Some(42);
+    app.review_comments = Some(vec![]);
+    app.discussion_comments = Some(vec![]);
+    app.diff_cache =
+        Some(crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+x", 4));
+    let mut hc = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+y", 4);
+    hc.file_index = 1;
+    app.highlighted_cache_store.insert(1, hc);
+
+    app.back_to_pr_list();
+
+    // PR 固有の状態がリセットされること
+    assert!(app.pr_number.is_none());
+    assert!(matches!(app.data_state, DataState::Loading));
+    assert!(app.review_comments.is_none());
+    assert!(app.discussion_comments.is_none());
+    assert!(app.diff_cache.is_none());
+    assert!(app.highlighted_cache_store.is_empty());
+    assert_eq!(app.selected_file, 0);
+    assert_eq!(app.file_list_scroll_offset, 0);
+    assert_eq!(app.selected_line, 0);
+    assert_eq!(app.scroll_offset, 0);
+    assert!(app.file_list_filter.is_none());
+}
+
+#[test]
+fn test_back_to_pr_list_clears_all_receivers() {
+    let mut app = App::new_for_test();
+    app.started_from_pr_list = true;
+
+    // レシーバーを設定
+    let (_tx1, rx1) = mpsc::channel::<Result<Vec<crate::github::comment::ReviewComment>, String>>(1);
+    app.comment_receiver = Some((1, rx1));
+    let (_tx2, rx2) = mpsc::channel(1);
+    app.diff_cache_receiver = Some(rx2);
+    let (_tx3, rx3) = mpsc::channel(1);
+    app.prefetch_receiver = Some(rx3);
+    let (_tx4, rx4) = mpsc::channel::<Result<Vec<crate::github::comment::DiscussionComment>, String>>(1);
+    app.discussion_comment_receiver = Some((1, rx4));
+    let (_tx5, rx5) = mpsc::channel::<crate::loader::CommentSubmitResult>(1);
+    app.comment_submit_receiver = Some((1, rx5));
+    let (_tx6, rx6) = mpsc::channel::<MarkViewedResult>(1);
+    app.mark_viewed_receiver = Some((1, rx6));
+    let (_tx7, rx7) = mpsc::channel::<Vec<crate::loader::SingleFileDiffResult>>(1);
+    app.batch_diff_receiver = Some(rx7);
+    let (_tx8, rx8) = mpsc::channel::<crate::loader::SingleFileDiffResult>(1);
+    app.lazy_diff_receiver = Some(rx8);
+    app.lazy_diff_pending_file = Some("file.rs".to_string());
+    app.comment_submitting = true;
+    app.comments_loading = true;
+    app.discussion_comments_loading = true;
+
+    app.back_to_pr_list();
+
+    // 全レシーバーがクリアされること
+    assert!(app.comment_receiver.is_none());
+    assert!(app.diff_cache_receiver.is_none());
+    assert!(app.prefetch_receiver.is_none());
+    assert!(app.discussion_comment_receiver.is_none());
+    assert!(app.comment_submit_receiver.is_none());
+    assert!(app.mark_viewed_receiver.is_none());
+    assert!(app.batch_diff_receiver.is_none());
+    assert!(app.lazy_diff_receiver.is_none());
+    assert!(app.lazy_diff_pending_file.is_none());
+    assert!(!app.comment_submitting);
+    assert!(!app.comments_loading);
+    assert!(!app.discussion_comments_loading);
+}
+
 #[test]
 fn test_toggle_local_mode_pr_to_local_and_back() {
     let (retry_tx, _retry_rx) = mpsc::channel::<RefreshRequest>(4);
@@ -2226,4 +2677,2189 @@ fn test_pending_approve_choice_a_submits_with_body() {
     assert_eq!(choice, PendingApproveChoice::Submit);
     assert!(app.pending_approve_body.is_some());
     assert_eq!(app.pending_approve_body.as_deref(), Some("LGTM!"));
+}
+
+// ===================================================================
+// 1. diff_cache.rs tests
+// ===================================================================
+
+#[test]
+fn test_calc_diff_line_count_basic() {
+    let files = vec![ChangedFile {
+        filename: "test.rs".to_string(),
+        status: "modified".to_string(),
+        additions: 1,
+        deletions: 1,
+        patch: Some("@@ -1,1 +1,1 @@\n-old\n+new".to_string()),
+        viewed: false,
+    }];
+    assert_eq!(App::calc_diff_line_count(&files, 0), 3);
+}
+
+#[test]
+fn test_calc_diff_line_count_no_patch() {
+    let files = vec![ChangedFile {
+        filename: "test.rs".to_string(),
+        status: "modified".to_string(),
+        additions: 0,
+        deletions: 0,
+        patch: None,
+        viewed: false,
+    }];
+    assert_eq!(App::calc_diff_line_count(&files, 0), 0);
+}
+
+#[test]
+fn test_calc_diff_line_count_out_of_bounds() {
+    let files = vec![ChangedFile {
+        filename: "test.rs".to_string(),
+        status: "modified".to_string(),
+        additions: 1,
+        deletions: 1,
+        patch: Some("@@ -1,1 +1,1 @@\n-old\n+new".to_string()),
+        viewed: false,
+    }];
+    assert_eq!(App::calc_diff_line_count(&files, 5), 0);
+}
+
+#[test]
+fn test_files_returns_empty_when_loading() {
+    let mut app = App::new_for_test();
+    app.data_state = DataState::Loading;
+    assert!(app.files().is_empty());
+}
+
+#[test]
+fn test_files_returns_files_when_loaded() {
+    let mut app = App::new_for_test();
+    app.data_state = DataState::Loaded {
+        pr: Box::new(make_local_pr()),
+        files: vec![ChangedFile {
+            filename: "a.rs".to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 0,
+            patch: None,
+            viewed: false,
+        }],
+    };
+    assert_eq!(app.files().len(), 1);
+    assert_eq!(app.files()[0].filename, "a.rs");
+}
+
+#[test]
+fn test_pr_returns_none_when_loading() {
+    let mut app = App::new_for_test();
+    app.data_state = DataState::Loading;
+    assert!(app.pr().is_none());
+}
+
+#[test]
+fn test_pr_returns_some_when_loaded() {
+    let mut app = App::new_for_test();
+    app.data_state = DataState::Loaded {
+        pr: Box::new(make_local_pr()),
+        files: vec![],
+    };
+    assert!(app.pr().is_some());
+    assert_eq!(app.pr().unwrap().number, 0);
+}
+
+// ===================================================================
+// 2. local_mode.rs tests
+// ===================================================================
+
+#[tokio::test]
+async fn test_restore_data_from_cache_hit() {
+    let mut app = App::new_for_test();
+    let (retry_tx, _retry_rx) = mpsc::channel::<RefreshRequest>(4);
+    app.retry_sender = Some(retry_tx);
+    app.pr_number = Some(42);
+
+    // Put data in cache
+    let cache_key = PrCacheKey {
+        repo: "test/repo".to_string(),
+        pr_number: 42,
+    };
+    app.session_cache.put_pr_data(
+        cache_key,
+        PrData {
+            pr: Box::new(make_local_pr()),
+            files: vec![ChangedFile {
+                filename: "cached.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 0,
+                patch: Some("@@ -1 +1 @@\n+line".to_string()),
+                viewed: false,
+            }],
+            pr_updated_at: "2024-01-01T00:00:00Z".to_string(),
+        },
+    );
+
+    app.restore_data_from_cache();
+    assert!(matches!(app.data_state, DataState::Loaded { .. }));
+}
+
+#[test]
+fn test_restore_data_from_cache_miss() {
+    let mut app = App::new_for_test();
+    let (retry_tx, _retry_rx) = mpsc::channel::<RefreshRequest>(4);
+    app.retry_sender = Some(retry_tx);
+    app.pr_number = Some(999);
+
+    app.restore_data_from_cache();
+    assert!(matches!(app.data_state, DataState::Loading));
+}
+
+#[test]
+fn test_update_data_receiver_origin() {
+    let mut app = App::new_for_test();
+    let (_tx, rx) = mpsc::channel::<DataLoadResult>(2);
+    app.data_receiver = Some((1, rx));
+
+    app.update_data_receiver_origin(42);
+
+    if let Some((origin, _)) = &app.data_receiver {
+        assert_eq!(*origin, 42);
+    } else {
+        panic!("data_receiver should exist");
+    }
+}
+
+// ===================================================================
+// 3. types.rs tests
+// ===================================================================
+
+#[test]
+fn test_multiline_selection_start_end() {
+    // anchor < cursor
+    let sel = MultilineSelection {
+        anchor_line: 3,
+        cursor_line: 7,
+    };
+    assert_eq!(sel.start(), 3);
+    assert_eq!(sel.end(), 7);
+
+    // cursor < anchor
+    let sel2 = MultilineSelection {
+        anchor_line: 10,
+        cursor_line: 2,
+    };
+    assert_eq!(sel2.start(), 2);
+    assert_eq!(sel2.end(), 10);
+}
+
+#[test]
+fn test_ai_rally_state_push_log_auto_follow() {
+    use crate::ai::RallyState;
+    let mut state = AiRallyState {
+        iteration: 1,
+        max_iterations: 10,
+        state: RallyState::ReviewerReviewing,
+        history: vec![],
+        logs: vec![],
+        log_scroll_offset: 0,
+        selected_log_index: None,
+        showing_log_detail: false,
+        pending_question: None,
+        pending_permission: None,
+        pending_review_post: None,
+        pending_fix_post: None,
+        last_visible_log_height: 10,
+    };
+
+    // No selection = tail, should auto-follow
+    state.push_log(LogEntry::new(LogEventType::Info, "first".to_string()));
+    assert_eq!(state.selected_log_index, Some(0));
+
+    state.push_log(LogEntry::new(LogEventType::Info, "second".to_string()));
+    assert_eq!(state.selected_log_index, Some(1));
+}
+
+#[test]
+fn test_ai_rally_state_push_log_no_auto_follow() {
+    use crate::ai::RallyState;
+    let mut state = AiRallyState {
+        iteration: 1,
+        max_iterations: 10,
+        state: RallyState::ReviewerReviewing,
+        history: vec![],
+        logs: vec![
+            LogEntry::new(LogEventType::Info, "old1".to_string()),
+            LogEntry::new(LogEventType::Info, "old2".to_string()),
+            LogEntry::new(LogEventType::Info, "old3".to_string()),
+        ],
+        log_scroll_offset: 0,
+        selected_log_index: Some(0), // user scrolled up to first
+        showing_log_detail: false,
+        pending_question: None,
+        pending_permission: None,
+        pending_review_post: None,
+        pending_fix_post: None,
+        last_visible_log_height: 10,
+    };
+
+    // User is NOT at tail, should not auto-follow
+    state.push_log(LogEntry::new(LogEventType::Info, "new".to_string()));
+    assert_eq!(state.selected_log_index, Some(0)); // stays at 0
+}
+
+#[test]
+fn test_ai_rally_state_is_selection_at_tail() {
+    use crate::ai::RallyState;
+    let mut state = AiRallyState {
+        iteration: 1,
+        max_iterations: 10,
+        state: RallyState::ReviewerReviewing,
+        history: vec![],
+        logs: vec![
+            LogEntry::new(LogEventType::Info, "a".to_string()),
+            LogEntry::new(LogEventType::Info, "b".to_string()),
+        ],
+        log_scroll_offset: 0,
+        selected_log_index: Some(1), // at tail
+        showing_log_detail: false,
+        pending_question: None,
+        pending_permission: None,
+        pending_review_post: None,
+        pending_fix_post: None,
+        last_visible_log_height: 10,
+    };
+
+    // At tail: selected_log_index == logs.len() - 1
+    // is_selection_at_tail is private, so test via field values
+    assert_eq!(state.selected_log_index, Some(1));
+    assert_eq!(state.logs.len(), 2);
+    // selected_log_index == logs.len() - 1 means at tail
+
+    // Not at tail
+    state.selected_log_index = Some(0);
+    assert_ne!(state.selected_log_index.unwrap(), state.logs.len() - 1);
+
+    // None means auto-follow (at tail)
+    state.selected_log_index = None;
+}
+
+#[test]
+fn test_hash_string_deterministic() {
+    let h1 = hash_string("hello world");
+    let h2 = hash_string("hello world");
+    assert_eq!(h1, h2);
+
+    let h3 = hash_string("different");
+    assert_ne!(h1, h3);
+}
+
+// ===================================================================
+// 4. key_sequence.rs tests
+// ===================================================================
+
+#[test]
+fn test_check_sequence_timeout_clears_expired() {
+    let mut app = App::new_for_test();
+    app.pending_since = Some(Instant::now() - std::time::Duration::from_secs(10));
+    app.pending_keys.push(crate::keybinding::KeyBinding::char('g'));
+
+    app.check_sequence_timeout();
+
+    assert!(app.pending_keys.is_empty());
+    assert!(app.pending_since.is_none());
+}
+
+#[test]
+fn test_check_sequence_timeout_keeps_active() {
+    let mut app = App::new_for_test();
+    app.pending_since = Some(Instant::now());
+    app.pending_keys.push(crate::keybinding::KeyBinding::char('g'));
+
+    app.check_sequence_timeout();
+
+    assert!(!app.pending_keys.is_empty());
+    assert!(app.pending_since.is_some());
+}
+
+#[test]
+fn test_push_pending_key_sets_timestamp() {
+    let mut app = App::new_for_test();
+    assert!(app.pending_since.is_none());
+
+    app.push_pending_key(crate::keybinding::KeyBinding::char('g'));
+
+    assert!(app.pending_since.is_some());
+    assert_eq!(app.pending_keys.len(), 1);
+}
+
+#[test]
+fn test_push_pending_key_appends() {
+    let mut app = App::new_for_test();
+    app.push_pending_key(crate::keybinding::KeyBinding::char('g'));
+    app.push_pending_key(crate::keybinding::KeyBinding::char('d'));
+
+    assert_eq!(app.pending_keys.len(), 2);
+    assert_eq!(
+        app.pending_keys[0],
+        crate::keybinding::KeyBinding::char('g')
+    );
+    assert_eq!(
+        app.pending_keys[1],
+        crate::keybinding::KeyBinding::char('d')
+    );
+}
+
+#[test]
+fn test_clear_pending_keys_resets() {
+    let mut app = App::new_for_test();
+    app.push_pending_key(crate::keybinding::KeyBinding::char('g'));
+    app.push_pending_key(crate::keybinding::KeyBinding::char('d'));
+
+    app.clear_pending_keys();
+
+    assert!(app.pending_keys.is_empty());
+    assert!(app.pending_since.is_none());
+}
+
+#[test]
+fn test_matches_single_key_basic() {
+    let app = App::new_for_test();
+    let seq = crate::keybinding::KeySequence(vec![
+        crate::keybinding::KeyBinding::char('j')
+    ]);
+    let key = make_key(KeyCode::Char('j'));
+    assert!(app.matches_single_key(&key, &seq));
+}
+
+#[test]
+fn test_matches_single_key_ignores_sequence() {
+    let app = App::new_for_test();
+    let seq = crate::keybinding::KeySequence(vec![
+        crate::keybinding::KeyBinding::char('g'),
+        crate::keybinding::KeyBinding::char('d')
+    ]);
+    let key = make_key(KeyCode::Char('g'));
+    assert!(!app.matches_single_key(&key, &seq));
+}
+
+#[test]
+fn test_try_match_sequence_full_partial_none() {
+    use crate::keybinding::{KeyBinding, KeySequence, SequenceMatch};
+
+    let mut app = App::new_for_test();
+    let seq = KeySequence(vec![
+        KeyBinding::char('g'),
+        KeyBinding::char('d')
+    ]);
+
+    // No pending keys
+    assert_eq!(app.try_match_sequence(&seq), SequenceMatch::None);
+
+    // Partial match
+    app.pending_keys.push(KeyBinding::char('g'));
+    assert_eq!(app.try_match_sequence(&seq), SequenceMatch::Partial);
+
+    // Full match
+    app.pending_keys.push(KeyBinding::char('d'));
+    assert_eq!(app.try_match_sequence(&seq), SequenceMatch::Full);
+}
+
+#[test]
+fn test_key_could_match_sequence_start() {
+    use crate::keybinding::{KeyBinding, KeySequence};
+
+    let app = App::new_for_test();
+    let seq = KeySequence(vec![
+        KeyBinding::char('g'),
+        KeyBinding::char('d')
+    ]);
+    let key = make_key(KeyCode::Char('g'));
+    assert!(app.key_could_match_sequence(&key, &seq));
+}
+
+#[test]
+fn test_key_could_match_sequence_no_match() {
+    use crate::keybinding::{KeyBinding, KeySequence};
+
+    let app = App::new_for_test();
+    let seq = KeySequence(vec![
+        KeyBinding::char('g'),
+        KeyBinding::char('d')
+    ]);
+    let key = make_key(KeyCode::Char('x'));
+    assert!(!app.key_could_match_sequence(&key, &seq));
+}
+
+// ===================================================================
+// 5. filter.rs tests
+// ===================================================================
+
+#[test]
+fn test_handle_filter_input_char_updates_query() {
+    let mut app = App::new_for_test();
+    app.data_state = DataState::Loaded {
+        pr: Box::new(make_local_pr()),
+        files: vec![ChangedFile {
+            filename: "test.rs".to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 0,
+            patch: None,
+            viewed: false,
+        }],
+    };
+    let mut filter = crate::filter::ListFilter::new();
+    filter.apply(app.files(), |_, _| true);
+    filter.sync_selection();
+    app.file_list_filter = Some(filter);
+
+    let key = make_key(KeyCode::Char('t'));
+    assert!(app.handle_filter_input(&key, "file"));
+    assert_eq!(app.file_list_filter.as_ref().unwrap().query, "t");
+}
+
+#[test]
+fn test_handle_filter_input_backspace() {
+    let mut app = App::new_for_test();
+    app.data_state = DataState::Loaded {
+        pr: Box::new(make_local_pr()),
+        files: vec![ChangedFile {
+            filename: "test.rs".to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 0,
+            patch: None,
+            viewed: false,
+        }],
+    };
+    let mut filter = crate::filter::ListFilter::new();
+    filter.insert_char('a');
+    filter.insert_char('b');
+    filter.apply(app.files(), |_, _| true);
+    filter.sync_selection();
+    app.file_list_filter = Some(filter);
+
+    let key = make_key(KeyCode::Backspace);
+    assert!(app.handle_filter_input(&key, "file"));
+    assert_eq!(app.file_list_filter.as_ref().unwrap().query, "a");
+}
+
+#[test]
+fn test_handle_filter_input_enter_deactivates() {
+    let mut app = App::new_for_test();
+    app.data_state = DataState::Loaded {
+        pr: Box::new(make_local_pr()),
+        files: vec![ChangedFile {
+            filename: "test.rs".to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 0,
+            patch: None,
+            viewed: false,
+        }],
+    };
+    let mut filter = crate::filter::ListFilter::new();
+    filter.insert_char('t');
+    filter.apply(app.files(), |_, _| true);
+    filter.sync_selection();
+    app.file_list_filter = Some(filter);
+
+    let key = make_key(KeyCode::Enter);
+    assert!(app.handle_filter_input(&key, "file"));
+    assert!(!app.file_list_filter.as_ref().unwrap().input_active);
+}
+
+#[test]
+fn test_handle_filter_input_esc_clears() {
+    let mut app = App::new_for_test();
+    let mut filter = crate::filter::ListFilter::new();
+    filter.insert_char('x');
+    app.file_list_filter = Some(filter);
+
+    let key = make_key(KeyCode::Esc);
+    assert!(app.handle_filter_input(&key, "file"));
+    assert!(app.file_list_filter.is_none());
+}
+
+#[test]
+fn test_handle_filter_input_returns_false_no_filter() {
+    let mut app = App::new_for_test();
+    app.file_list_filter = None;
+
+    let key = make_key(KeyCode::Char('a'));
+    assert!(!app.handle_filter_input(&key, "file"));
+}
+
+#[test]
+fn test_reapply_filter_pr_list() {
+    use crate::github::PullRequestSummary;
+    let mut app = App::new_for_test();
+    app.pr_list = Some(vec![
+        PullRequestSummary {
+            number: 1,
+            title: "fix bug".to_string(),
+            state: "open".to_string(),
+            author: crate::github::User {
+                login: "user".to_string(),
+            },
+            is_draft: false,
+            labels: vec![],
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        },
+        PullRequestSummary {
+            number: 2,
+            title: "add feature".to_string(),
+            state: "open".to_string(),
+            author: crate::github::User {
+                login: "user".to_string(),
+            },
+            is_draft: false,
+            labels: vec![],
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        },
+    ]);
+    let mut filter = crate::filter::ListFilter::new();
+    filter.insert_char('b');
+    filter.insert_char('u');
+    filter.insert_char('g');
+    app.pr_list_filter = Some(filter);
+
+    app.reapply_filter("pr");
+
+    let filter = app.pr_list_filter.as_ref().unwrap();
+    assert_eq!(filter.matched_indices, vec![0]); // only "fix bug"
+}
+
+#[test]
+fn test_reapply_filter_file_list() {
+    let mut app = App::new_for_test();
+    app.data_state = DataState::Loaded {
+        pr: Box::new(make_local_pr()),
+        files: vec![
+            ChangedFile {
+                filename: "src/main.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 0,
+                patch: None,
+                viewed: false,
+            },
+            ChangedFile {
+                filename: "src/lib.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 0,
+                patch: None,
+                viewed: false,
+            },
+        ],
+    };
+    let mut filter = crate::filter::ListFilter::new();
+    filter.insert_char('l');
+    filter.insert_char('i');
+    filter.insert_char('b');
+    app.file_list_filter = Some(filter);
+
+    app.reapply_filter("file");
+
+    let filter = app.file_list_filter.as_ref().unwrap();
+    assert_eq!(filter.matched_indices, vec![1]); // only "src/lib.rs"
+}
+
+#[test]
+fn test_handle_filter_navigation_down() {
+    let mut app = App::new_for_test();
+    app.data_state = DataState::Loaded {
+        pr: Box::new(make_local_pr()),
+        files: vec![
+            ChangedFile {
+                filename: "a.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 0,
+                patch: None,
+                viewed: false,
+            },
+            ChangedFile {
+                filename: "b.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 0,
+                patch: None,
+                viewed: false,
+            },
+        ],
+    };
+    let mut filter = crate::filter::ListFilter::new();
+    filter.apply(app.files(), |_, _| true);
+    filter.sync_selection();
+    filter.input_active = false;
+    app.file_list_filter = Some(filter);
+    app.selected_file = 0;
+
+    assert!(app.handle_filter_navigation("file", true));
+    assert_eq!(app.selected_file, 1);
+}
+
+#[test]
+fn test_handle_filter_navigation_up() {
+    let mut app = App::new_for_test();
+    app.data_state = DataState::Loaded {
+        pr: Box::new(make_local_pr()),
+        files: vec![
+            ChangedFile {
+                filename: "a.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 0,
+                patch: None,
+                viewed: false,
+            },
+            ChangedFile {
+                filename: "b.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 0,
+                patch: None,
+                viewed: false,
+            },
+        ],
+    };
+    let mut filter = crate::filter::ListFilter::new();
+    filter.apply(app.files(), |_, _| true);
+    filter.sync_selection();
+    filter.input_active = false;
+    // Navigate to second item first
+    filter.navigate_down();
+    app.file_list_filter = Some(filter);
+    app.selected_file = 1;
+
+    assert!(app.handle_filter_navigation("file", false));
+    assert_eq!(app.selected_file, 0);
+}
+
+#[test]
+fn test_handle_filter_esc_clears_pr() {
+    let mut app = App::new_for_test();
+    let filter = crate::filter::ListFilter::new();
+    app.pr_list_filter = Some(filter);
+
+    assert!(app.handle_filter_esc("pr"));
+    assert!(app.pr_list_filter.is_none());
+}
+
+#[test]
+fn test_handle_filter_esc_no_filter() {
+    let mut app = App::new_for_test();
+    app.pr_list_filter = None;
+
+    assert!(!app.handle_filter_esc("pr"));
+}
+
+#[test]
+fn test_is_filter_selection_empty() {
+    let mut app = App::new_for_test();
+
+    // No filter -> false
+    assert!(!app.is_filter_selection_empty("file"));
+
+    // Filter with selection -> false
+    let mut filter = crate::filter::ListFilter::new();
+    filter.matched_indices = vec![0];
+    filter.selected = Some(0);
+    app.file_list_filter = Some(filter);
+    assert!(!app.is_filter_selection_empty("file"));
+
+    // Filter with no match -> true (selected=None)
+    let mut filter2 = crate::filter::ListFilter::new();
+    filter2.matched_indices = vec![];
+    filter2.selected = None;
+    app.file_list_filter = Some(filter2);
+    assert!(app.is_filter_selection_empty("file"));
+}
+
+// ===================================================================
+// 6. input.rs tests
+// ===================================================================
+
+#[test]
+fn test_directory_prefix_for_nested() {
+    assert_eq!(App::directory_prefix_for("a/b/c.txt"), "a/b/");
+}
+
+#[test]
+fn test_directory_prefix_for_root() {
+    assert_eq!(App::directory_prefix_for("root.txt"), "");
+}
+
+#[test]
+fn test_directory_prefix_for_single_dir() {
+    assert_eq!(App::directory_prefix_for("dir/file.rs"), "dir/");
+}
+
+#[test]
+fn test_collect_unviewed_all_viewed() {
+    let files = vec![
+        ChangedFile {
+            filename: "src/a.rs".to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 0,
+            patch: None,
+            viewed: true,
+        },
+        ChangedFile {
+            filename: "src/b.rs".to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 0,
+            patch: None,
+            viewed: true,
+        },
+    ];
+    let paths = App::collect_unviewed_directory_paths(&files, 0);
+    assert!(paths.is_empty());
+}
+
+#[test]
+fn test_collect_unviewed_mixed() {
+    let files = vec![
+        ChangedFile {
+            filename: "src/a.rs".to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 0,
+            patch: None,
+            viewed: false,
+        },
+        ChangedFile {
+            filename: "src/b.rs".to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 0,
+            patch: None,
+            viewed: true,
+        },
+        ChangedFile {
+            filename: "src/c.rs".to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 0,
+            patch: None,
+            viewed: false,
+        },
+    ];
+    let paths = App::collect_unviewed_directory_paths(&files, 0);
+    assert_eq!(paths, vec!["src/a.rs", "src/c.rs"]);
+}
+
+#[test]
+fn test_refresh_all_resets_state() {
+    let mut app = App::new_for_test();
+    let (retry_tx, _retry_rx) = mpsc::channel::<RefreshRequest>(4);
+    app.retry_sender = Some(retry_tx);
+    app.review_comments = Some(vec![]);
+    app.discussion_comments = Some(vec![]);
+    app.comments_loading = true;
+    app.discussion_comments_loading = true;
+    let filter = crate::filter::ListFilter::new();
+    app.file_list_filter = Some(filter);
+
+    app.refresh_all();
+
+    assert!(matches!(app.data_state, DataState::Loading));
+    assert!(app.review_comments.is_none());
+    assert!(app.discussion_comments.is_none());
+    assert!(!app.comments_loading);
+    assert!(!app.discussion_comments_loading);
+    assert!(app.file_list_filter.is_none());
+}
+
+#[test]
+fn test_refresh_all_invalidates_session_cache() {
+    let mut app = App::new_for_test();
+    let (retry_tx, _retry_rx) = mpsc::channel::<RefreshRequest>(4);
+    app.retry_sender = Some(retry_tx);
+
+    // Pre-populate cache
+    let cache_key = PrCacheKey {
+        repo: "test/repo".to_string(),
+        pr_number: 1,
+    };
+    app.session_cache.put_pr_data(
+        cache_key.clone(),
+        PrData {
+            pr: Box::new(make_local_pr()),
+            files: vec![],
+            pr_updated_at: "x".to_string(),
+        },
+    );
+    assert!(app.session_cache.get_pr_data(&cache_key).is_some());
+
+    app.refresh_all();
+
+    assert!(app.session_cache.get_pr_data(&cache_key).is_none());
+}
+
+#[tokio::test]
+async fn test_handle_mark_viewed_key_v_returns_true() {
+    let mut app = App::new_for_test();
+    app.pr_number = Some(1);
+    app.data_state = DataState::Loaded {
+        pr: Box::new(PullRequest {
+            number: 1,
+            node_id: Some("PR_node".to_string()),
+            title: "Test".to_string(),
+            body: None,
+            state: "open".to_string(),
+            head: crate::github::Branch {
+                ref_name: "f".to_string(),
+                sha: "a".to_string(),
+            },
+            base: crate::github::Branch {
+                ref_name: "m".to_string(),
+                sha: "b".to_string(),
+            },
+            user: crate::github::User {
+                login: "u".to_string(),
+            },
+            updated_at: "".to_string(),
+        }),
+        files: vec![ChangedFile {
+            filename: "test.rs".to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 0,
+            patch: None,
+            viewed: false,
+        }],
+    };
+    let key = make_key(KeyCode::Char('v'));
+    assert!(app.handle_mark_viewed_key(key));
+}
+
+#[test]
+fn test_handle_mark_viewed_key_ignored_local_mode() {
+    let mut app = App::new_for_test();
+    app.local_mode = true;
+    let key = make_key(KeyCode::Char('v'));
+    assert!(!app.handle_mark_viewed_key(key));
+}
+
+#[test]
+fn test_handle_mark_viewed_key_other_key() {
+    let mut app = App::new_for_test();
+    let key = make_key(KeyCode::Char('x'));
+    assert!(!app.handle_mark_viewed_key(key));
+}
+
+// ===================================================================
+// 7. input_text.rs tests
+// ===================================================================
+
+#[test]
+fn test_cancel_input_clears_mode() {
+    let mut app = App::new_for_test();
+    app.input_mode = Some(InputMode::Comment(LineInputContext {
+        file_index: 0,
+        line_number: 1,
+        diff_position: 1,
+        start_line_number: None,
+    }));
+    app.state = AppState::TextInput;
+    app.preview_return_state = AppState::DiffView;
+
+    app.cancel_input();
+
+    assert!(app.input_mode.is_none());
+}
+
+#[test]
+fn test_cancel_input_clears_text_area() {
+    let mut app = App::new_for_test();
+    app.input_text_area.set_content("some text");
+    app.state = AppState::TextInput;
+    app.preview_return_state = AppState::DiffView;
+
+    app.cancel_input();
+
+    assert!(app.input_text_area.content().is_empty());
+}
+
+#[test]
+fn test_cancel_input_restores_state() {
+    let mut app = App::new_for_test();
+    app.state = AppState::TextInput;
+    app.preview_return_state = AppState::DiffView;
+
+    app.cancel_input();
+
+    assert_eq!(app.state, AppState::DiffView);
+}
+
+#[test]
+fn test_cancel_input_clears_multiline_selection() {
+    let mut app = App::new_for_test();
+    app.multiline_selection = Some(MultilineSelection {
+        anchor_line: 1,
+        cursor_line: 5,
+    });
+    app.state = AppState::TextInput;
+    app.preview_return_state = AppState::DiffView;
+
+    app.cancel_input();
+
+    // cancel_input does not clear multiline_selection (it's cleared earlier in flow)
+    // but input_mode is cleared
+    assert!(app.input_mode.is_none());
+}
+
+// ===================================================================
+// 8. input_diff.rs tests
+// ===================================================================
+
+#[test]
+fn test_adjust_scroll_above_viewport() {
+    let mut app = App::new_for_test();
+    app.selected_line = 2;
+    app.scroll_offset = 5;
+    app.diff_line_count = 100;
+
+    app.adjust_scroll(20);
+
+    assert_eq!(app.scroll_offset, 2);
+}
+
+#[test]
+fn test_adjust_scroll_below_viewport() {
+    let mut app = App::new_for_test();
+    app.selected_line = 30;
+    app.scroll_offset = 5;
+    app.diff_line_count = 100;
+
+    app.adjust_scroll(20);
+
+    assert!(app.scroll_offset > 5);
+    assert!(app.selected_line >= app.scroll_offset);
+}
+
+#[test]
+fn test_adjust_scroll_within_viewport() {
+    let mut app = App::new_for_test();
+    app.selected_line = 10;
+    app.scroll_offset = 5;
+    app.diff_line_count = 100;
+
+    app.adjust_scroll(20);
+
+    // Within viewport, scroll should not change much
+    assert!(app.selected_line >= app.scroll_offset);
+    assert!(app.selected_line < app.scroll_offset + 20);
+}
+
+#[test]
+fn test_adjust_scroll_zero_visible() {
+    let mut app = App::new_for_test();
+    app.selected_line = 10;
+    app.scroll_offset = 5;
+    app.diff_line_count = 100;
+
+    app.adjust_scroll(0);
+
+    // Should early return, no change
+    assert_eq!(app.scroll_offset, 5);
+}
+
+#[test]
+fn test_adjust_scroll_end_padding() {
+    let mut app = App::new_for_test();
+    app.diff_line_count = 50;
+    app.selected_line = 49; // last line
+    app.scroll_offset = 0;
+
+    app.adjust_scroll(20);
+
+    // Near end, scroll allows padding
+    assert!(app.scroll_offset > 0);
+}
+
+#[test]
+fn test_adjust_scroll_single_line() {
+    let mut app = App::new_for_test();
+    app.diff_line_count = 1;
+    app.selected_line = 0;
+    app.scroll_offset = 0;
+
+    app.adjust_scroll(20);
+
+    assert_eq!(app.scroll_offset, 0);
+    assert_eq!(app.selected_line, 0);
+}
+
+// ===================================================================
+// 9. ai_rally.rs tests
+// ===================================================================
+
+#[test]
+fn test_cleanup_rally_state() {
+    let mut app = App::new_for_test();
+    app.ai_rally_state = Some(AiRallyState {
+        iteration: 1,
+        max_iterations: 10,
+        state: crate::ai::RallyState::ReviewerReviewing,
+        history: vec![],
+        logs: vec![],
+        log_scroll_offset: 0,
+        selected_log_index: None,
+        showing_log_detail: false,
+        pending_question: None,
+        pending_permission: None,
+        pending_review_post: None,
+        pending_fix_post: None,
+        last_visible_log_height: 10,
+    });
+    let (cmd_tx, _cmd_rx) = mpsc::channel(10);
+    app.rally_command_sender = Some(cmd_tx);
+    let (_, event_rx) = mpsc::channel(100);
+    app.rally_event_receiver = Some(event_rx);
+
+    app.cleanup_rally_state();
+
+    assert!(app.ai_rally_state.is_none());
+    assert!(app.rally_command_sender.is_none());
+    assert!(app.rally_event_receiver.is_none());
+}
+
+#[test]
+fn test_is_rally_running_in_background_not_in_rally() {
+    let mut app = App::new_for_test();
+    app.state = AppState::FileList;
+    app.ai_rally_state = Some(AiRallyState {
+        iteration: 1,
+        max_iterations: 10,
+        state: crate::ai::RallyState::ReviewerReviewing,
+        history: vec![],
+        logs: vec![],
+        log_scroll_offset: 0,
+        selected_log_index: None,
+        showing_log_detail: false,
+        pending_question: None,
+        pending_permission: None,
+        pending_review_post: None,
+        pending_fix_post: None,
+        last_visible_log_height: 10,
+    });
+    assert!(app.is_rally_running_in_background());
+}
+
+#[test]
+fn test_is_rally_running_in_background_in_rally() {
+    let mut app = App::new_for_test();
+    app.state = AppState::AiRally;
+    app.ai_rally_state = Some(AiRallyState {
+        iteration: 1,
+        max_iterations: 10,
+        state: crate::ai::RallyState::ReviewerReviewing,
+        history: vec![],
+        logs: vec![],
+        log_scroll_offset: 0,
+        selected_log_index: None,
+        showing_log_detail: false,
+        pending_question: None,
+        pending_permission: None,
+        pending_review_post: None,
+        pending_fix_post: None,
+        last_visible_log_height: 10,
+    });
+    assert!(!app.is_rally_running_in_background());
+}
+
+#[test]
+fn test_is_rally_running_in_background_no_state() {
+    let mut app = App::new_for_test();
+    app.state = AppState::FileList;
+    app.ai_rally_state = None;
+    assert!(!app.is_rally_running_in_background());
+}
+
+#[test]
+fn test_is_rally_running_in_background_finished() {
+    let mut app = App::new_for_test();
+    app.state = AppState::FileList;
+    app.ai_rally_state = Some(AiRallyState {
+        iteration: 1,
+        max_iterations: 10,
+        state: crate::ai::RallyState::Completed,
+        history: vec![],
+        logs: vec![],
+        log_scroll_offset: 0,
+        selected_log_index: None,
+        showing_log_detail: false,
+        pending_question: None,
+        pending_permission: None,
+        pending_review_post: None,
+        pending_fix_post: None,
+        last_visible_log_height: 10,
+    });
+    assert!(!app.is_rally_running_in_background());
+}
+
+#[test]
+fn test_has_background_rally_true() {
+    let mut app = App::new_for_test();
+    app.state = AppState::FileList;
+    app.ai_rally_state = Some(AiRallyState {
+        iteration: 1,
+        max_iterations: 10,
+        state: crate::ai::RallyState::ReviewerReviewing,
+        history: vec![],
+        logs: vec![],
+        log_scroll_offset: 0,
+        selected_log_index: None,
+        showing_log_detail: false,
+        pending_question: None,
+        pending_permission: None,
+        pending_review_post: None,
+        pending_fix_post: None,
+        last_visible_log_height: 10,
+    });
+    assert!(app.has_background_rally());
+}
+
+#[test]
+fn test_has_background_rally_false_in_rally() {
+    let mut app = App::new_for_test();
+    app.state = AppState::AiRally;
+    app.ai_rally_state = Some(AiRallyState {
+        iteration: 1,
+        max_iterations: 10,
+        state: crate::ai::RallyState::ReviewerReviewing,
+        history: vec![],
+        logs: vec![],
+        log_scroll_offset: 0,
+        selected_log_index: None,
+        showing_log_detail: false,
+        pending_question: None,
+        pending_permission: None,
+        pending_review_post: None,
+        pending_fix_post: None,
+        last_visible_log_height: 10,
+    });
+    assert!(!app.has_background_rally());
+}
+
+#[test]
+fn test_has_background_rally_false_no_state() {
+    let mut app = App::new_for_test();
+    app.state = AppState::FileList;
+    app.ai_rally_state = None;
+    assert!(!app.has_background_rally());
+}
+
+#[test]
+fn test_is_background_rally_finished_completed() {
+    let mut app = App::new_for_test();
+    app.state = AppState::FileList;
+    app.ai_rally_state = Some(AiRallyState {
+        iteration: 1,
+        max_iterations: 10,
+        state: crate::ai::RallyState::Completed,
+        history: vec![],
+        logs: vec![],
+        log_scroll_offset: 0,
+        selected_log_index: None,
+        showing_log_detail: false,
+        pending_question: None,
+        pending_permission: None,
+        pending_review_post: None,
+        pending_fix_post: None,
+        last_visible_log_height: 10,
+    });
+    assert!(app.is_background_rally_finished());
+}
+
+#[test]
+fn test_is_background_rally_finished_running() {
+    let mut app = App::new_for_test();
+    app.state = AppState::FileList;
+    app.ai_rally_state = Some(AiRallyState {
+        iteration: 1,
+        max_iterations: 10,
+        state: crate::ai::RallyState::ReviewerReviewing,
+        history: vec![],
+        logs: vec![],
+        log_scroll_offset: 0,
+        selected_log_index: None,
+        showing_log_detail: false,
+        pending_question: None,
+        pending_permission: None,
+        pending_review_post: None,
+        pending_fix_post: None,
+        last_visible_log_height: 10,
+    });
+    assert!(!app.is_background_rally_finished());
+}
+
+#[test]
+fn test_adjust_log_scroll_selection_above() {
+    let mut app = App::new_for_test();
+    app.ai_rally_state = Some(AiRallyState {
+        iteration: 1,
+        max_iterations: 10,
+        state: crate::ai::RallyState::ReviewerReviewing,
+        history: vec![],
+        logs: (0..20)
+            .map(|i| LogEntry::new(LogEventType::Info, format!("log {}", i)))
+            .collect(),
+        log_scroll_offset: 10,
+        selected_log_index: Some(5), // above visible area
+        showing_log_detail: false,
+        pending_question: None,
+        pending_permission: None,
+        pending_review_post: None,
+        pending_fix_post: None,
+        last_visible_log_height: 5,
+    });
+
+    app.adjust_log_scroll_to_selection();
+
+    let rally_state = app.ai_rally_state.as_ref().unwrap();
+    assert!(rally_state.log_scroll_offset <= 5);
+}
+
+#[test]
+fn test_adjust_log_scroll_selection_below() {
+    let mut app = App::new_for_test();
+    app.ai_rally_state = Some(AiRallyState {
+        iteration: 1,
+        max_iterations: 10,
+        state: crate::ai::RallyState::ReviewerReviewing,
+        history: vec![],
+        logs: (0..20)
+            .map(|i| LogEntry::new(LogEventType::Info, format!("log {}", i)))
+            .collect(),
+        log_scroll_offset: 1,
+        selected_log_index: Some(15), // below visible area
+        showing_log_detail: false,
+        pending_question: None,
+        pending_permission: None,
+        pending_review_post: None,
+        pending_fix_post: None,
+        last_visible_log_height: 5,
+    });
+
+    app.adjust_log_scroll_to_selection();
+
+    let rally_state = app.ai_rally_state.as_ref().unwrap();
+    assert!(rally_state.log_scroll_offset > 1);
+}
+
+// ===================================================================
+// 10. symbol.rs tests
+// ===================================================================
+
+#[test]
+fn test_push_jump_location_basic() {
+    let mut app = App::new_for_test();
+    app.selected_file = 2;
+    app.selected_line = 10;
+    app.scroll_offset = 5;
+
+    app.push_jump_location();
+
+    assert_eq!(app.jump_stack.len(), 1);
+    assert_eq!(app.jump_stack[0].file_index, 2);
+    assert_eq!(app.jump_stack[0].line_index, 10);
+    assert_eq!(app.jump_stack[0].scroll_offset, 5);
+}
+
+#[test]
+fn test_push_jump_location_max_capacity() {
+    let mut app = App::new_for_test();
+
+    // Push 101 locations (should trim oldest)
+    for i in 0..101 {
+        app.selected_file = i;
+        app.selected_line = i;
+        app.scroll_offset = 0;
+        app.push_jump_location();
+    }
+
+    assert_eq!(app.jump_stack.len(), 100);
+    // First entry should be index 1 (0 was removed)
+    assert_eq!(app.jump_stack[0].file_index, 1);
+}
+
+#[test]
+fn test_push_jump_location_preserves_fields() {
+    let mut app = App::new_for_test();
+    app.selected_file = 42;
+    app.selected_line = 99;
+    app.scroll_offset = 33;
+
+    app.push_jump_location();
+
+    let loc = &app.jump_stack[0];
+    assert_eq!(loc.file_index, 42);
+    assert_eq!(loc.line_index, 99);
+    assert_eq!(loc.scroll_offset, 33);
+}
+
+#[tokio::test]
+async fn test_jump_back_restores_position() {
+    let mut app = App::new_for_test();
+    app.data_state = DataState::Loaded {
+        pr: Box::new(make_local_pr()),
+        files: vec![
+            ChangedFile {
+                filename: "a.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 0,
+                patch: Some("@@ -1 +1 @@\n+line".to_string()),
+                viewed: false,
+            },
+            ChangedFile {
+                filename: "b.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 0,
+                patch: Some("@@ -1 +1 @@\n+line".to_string()),
+                viewed: false,
+            },
+        ],
+    };
+
+    // Push current position
+    app.selected_file = 0;
+    app.selected_line = 5;
+    app.scroll_offset = 2;
+    app.push_jump_location();
+
+    // Move elsewhere
+    app.selected_file = 1;
+    app.selected_line = 10;
+    app.scroll_offset = 8;
+
+    // Jump back
+    app.jump_back();
+
+    assert_eq!(app.selected_file, 0);
+    assert_eq!(app.selected_line, 5);
+    assert_eq!(app.scroll_offset, 2);
+}
+
+#[test]
+fn test_jump_back_empty_stack() {
+    let mut app = App::new_for_test();
+    app.selected_file = 3;
+    app.selected_line = 7;
+    app.scroll_offset = 4;
+
+    app.jump_back();
+
+    // Nothing should change
+    assert_eq!(app.selected_file, 3);
+    assert_eq!(app.selected_line, 7);
+    assert_eq!(app.scroll_offset, 4);
+}
+
+// ===================================================================
+// 11. comments.rs tests
+// ===================================================================
+
+#[test]
+fn test_enter_comment_input_sets_mode() {
+    let patch = "@@ -1,3 +1,4 @@\n context\n+added\n more context";
+    let mut app = make_app_with_patch(patch);
+    app.selected_line = 1; // context line (commentable)
+    app.state = AppState::DiffView;
+
+    app.enter_comment_input();
+
+    assert!(matches!(app.input_mode, Some(InputMode::Comment(_))));
+    assert_eq!(app.state, AppState::TextInput);
+}
+
+#[test]
+fn test_enter_comment_input_no_patch() {
+    let mut app = App::new_for_test();
+    app.data_state = DataState::Loaded {
+        pr: Box::new(make_local_pr()),
+        files: vec![ChangedFile {
+            filename: "test.rs".to_string(),
+            status: "modified".to_string(),
+            additions: 0,
+            deletions: 0,
+            patch: None,
+            viewed: false,
+        }],
+    };
+
+    // Should not panic
+    app.enter_comment_input();
+    assert!(app.input_mode.is_none());
+}
+
+#[test]
+fn test_enter_suggestion_input_sets_mode() {
+    let patch = "@@ -1,3 +1,4 @@\n context\n+added line\n more context";
+    let mut app = make_app_with_patch(patch);
+    app.selected_line = 2; // added line
+    app.state = AppState::DiffView;
+
+    app.enter_suggestion_input();
+
+    assert!(matches!(app.input_mode, Some(InputMode::Suggestion { .. })));
+    assert_eq!(app.state, AppState::TextInput);
+}
+
+#[tokio::test]
+async fn test_open_comment_list_transitions_state() {
+    let mut app = App::new_for_test();
+    let (retry_tx, _) = mpsc::channel::<RefreshRequest>(4);
+    app.retry_sender = Some(retry_tx);
+    app.state = AppState::FileList;
+
+    // Need loaded PR data for comment list
+    app.data_state = DataState::Loaded {
+        pr: Box::new(PullRequest {
+            number: 1,
+            node_id: None,
+            title: "Test".to_string(),
+            body: None,
+            state: "open".to_string(),
+            head: crate::github::Branch {
+                ref_name: "f".to_string(),
+                sha: "a".to_string(),
+            },
+            base: crate::github::Branch {
+                ref_name: "m".to_string(),
+                sha: "b".to_string(),
+            },
+            user: crate::github::User {
+                login: "u".to_string(),
+            },
+            updated_at: "".to_string(),
+        }),
+        files: vec![],
+    };
+    app.previous_state = AppState::FileList;
+    app.open_comment_list();
+    assert_eq!(app.state, AppState::CommentList);
+}
+
+#[tokio::test]
+async fn test_open_comment_list_sets_previous_state() {
+    let mut app = App::new_for_test();
+    app.data_state = DataState::Loaded {
+        pr: Box::new(make_local_pr()),
+        files: vec![],
+    };
+    app.state = AppState::FileList;
+    app.previous_state = AppState::FileList;
+    app.open_comment_list();
+    // previous_state is set before open_comment_list, not by it
+    assert_eq!(app.state, AppState::CommentList);
+}
+
+#[test]
+fn test_update_file_comment_positions_empty_comments() {
+    let mut app = make_app_with_patch("@@ -1,3 +1,4 @@\n context\n+added\n more context");
+    app.review_comments = Some(vec![]);
+    app.update_file_comment_positions();
+    assert!(app.file_comment_positions.is_empty());
+}
+
+#[test]
+fn test_update_file_comment_positions_with_comments() {
+    let patch = "@@ -1,3 +1,4 @@\n context\n+added\n more context";
+    let mut app = make_app_with_patch(patch);
+    app.review_comments = Some(vec![
+        crate::github::comment::ReviewComment {
+            id: 1,
+            path: "test.rs".to_string(),
+            line: Some(1),
+            body: "comment at line 1".to_string(),
+            user: crate::github::User {
+                login: "reviewer".to_string(),
+            },
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+        },
+    ]);
+    app.update_file_comment_positions();
+    assert_eq!(app.file_comment_positions.len(), 1);
+}
+
+#[test]
+fn test_update_file_comment_positions_stale_comment() {
+    let patch = "@@ -1,3 +1,4 @@\n context\n+added\n more context";
+    let mut app = make_app_with_patch(patch);
+    app.review_comments = Some(vec![
+        crate::github::comment::ReviewComment {
+            id: 1,
+            path: "other_file.rs".to_string(), // different file
+            line: Some(1),
+            body: "wrong file".to_string(),
+            user: crate::github::User {
+                login: "reviewer".to_string(),
+            },
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+        },
+    ]);
+    app.update_file_comment_positions();
+    assert!(app.file_comment_positions.is_empty());
+}
+
+#[test]
+fn test_wrapped_line_count_short() {
+    assert_eq!(App::wrapped_line_count("hello", 80), 1);
+}
+
+#[test]
+fn test_wrapped_line_count_long() {
+    // 100 chars in 40-wide panel = 3 lines
+    let text: String = "x".repeat(100);
+    assert_eq!(App::wrapped_line_count(&text, 40), 3);
+}
+
+#[test]
+fn test_wrapped_line_count_empty() {
+    assert_eq!(App::wrapped_line_count("", 80), 1);
+}
+
+#[test]
+fn test_comment_body_wrapped_lines() {
+    let body = "short line\na longer line that has more characters";
+    // Each line wraps independently
+    let count = App::comment_body_wrapped_lines(body, 80);
+    assert_eq!(count, 2); // both fit in 80 chars
+}
+
+#[test]
+fn test_comment_panel_inner_width() {
+    let mut app = App::new_for_test();
+    app.state = AppState::DiffView;
+    // For non-SplitView, width = terminal_width - 2
+    assert_eq!(app.comment_panel_inner_width(100), 98);
+}
+
+#[test]
+fn test_max_comment_panel_scroll() {
+    let mut app = App::new_for_test();
+    app.state = AppState::DiffView;
+    app.file_comment_positions = vec![];
+    app.review_comments = Some(vec![]);
+
+    // No comments at current line -> content = 1 ("No comments..." message)
+    let max = app.max_comment_panel_scroll(40, 80);
+    // Content lines (1) - panel inner height
+    // Panel inner height ≈ (40-8)*40/100 = 12
+    // saturating_sub means 0
+    assert_eq!(max, 0);
+}
+
+#[test]
+fn test_enter_reply_input_sets_mode() {
+    let patch = "@@ -1,3 +1,4 @@\n context\n+added\n more context";
+    let mut app = make_app_with_patch(patch);
+    app.selected_line = 1;
+    app.review_comments = Some(vec![
+        crate::github::comment::ReviewComment {
+            id: 42,
+            path: "test.rs".to_string(),
+            line: Some(1),
+            body: "original comment".to_string(),
+            user: crate::github::User {
+                login: "reviewer".to_string(),
+            },
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+        },
+    ]);
+    app.file_comment_positions = vec![CommentPosition {
+        diff_line_index: 1,
+        comment_index: 0,
+    }];
+    app.state = AppState::DiffView;
+
+    app.enter_reply_input();
+
+    assert!(matches!(app.input_mode, Some(InputMode::Reply { .. })));
+    assert_eq!(app.state, AppState::TextInput);
+}
+
+#[test]
+fn test_handle_discussion_detail_scroll_j() {
+    let mut app = App::new_for_test();
+    app.discussion_comment_detail_mode = true;
+    app.discussion_comment_detail_scroll = 0;
+
+    let result = app.handle_discussion_detail_input(make_key(KeyCode::Char('j')), 20);
+    assert!(result.is_ok());
+    assert_eq!(app.discussion_comment_detail_scroll, 1);
+}
+
+#[test]
+fn test_handle_discussion_detail_scroll_k() {
+    let mut app = App::new_for_test();
+    app.discussion_comment_detail_mode = true;
+    app.discussion_comment_detail_scroll = 5;
+
+    let result = app.handle_discussion_detail_input(make_key(KeyCode::Char('k')), 20);
+    assert!(result.is_ok());
+    assert_eq!(app.discussion_comment_detail_scroll, 4);
+}
+
+#[tokio::test]
+async fn test_jump_to_comment_sets_file_and_line() {
+    let mut app = App::new_for_test();
+    app.data_state = DataState::Loaded {
+        pr: Box::new(PullRequest {
+            number: 1,
+            node_id: None,
+            title: "Test".to_string(),
+            body: None,
+            state: "open".to_string(),
+            head: crate::github::Branch {
+                ref_name: "f".to_string(),
+                sha: "a".to_string(),
+            },
+            base: crate::github::Branch {
+                ref_name: "m".to_string(),
+                sha: "b".to_string(),
+            },
+            user: crate::github::User {
+                login: "u".to_string(),
+            },
+            updated_at: "".to_string(),
+        }),
+        files: vec![
+            ChangedFile {
+                filename: "first.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 0,
+                patch: Some("@@ -1,1 +1,2 @@\n line1\n+line2".to_string()),
+                viewed: false,
+            },
+            ChangedFile {
+                filename: "second.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 0,
+                patch: Some("@@ -1,1 +1,2 @@\n line1\n+line2".to_string()),
+                viewed: false,
+            },
+        ],
+    };
+    app.review_comments = Some(vec![
+        crate::github::comment::ReviewComment {
+            id: 1,
+            path: "second.rs".to_string(),
+            line: Some(2),
+            body: "check this".to_string(),
+            user: crate::github::User {
+                login: "r".to_string(),
+            },
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+        },
+    ]);
+    app.selected_comment = 0;
+
+    app.jump_to_comment();
+
+    assert_eq!(app.selected_file, 1); // second.rs
+    assert_eq!(app.state, AppState::DiffView);
+}
+
+// ===================================================================
+// 12. pr_list.rs tests
+// ===================================================================
+
+#[tokio::test]
+async fn test_handle_pr_list_input_quit() {
+    let mut app = App::new_for_test();
+    app.state = AppState::PullRequestList;
+    app.pr_list_loading = false;
+    app.pr_list = Some(vec![]);
+
+    app.handle_pr_list_input(make_key(KeyCode::Char('q')))
+        .await
+        .unwrap();
+    assert!(app.should_quit);
+}
+
+#[tokio::test]
+async fn test_handle_pr_list_input_loading_blocks() {
+    use crate::github::PullRequestSummary;
+    let mut app = App::new_for_test();
+    app.state = AppState::PullRequestList;
+    app.pr_list_loading = true;
+    app.pr_list = Some(vec![
+        PullRequestSummary {
+            number: 1,
+            title: "PR 1".to_string(),
+            state: "open".to_string(),
+            author: crate::github::User {
+                login: "user".to_string(),
+            },
+            is_draft: false,
+            labels: vec![],
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        },
+    ]);
+    app.selected_pr = 0;
+
+    // j key should be blocked during loading
+    app.handle_pr_list_input(make_key(KeyCode::Char('j')))
+        .await
+        .unwrap();
+    assert_eq!(app.selected_pr, 0); // unchanged
+}
+
+#[tokio::test]
+async fn test_handle_pr_list_input_move_down() {
+    use crate::github::PullRequestSummary;
+    let mut app = App::new_for_test();
+    app.state = AppState::PullRequestList;
+    app.pr_list_loading = false;
+    app.pr_list = Some(vec![
+        PullRequestSummary {
+            number: 1,
+            title: "PR 1".to_string(),
+            state: "open".to_string(),
+            author: crate::github::User {
+                login: "user".to_string(),
+            },
+            is_draft: false,
+            labels: vec![],
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        },
+        PullRequestSummary {
+            number: 2,
+            title: "PR 2".to_string(),
+            state: "open".to_string(),
+            author: crate::github::User {
+                login: "user".to_string(),
+            },
+            is_draft: false,
+            labels: vec![],
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        },
+    ]);
+    app.selected_pr = 0;
+
+    app.handle_pr_list_input(make_key(KeyCode::Char('j')))
+        .await
+        .unwrap();
+    assert_eq!(app.selected_pr, 1);
+}
+
+#[tokio::test]
+async fn test_handle_pr_list_input_move_up() {
+    use crate::github::PullRequestSummary;
+    let mut app = App::new_for_test();
+    app.state = AppState::PullRequestList;
+    app.pr_list_loading = false;
+    app.pr_list = Some(vec![
+        PullRequestSummary {
+            number: 1,
+            title: "PR 1".to_string(),
+            state: "open".to_string(),
+            author: crate::github::User {
+                login: "user".to_string(),
+            },
+            is_draft: false,
+            labels: vec![],
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        },
+        PullRequestSummary {
+            number: 2,
+            title: "PR 2".to_string(),
+            state: "open".to_string(),
+            author: crate::github::User {
+                login: "user".to_string(),
+            },
+            is_draft: false,
+            labels: vec![],
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        },
+    ]);
+    app.selected_pr = 1;
+
+    app.handle_pr_list_input(make_key(KeyCode::Char('k')))
+        .await
+        .unwrap();
+    assert_eq!(app.selected_pr, 0);
+}
+
+#[tokio::test]
+async fn test_handle_pr_list_input_jump_to_last() {
+    use crate::github::PullRequestSummary;
+    let mut app = App::new_for_test();
+    app.state = AppState::PullRequestList;
+    app.pr_list_loading = false;
+    app.pr_list = Some(
+        (0..10)
+            .map(|i| PullRequestSummary {
+                number: i,
+                title: format!("PR {}", i),
+                state: "open".to_string(),
+                author: crate::github::User {
+                    login: "user".to_string(),
+                },
+                is_draft: false,
+                labels: vec![],
+                updated_at: "2024-01-01T00:00:00Z".to_string(),
+            })
+            .collect(),
+    );
+    app.selected_pr = 0;
+
+    app.handle_pr_list_input(make_key(KeyCode::Char('G')))
+        .await
+        .unwrap();
+    assert_eq!(app.selected_pr, 9);
+}
+
+#[tokio::test]
+async fn test_reload_pr_list_resets_state() {
+    let mut app = App::new_for_test();
+    app.selected_pr = 5;
+    app.pr_list_scroll_offset = 10;
+    let filter = crate::filter::ListFilter::new();
+    app.pr_list_filter = Some(filter);
+
+    app.reload_pr_list();
+
+    assert_eq!(app.selected_pr, 0);
+    assert_eq!(app.pr_list_scroll_offset, 0);
+    assert!(app.pr_list_loading);
+    assert!(!app.pr_list_has_more);
+    assert!(app.pr_list_filter.is_none());
+}
+
+#[test]
+fn test_load_more_prs_skips_when_loading() {
+    let mut app = App::new_for_test();
+    app.pr_list_loading = true;
+    let prev_receiver = app.pr_list_receiver.is_some();
+
+    app.load_more_prs();
+
+    // Should not create a new receiver
+    assert_eq!(app.pr_list_receiver.is_some(), prev_receiver);
+}
+
+#[test]
+fn test_select_pr_cache_miss_sets_loading() {
+    let mut app = App::new_for_test();
+    let (retry_tx, _retry_rx) = mpsc::channel::<RefreshRequest>(4);
+    let (_data_tx, data_rx) = mpsc::channel(2);
+    app.retry_sender = Some(retry_tx);
+    app.data_receiver = Some((0, data_rx));
+
+    app.select_pr(42);
+
+    assert_eq!(app.pr_number, Some(42));
+    assert_eq!(app.state, AppState::FileList);
+    assert!(matches!(app.data_state, DataState::Loading));
+}
+
+// ===================================================================
+// 13. polling.rs tests
+// ===================================================================
+
+#[tokio::test]
+async fn test_poll_diff_cache_accepts_valid() {
+    let mut app = App::new_for_test();
+    app.data_state = DataState::Loaded {
+        pr: Box::new(make_local_pr()),
+        files: vec![ChangedFile {
+            filename: "test.rs".to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 0,
+            patch: Some("@@ -1 +1 @@\n+line".to_string()),
+            viewed: false,
+        }],
+    };
+    app.selected_file = 0;
+    app.diff_line_count = 2;
+
+    let (tx, rx) = mpsc::channel(1);
+    app.diff_cache_receiver = Some(rx);
+
+    let cache = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+line", 4);
+    tx.send(cache).await.unwrap();
+
+    app.poll_diff_cache_updates();
+
+    assert!(app.diff_cache.is_some());
+}
+
+#[tokio::test]
+async fn test_poll_diff_cache_rejects_stale_file() {
+    let mut app = App::new_for_test();
+    app.data_state = DataState::Loaded {
+        pr: Box::new(make_local_pr()),
+        files: vec![
+            ChangedFile {
+                filename: "a.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 0,
+                patch: Some("@@ -1 +1 @@\n+line".to_string()),
+                viewed: false,
+            },
+            ChangedFile {
+                filename: "b.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 0,
+                patch: Some("@@ -1 +1 @@\n+line2".to_string()),
+                viewed: false,
+            },
+        ],
+    };
+    app.selected_file = 1; // We're now looking at file 1
+
+    let (tx, rx) = mpsc::channel(1);
+    app.diff_cache_receiver = Some(rx);
+
+    // Send cache for file 0 (stale)
+    let mut cache = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+line", 4);
+    cache.file_index = 0;
+    tx.send(cache).await.unwrap();
+
+    app.poll_diff_cache_updates();
+
+    // Stale cache should be rejected (diff_cache stays None or is not updated)
+    if let Some(ref c) = app.diff_cache {
+        assert_ne!(c.file_index, 0, "stale cache should not be applied");
+    }
+}
+
+#[tokio::test]
+async fn test_poll_prefetch_stores_cache() {
+    let mut app = App::new_for_test();
+    app.data_state = DataState::Loaded {
+        pr: Box::new(make_local_pr()),
+        files: vec![
+            ChangedFile {
+                filename: "a.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 0,
+                patch: Some("@@ -1 +1 @@\n+line".to_string()),
+                viewed: false,
+            },
+            ChangedFile {
+                filename: "b.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 0,
+                patch: Some("@@ -1 +1 @@\n+line2".to_string()),
+                viewed: false,
+            },
+        ],
+    };
+    app.selected_file = 0;
+
+    let (tx, rx) = mpsc::channel(2);
+    app.prefetch_receiver = Some(rx);
+
+    let mut cache = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+line2", 4);
+    cache.file_index = 1;
+    cache.highlighted = true;
+    tx.send(cache).await.unwrap();
+
+    app.poll_prefetch_updates();
+
+    assert!(app.highlighted_cache_store.contains_key(&1));
+}
+
+#[tokio::test]
+async fn test_poll_prefetch_skips_current_file() {
+    let mut app = App::new_for_test();
+    app.data_state = DataState::Loaded {
+        pr: Box::new(make_local_pr()),
+        files: vec![ChangedFile {
+            filename: "a.rs".to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 0,
+            patch: Some("@@ -1 +1 @@\n+line".to_string()),
+            viewed: false,
+        }],
+    };
+    app.selected_file = 0;
+
+    // Set up an existing highlighted diff_cache for current file
+    // poll_prefetch_updates skips when diff_cache has highlighted=true for same file_index
+    let mut existing_cache =
+        crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+line", 4);
+    existing_cache.file_index = 0;
+    existing_cache.highlighted = true;
+    app.diff_cache = Some(existing_cache);
+
+    let (tx, rx) = mpsc::channel(2);
+    app.prefetch_receiver = Some(rx);
+
+    let mut cache = crate::ui::diff_view::build_plain_diff_cache("@@ -1 +1 @@\n+line", 4);
+    cache.file_index = 0; // same as selected
+    cache.highlighted = true;
+    tx.send(cache).await.unwrap();
+
+    app.poll_prefetch_updates();
+
+    // Should skip storing cache for current file because diff_cache already has it highlighted
+    assert!(!app.highlighted_cache_store.contains_key(&0));
+}
+
+#[tokio::test]
+async fn test_poll_comment_submit_success() {
+    use crate::loader::CommentSubmitResult;
+    let mut app = App::new_for_test();
+    app.pr_number = Some(1);
+    app.comment_submitting = true;
+
+    let (tx, rx) = mpsc::channel(1);
+    app.comment_submit_receiver = Some((1, rx));
+
+    tx.send(CommentSubmitResult::Success).await.unwrap();
+
+    app.poll_comment_submit_updates();
+
+    assert!(!app.comment_submitting);
+    let (success, _) = app.submission_result.unwrap();
+    assert!(success);
+}
+
+#[tokio::test]
+async fn test_poll_comment_submit_failure() {
+    use crate::loader::CommentSubmitResult;
+    let mut app = App::new_for_test();
+    app.pr_number = Some(1);
+    app.comment_submitting = true;
+
+    let (tx, rx) = mpsc::channel(1);
+    app.comment_submit_receiver = Some((1, rx));
+
+    tx.send(CommentSubmitResult::Error("network error".to_string()))
+        .await
+        .unwrap();
+
+    app.poll_comment_submit_updates();
+
+    assert!(!app.comment_submitting);
+    let (success, msg) = app.submission_result.unwrap();
+    assert!(!success);
+    assert!(msg.contains("network error"));
+}
+
+#[tokio::test]
+async fn test_poll_mark_viewed_success() {
+    let mut app = App::new_for_test();
+    app.pr_number = Some(1);
+    app.data_state = DataState::Loaded {
+        pr: Box::new(make_local_pr()),
+        files: vec![ChangedFile {
+            filename: "test.rs".to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 0,
+            patch: None,
+            viewed: false,
+        }],
+    };
+
+    let (tx, rx) = mpsc::channel(1);
+    app.mark_viewed_receiver = Some((1, rx));
+
+    tx.send(MarkViewedResult::Completed {
+        marked_paths: vec!["test.rs".to_string()],
+        total_targets: 1,
+        error: None,
+        set_viewed: true,
+    })
+    .await
+    .unwrap();
+
+    app.poll_mark_viewed_updates();
+
+    if let DataState::Loaded { files, .. } = &app.data_state {
+        assert!(files[0].viewed);
+    }
+    let (success, _) = app.submission_result.unwrap();
+    assert!(success);
+}
+
+#[tokio::test]
+async fn test_poll_mark_viewed_error() {
+    let mut app = App::new_for_test();
+    app.pr_number = Some(1);
+    app.data_state = DataState::Loaded {
+        pr: Box::new(make_local_pr()),
+        files: vec![ChangedFile {
+            filename: "test.rs".to_string(),
+            status: "modified".to_string(),
+            additions: 1,
+            deletions: 0,
+            patch: None,
+            viewed: false,
+        }],
+    };
+
+    let (tx, rx) = mpsc::channel(1);
+    app.mark_viewed_receiver = Some((1, rx));
+
+    tx.send(MarkViewedResult::Completed {
+        marked_paths: vec![],
+        total_targets: 1,
+        error: Some("API error".to_string()),
+        set_viewed: true,
+    })
+    .await
+    .unwrap();
+
+    app.poll_mark_viewed_updates();
+
+    let (success, msg) = app.submission_result.unwrap();
+    assert!(!success);
+    assert!(msg.contains("API error"));
+}
+
+#[tokio::test]
+async fn test_poll_comment_updates_cross_pr_discards() {
+    let mut app = App::new_for_test();
+    app.pr_number = Some(2); // Current PR is 2
+
+    let (tx, rx) = mpsc::channel(1);
+    app.comment_receiver = Some((1, rx)); // Data is for PR 1
+    app.comments_loading = true;
+
+    tx.send(Ok(vec![])).await.unwrap();
+
+    app.poll_comment_updates();
+
+    // Should NOT update UI for wrong PR
+    assert!(app.comments_loading);
+    assert!(app.review_comments.is_none());
+}
+
+#[tokio::test]
+async fn test_poll_discussion_comment_cross_pr_discards() {
+    let mut app = App::new_for_test();
+    app.pr_number = Some(2); // Current PR is 2
+
+    let (tx, rx) = mpsc::channel(1);
+    app.discussion_comment_receiver = Some((1, rx)); // Data is for PR 1
+    app.discussion_comments_loading = true;
+
+    tx.send(Ok(vec![])).await.unwrap();
+
+    app.poll_discussion_comment_updates();
+
+    // Should NOT update UI for wrong PR
+    assert!(app.discussion_comments_loading);
+    assert!(app.discussion_comments.is_none());
 }

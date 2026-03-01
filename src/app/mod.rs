@@ -20,7 +20,14 @@ use crate::ui::text_area::TextArea;
 use std::time::Instant;
 
 mod types;
-pub use types::*;
+pub use types::{
+    AiRallyState, AppState, CachedDiffLine, CommentPosition, CommentTab, DataState, DiffCache,
+    InternedSpan, InputMode, JumpLocation, LineInputContext, LogEntry, LogEventType,
+    MultilineSelection, PermissionInfo, RefreshRequest, ReviewAction, SymbolPopupState,
+    ViewSnapshot, WatcherHandle, hash_string,
+};
+// Internal-only types (not re-exported from crate::app)
+use types::MarkViewedResult;
 
 mod polling;
 mod input;
