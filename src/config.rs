@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use xdg::BaseDirectories;
 
 use crate::keybinding::{KeyBinding, KeySequence, NamedKey};
@@ -14,6 +14,8 @@ pub struct Config {
     pub diff: DiffConfig,
     pub keybindings: KeybindingsConfig,
     pub ai: AiConfig,
+    #[serde(skip)]
+    pub project_root: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -385,16 +387,81 @@ impl Serialize for KeybindingsConfig {
     }
 }
 
+/// Deep merge two TOML values.
+/// Tables are merged recursively; all other types are replaced by the override value.
+fn deep_merge_toml(base: &mut toml::Value, override_val: toml::Value) {
+    match (base, override_val) {
+        (toml::Value::Table(base_table), toml::Value::Table(override_table)) => {
+            for (key, override_value) in override_table {
+                match base_table.get_mut(&key) {
+                    Some(base_value) => deep_merge_toml(base_value, override_value),
+                    None => {
+                        base_table.insert(key, override_value);
+                    }
+                }
+            }
+        }
+        (base, override_val) => {
+            *base = override_val;
+        }
+    }
+}
+
+/// Find the project root directory.
+/// Uses `git rev-parse --show-toplevel` if in a git repository,
+/// otherwise falls back to `current_dir()`.
+pub fn find_project_root() -> PathBuf {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()
+        .and_then(|output| {
+            if output.status.success() {
+                String::from_utf8(output.stdout)
+                    .ok()
+                    .map(|s| PathBuf::from(s.trim()))
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+}
+
 impl Config {
     pub fn load() -> Result<Self> {
-        let config_path = Self::config_path();
+        let global_path = Self::config_path();
+        let project_root = find_project_root();
+        let local_path = project_root.join(".octorus/config.toml");
+        Self::load_from_paths(&global_path, &local_path, project_root)
+    }
 
-        let config = if config_path.exists() {
-            let content = fs::read_to_string(&config_path).context("Failed to read config file")?;
-            toml::from_str(&content).context("Failed to parse config file")?
+    /// Load config by merging global and local TOML files.
+    /// Local values override global values at the TOML table level (deep merge).
+    pub fn load_from_paths(
+        global_path: &Path,
+        local_path: &Path,
+        project_root: PathBuf,
+    ) -> Result<Self> {
+        let mut base_value: toml::Value = if global_path.exists() {
+            let content =
+                fs::read_to_string(global_path).context("Failed to read global config file")?;
+            toml::from_str(&content).context("Failed to parse global config file")?
         } else {
-            Self::default()
+            toml::Value::Table(toml::map::Map::new())
         };
+
+        if local_path.exists() {
+            let local_content = fs::read_to_string(local_path)
+                .context("Failed to read local config file (.octorus/config.toml)")?;
+            let local_value: toml::Value = toml::from_str(&local_content)
+                .context("Failed to parse local config file (.octorus/config.toml)")?;
+            deep_merge_toml(&mut base_value, local_value);
+        }
+
+        let mut config: Config = base_value
+            .try_into()
+            .context("Failed to deserialize merged config")?;
+        config.project_root = project_root;
 
         // Validate keybindings and warn on conflicts
         if let Err(errors) = config.keybindings.validate() {
@@ -691,5 +758,285 @@ mod tests {
         "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.keybindings.multiline_select.display(), "V");
+    }
+
+    // --- deep_merge_toml / load_from_paths tests ---
+
+    #[test]
+    fn test_deep_merge_empty_local_preserves_global() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("local.toml");
+
+        fs::write(
+            &global,
+            r#"
+[ai]
+reviewer = "codex"
+max_iterations = 5
+"#,
+        )
+        .unwrap();
+        fs::write(&local, "").unwrap();
+
+        let config =
+            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        assert_eq!(config.ai.reviewer, "codex");
+        assert_eq!(config.ai.max_iterations, 5);
+    }
+
+    #[test]
+    fn test_deep_merge_local_scalar_overrides_global() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("local.toml");
+
+        fs::write(
+            &global,
+            r#"
+[ai]
+reviewer = "codex"
+max_iterations = 10
+"#,
+        )
+        .unwrap();
+        fs::write(
+            &local,
+            r#"
+[ai]
+max_iterations = 3
+"#,
+        )
+        .unwrap();
+
+        let config =
+            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        assert_eq!(config.ai.reviewer, "codex"); // inherited from global
+        assert_eq!(config.ai.max_iterations, 3); // overridden by local
+    }
+
+    #[test]
+    fn test_deep_merge_nested_table_partial_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("local.toml");
+
+        fs::write(
+            &global,
+            r#"
+[ai]
+reviewer = "codex"
+reviewee = "claude"
+max_iterations = 10
+timeout_secs = 600
+"#,
+        )
+        .unwrap();
+        fs::write(
+            &local,
+            r#"
+[ai]
+timeout_secs = 300
+"#,
+        )
+        .unwrap();
+
+        let config =
+            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        assert_eq!(config.ai.reviewer, "codex");
+        assert_eq!(config.ai.reviewee, "claude");
+        assert_eq!(config.ai.max_iterations, 10);
+        assert_eq!(config.ai.timeout_secs, 300);
+    }
+
+    #[test]
+    fn test_deep_merge_array_replaced_entirely() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("local.toml");
+
+        fs::write(
+            &global,
+            r#"
+[ai]
+reviewer_additional_tools = ["Skill", "WebSearch"]
+"#,
+        )
+        .unwrap();
+        fs::write(
+            &local,
+            r#"
+[ai]
+reviewer_additional_tools = ["WebFetch"]
+"#,
+        )
+        .unwrap();
+
+        let config =
+            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        assert_eq!(config.ai.reviewer_additional_tools, vec!["WebFetch"]);
+    }
+
+    #[test]
+    fn test_deep_merge_local_adds_new_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("local.toml");
+
+        fs::write(&global, "").unwrap();
+        fs::write(
+            &local,
+            r#"
+[ai]
+reviewer = "codex"
+max_iterations = 3
+"#,
+        )
+        .unwrap();
+
+        let config =
+            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        assert_eq!(config.ai.reviewer, "codex");
+        assert_eq!(config.ai.max_iterations, 3);
+    }
+
+    #[test]
+    fn test_deep_merge_keybindings_string_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("local.toml");
+
+        fs::write(
+            &global,
+            r#"
+[keybindings]
+move_down = "j"
+move_up = "k"
+"#,
+        )
+        .unwrap();
+        fs::write(
+            &local,
+            r#"
+[keybindings]
+move_down = "n"
+"#,
+        )
+        .unwrap();
+
+        let config =
+            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        assert_eq!(config.keybindings.move_down.display(), "n");
+        assert_eq!(config.keybindings.move_up.display(), "k");
+    }
+
+    #[test]
+    fn test_deep_merge_keybindings_string_to_object_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("local.toml");
+
+        fs::write(
+            &global,
+            r#"
+[keybindings]
+page_down = "d"
+"#,
+        )
+        .unwrap();
+        fs::write(
+            &local,
+            r#"
+[keybindings]
+page_down = { key = "f", ctrl = true }
+"#,
+        )
+        .unwrap();
+
+        let config =
+            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        assert_eq!(config.keybindings.page_down.display(), "Ctrl-f");
+    }
+
+    #[test]
+    fn test_deep_merge_keybindings_array_to_string_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("local.toml");
+
+        fs::write(
+            &global,
+            r#"
+[keybindings]
+jump_to_first = ["g", "g"]
+"#,
+        )
+        .unwrap();
+        fs::write(
+            &local,
+            r#"
+[keybindings]
+jump_to_first = "G"
+"#,
+        )
+        .unwrap();
+
+        let config =
+            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        assert_eq!(config.keybindings.jump_to_first.display(), "G");
+    }
+
+    #[test]
+    fn test_deep_merge_tab_width_zero_clamped() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("local.toml");
+
+        fs::write(
+            &global,
+            r#"
+[diff]
+tab_width = 4
+"#,
+        )
+        .unwrap();
+        fs::write(
+            &local,
+            r#"
+[diff]
+tab_width = 0
+"#,
+        )
+        .unwrap();
+
+        let config =
+            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        assert_eq!(config.diff.tab_width, 1);
+    }
+
+    #[test]
+    fn test_load_from_paths_no_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("nonexistent_global.toml");
+        let local = dir.path().join("nonexistent_local.toml");
+
+        let config =
+            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        // Should use all defaults
+        assert_eq!(config.ai.reviewer, "claude");
+        assert_eq!(config.ai.max_iterations, 10);
+        assert_eq!(config.diff.tab_width, 4);
+    }
+
+    #[test]
+    fn test_load_from_paths_sets_project_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("local.toml");
+        fs::write(&global, "").unwrap();
+
+        let config =
+            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
+        assert_eq!(config.project_root, dir.path());
     }
 }

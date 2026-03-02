@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::config::AiConfig;
 
@@ -13,22 +13,50 @@ mod defaults {
     pub const REREVIEW: &str = include_str!("defaults/rereview.md");
 }
 
-/// Prompt loader that reads templates from files or uses defaults
+/// Prompt loader that reads templates from files or uses defaults.
+///
+/// Resolution order (highest priority first):
+/// 1. `.octorus/prompts/{file}` — project-local
+/// 2. `config.prompt_dir` — explicit path from merged config
+/// 3. `~/.config/octorus/prompts/{file}` — global default
+/// 4. Binary-embedded default — fallback
 pub struct PromptLoader {
     prompt_dir: Option<PathBuf>,
+    local_prompts_dir: Option<PathBuf>,
+    global_prompts_dir: Option<PathBuf>,
 }
 
 impl PromptLoader {
-    /// Create a new PromptLoader with the given config
-    pub fn new(config: &AiConfig) -> Self {
-        let prompt_dir = config.prompt_dir.as_ref().map(PathBuf::from).or_else(|| {
-            // Default: ~/.config/octorus/prompts/
-            xdg::BaseDirectories::with_prefix("octorus")
-                .ok()
-                .map(|dirs| dirs.get_config_home().join("prompts"))
+    /// Create a new PromptLoader with the given config and project root
+    pub fn new(config: &AiConfig, project_root: &Path) -> Self {
+        // Resolve prompt_dir: make relative paths absolute against project_root
+        let prompt_dir = config.prompt_dir.as_ref().map(|p| {
+            let path = PathBuf::from(p);
+            if path.is_absolute() {
+                path
+            } else {
+                project_root.join(path)
+            }
         });
 
-        Self { prompt_dir }
+        let local_prompts_dir = {
+            let path = project_root.join(".octorus/prompts");
+            if path.is_dir() {
+                Some(path)
+            } else {
+                None
+            }
+        };
+
+        let global_prompts_dir = xdg::BaseDirectories::with_prefix("octorus")
+            .ok()
+            .map(|dirs| dirs.get_config_home().join("prompts"));
+
+        Self {
+            prompt_dir,
+            local_prompts_dir,
+            global_prompts_dir,
+        }
     }
 
     /// Load the reviewer prompt with variable substitution
@@ -180,17 +208,45 @@ Note: Address these comments if they are relevant and valid. Don't wait for more
         render_template(&template, &vars)
     }
 
-    /// Load a template from file or return default
+    /// Load a template with multi-level resolution.
+    ///
+    /// Order: local .octorus/prompts/ → config.prompt_dir → global prompts → embedded default
     fn load_template(&self, filename: &str, default: &str) -> String {
-        if let Some(ref dir) = self.prompt_dir {
-            let path = dir.join(filename);
-            if path.exists() {
-                if let Ok(content) = fs::read_to_string(&path) {
-                    return content;
+        // 1. Project-local .octorus/prompts/ (highest priority)
+        if let Some(content) = Self::try_load_from(&self.local_prompts_dir, filename) {
+            return content;
+        }
+        // 2. config.prompt_dir (explicit path)
+        if let Some(content) = Self::try_load_from(&self.prompt_dir, filename) {
+            return content;
+        }
+        // 3. Global ~/.config/octorus/prompts/
+        if let Some(content) = Self::try_load_from(&self.global_prompts_dir, filename) {
+            return content;
+        }
+        // 4. Binary-embedded default
+        default.to_string()
+    }
+
+    /// Try to load a file from an optional directory.
+    /// Returns None for NotFound; logs a warning and returns None for other errors.
+    fn try_load_from(dir: &Option<PathBuf>, filename: &str) -> Option<String> {
+        dir.as_ref().and_then(|d| {
+            let path = d.join(filename);
+            match fs::read_to_string(&path) {
+                Ok(content) => Some(content),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => {
+                    eprintln!(
+                        "Warning: Failed to read prompt '{}' from {}: {}",
+                        filename,
+                        path.display(),
+                        e
+                    );
+                    None
                 }
             }
-        }
-        default.to_string()
+        })
     }
 }
 
@@ -263,7 +319,7 @@ mod tests {
     #[test]
     fn test_load_reviewer_prompt() {
         let config = AiConfig::default();
-        let loader = PromptLoader::new(&config);
+        let loader = PromptLoader::new(&config, Path::new("/tmp"));
         let context = create_test_context();
 
         let prompt = loader.load_reviewer_prompt(&context, 1);
@@ -279,7 +335,7 @@ mod tests {
     #[test]
     fn test_load_reviewee_prompt() {
         let config = AiConfig::default();
-        let loader = PromptLoader::new(&config);
+        let loader = PromptLoader::new(&config, Path::new("/tmp"));
         let context = create_test_context();
 
         let review = ReviewerOutput {
@@ -308,7 +364,7 @@ mod tests {
     #[test]
     fn test_load_reviewee_prompt_with_external_comments() {
         let config = AiConfig::default();
-        let loader = PromptLoader::new(&config);
+        let loader = PromptLoader::new(&config, Path::new("/tmp"));
         let mut context = create_test_context();
         context.external_comments = vec![
             ExternalComment {
@@ -343,7 +399,7 @@ mod tests {
     #[test]
     fn test_load_rereview_prompt() {
         let config = AiConfig::default();
-        let loader = PromptLoader::new(&config);
+        let loader = PromptLoader::new(&config, Path::new("/tmp"));
         let context = create_test_context();
 
         let prompt = loader.load_rereview_prompt(
@@ -362,7 +418,11 @@ mod tests {
 
     /// Create a PromptLoader that always uses default templates (ignoring custom prompt dir)
     fn create_default_loader() -> PromptLoader {
-        PromptLoader { prompt_dir: None }
+        PromptLoader {
+            prompt_dir: None,
+            local_prompts_dir: None,
+            global_prompts_dir: None,
+        }
     }
 
     #[test]
