@@ -286,6 +286,7 @@ impl App {
             self.previous_state = AppState::FileList;
             self.state = AppState::Help;
             self.help_scroll_offset = 0;
+            self.config_scroll_offset = 0;
             return Ok(());
         }
 

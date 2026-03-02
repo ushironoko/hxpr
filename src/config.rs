@@ -16,6 +16,12 @@ pub struct Config {
     pub ai: AiConfig,
     #[serde(skip)]
     pub project_root: PathBuf,
+    /// Path of the global config file if it was loaded successfully.
+    #[serde(skip)]
+    pub loaded_global_config: Option<PathBuf>,
+    /// Path of the local config file if it was loaded successfully.
+    #[serde(skip)]
+    pub loaded_local_config: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -462,6 +468,16 @@ impl Config {
             .try_into()
             .context("Failed to deserialize merged config")?;
         config.project_root = project_root;
+        config.loaded_global_config = if global_path.exists() {
+            Some(global_path.to_path_buf())
+        } else {
+            None
+        };
+        config.loaded_local_config = if local_path.exists() {
+            Some(local_path.to_path_buf())
+        } else {
+            None
+        };
 
         // Validate keybindings and warn on conflicts
         if let Err(errors) = config.keybindings.validate() {
@@ -473,7 +489,7 @@ impl Config {
         Ok(config)
     }
 
-    fn config_path() -> PathBuf {
+    pub fn config_path() -> PathBuf {
         BaseDirectories::with_prefix("octorus")
             .map(|dirs| dirs.get_config_home().join("config.toml"))
             .unwrap_or_else(|_| PathBuf::from("config.toml"))

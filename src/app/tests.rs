@@ -2341,9 +2341,9 @@ fn test_help_scroll_page_down_j_uppercase() {
     let config = Config::default();
     let (mut app, _) = App::new_loading("owner/repo", 1, config);
     app.help_scroll_offset = 0;
-    // terminal height 30 → visible_lines = 30 - 5 = 25
+    // terminal height 30 → visible_lines = 30 - 6 = 24
     app.apply_help_scroll(make_key(KeyCode::Char('J')), 30);
-    assert_eq!(app.help_scroll_offset, 25);
+    assert_eq!(app.help_scroll_offset, 24);
 }
 
 #[test]
@@ -2351,9 +2351,9 @@ fn test_help_scroll_page_up_k_uppercase() {
     let config = Config::default();
     let (mut app, _) = App::new_loading("owner/repo", 1, config);
     app.help_scroll_offset = 50;
-    // terminal height 30 → visible_lines = 25
+    // terminal height 30 → visible_lines = 24
     app.apply_help_scroll(make_key(KeyCode::Char('K')), 30);
-    assert_eq!(app.help_scroll_offset, 25);
+    assert_eq!(app.help_scroll_offset, 26);
 }
 
 #[test]
@@ -2361,7 +2361,7 @@ fn test_help_scroll_ctrl_d_half_page() {
     let config = Config::default();
     let (mut app, _) = App::new_loading("owner/repo", 1, config);
     app.help_scroll_offset = 0;
-    // terminal height 30 → visible_lines = 25, half_page = 12
+    // terminal height 30 → visible_lines = 24, half_page = 12
     app.apply_help_scroll(make_ctrl_key('d'), 30);
     assert_eq!(app.help_scroll_offset, 12);
 }
@@ -2371,7 +2371,7 @@ fn test_help_scroll_ctrl_u_half_page() {
     let config = Config::default();
     let (mut app, _) = App::new_loading("owner/repo", 1, config);
     app.help_scroll_offset = 20;
-    // terminal height 30 → visible_lines = 25, half_page = 12
+    // terminal height 30 → visible_lines = 24, half_page = 12
     app.apply_help_scroll(make_ctrl_key('u'), 30);
     assert_eq!(app.help_scroll_offset, 8);
 }
@@ -2427,10 +2427,11 @@ fn test_help_scroll_q_returns_to_previous_state() {
 #[test]
 fn test_help_viewport_overhead_matches_render_layout() {
     // The render layout uses:
-    //   Constraint::Length(3) for title + Constraint::Min(0) for content
+    //   Constraint::Length(3) for tab header + Constraint::Min(0) for content
+    //   + Constraint::Length(1) for footer
     //   Content has Borders::ALL (2 rows overhead)
-    // Total overhead = 3 + 2 = 5
-    assert_eq!(App::HELP_VIEWPORT_OVERHEAD, 5);
+    // Total overhead = 3 + 2 + 1 = 6
+    assert_eq!(App::HELP_VIEWPORT_OVERHEAD, 6);
 }
 
 fn make_shift_key(c: char) -> event::KeyEvent {
@@ -2448,9 +2449,9 @@ fn test_help_scroll_shift_j_page_down() {
     let (mut app, _) = App::new_loading("owner/repo", 1, config);
     app.help_scroll_offset = 0;
     // Shift+j should behave the same as J (page down)
-    // terminal height 30 → visible_lines = 25
+    // terminal height 30 → visible_lines = 24
     app.apply_help_scroll(make_shift_key('j'), 30);
-    assert_eq!(app.help_scroll_offset, 25);
+    assert_eq!(app.help_scroll_offset, 24);
 }
 
 #[test]
@@ -2459,9 +2460,9 @@ fn test_help_scroll_shift_k_page_up() {
     let (mut app, _) = App::new_loading("owner/repo", 1, config);
     app.help_scroll_offset = 50;
     // Shift+k should behave the same as K (page up)
-    // terminal height 30 → visible_lines = 25
+    // terminal height 30 → visible_lines = 24
     app.apply_help_scroll(make_shift_key('k'), 30);
-    assert_eq!(app.help_scroll_offset, 25);
+    assert_eq!(app.help_scroll_offset, 26);
 }
 
 #[test]
@@ -4862,4 +4863,117 @@ async fn test_poll_discussion_comment_cross_pr_discards() {
     // Should NOT update UI for wrong PR
     assert!(app.discussion_comments_loading);
     assert!(app.discussion_comments.is_none());
+}
+
+// --- Help Tab Tests ---
+
+#[test]
+fn test_help_tab_switch_with_bracket_keys() {
+    let config = Config::default();
+    let (mut app, _) = App::new_loading("owner/repo", 1, config);
+    app.state = AppState::Help;
+
+    // Default tab is Keybindings
+    assert_eq!(app.help_tab, HelpTab::Keybindings);
+
+    // ] switches to Config
+    app.apply_help_scroll(make_key(KeyCode::Char(']')), 30);
+    assert_eq!(app.help_tab, HelpTab::Config);
+
+    // ] again switches back to Keybindings
+    app.apply_help_scroll(make_key(KeyCode::Char(']')), 30);
+    assert_eq!(app.help_tab, HelpTab::Keybindings);
+
+    // [ switches to Config
+    app.apply_help_scroll(make_key(KeyCode::Char('[')), 30);
+    assert_eq!(app.help_tab, HelpTab::Config);
+
+    // [ again switches back to Keybindings
+    app.apply_help_scroll(make_key(KeyCode::Char('[')), 30);
+    assert_eq!(app.help_tab, HelpTab::Keybindings);
+}
+
+#[test]
+fn test_help_tab_independent_scroll_offsets() {
+    let config = Config::default();
+    let (mut app, _) = App::new_loading("owner/repo", 1, config);
+    app.state = AppState::Help;
+
+    // Scroll keybindings tab
+    app.help_tab = HelpTab::Keybindings;
+    app.apply_help_scroll(make_key(KeyCode::Char('j')), 30);
+    app.apply_help_scroll(make_key(KeyCode::Char('j')), 30);
+    app.apply_help_scroll(make_key(KeyCode::Char('j')), 30);
+    assert_eq!(app.help_scroll_offset, 3);
+    assert_eq!(app.config_scroll_offset, 0);
+
+    // Switch to Config tab and scroll
+    app.apply_help_scroll(make_key(KeyCode::Char(']')), 30);
+    assert_eq!(app.help_tab, HelpTab::Config);
+    app.apply_help_scroll(make_key(KeyCode::Char('j')), 30);
+    assert_eq!(app.config_scroll_offset, 1);
+    // Keybindings offset unchanged
+    assert_eq!(app.help_scroll_offset, 3);
+
+    // Switch back and verify keybindings offset preserved
+    app.apply_help_scroll(make_key(KeyCode::Char('[')), 30);
+    assert_eq!(app.help_tab, HelpTab::Keybindings);
+    assert_eq!(app.help_scroll_offset, 3);
+}
+
+#[test]
+fn test_help_tab_switch_does_not_scroll() {
+    let config = Config::default();
+    let (mut app, _) = App::new_loading("owner/repo", 1, config);
+    app.state = AppState::Help;
+    app.help_scroll_offset = 5;
+    app.config_scroll_offset = 10;
+
+    // Tab switch should not change scroll offsets
+    app.apply_help_scroll(make_key(KeyCode::Char(']')), 30);
+    assert_eq!(app.help_scroll_offset, 5);
+    assert_eq!(app.config_scroll_offset, 10);
+}
+
+#[test]
+fn test_help_reopen_resets_scroll_but_preserves_tab() {
+    let config = Config::default();
+    let (mut app, _) = App::new_loading("owner/repo", 1, config);
+    app.state = AppState::Help;
+
+    // Switch to Config tab and scroll
+    app.help_tab = HelpTab::Config;
+    app.config_scroll_offset = 5;
+    app.help_scroll_offset = 10;
+
+    // Close help
+    app.apply_help_scroll(make_key(KeyCode::Char('q')), 30);
+    assert_ne!(app.state, AppState::Help);
+
+    // Simulate reopening help (like input.rs does)
+    app.previous_state = AppState::FileList;
+    app.state = AppState::Help;
+    app.help_scroll_offset = 0;
+    app.config_scroll_offset = 0;
+
+    // Tab state is preserved (not reset)
+    assert_eq!(app.help_tab, HelpTab::Config);
+    // Scroll offsets are reset
+    assert_eq!(app.help_scroll_offset, 0);
+    assert_eq!(app.config_scroll_offset, 0);
+}
+
+#[test]
+fn test_config_tab_scroll_with_jk() {
+    let config = Config::default();
+    let (mut app, _) = App::new_loading("owner/repo", 1, config);
+    app.state = AppState::Help;
+    app.help_tab = HelpTab::Config;
+
+    app.apply_help_scroll(make_key(KeyCode::Char('j')), 30);
+    assert_eq!(app.config_scroll_offset, 1);
+    app.apply_help_scroll(make_key(KeyCode::Char('j')), 30);
+    assert_eq!(app.config_scroll_offset, 2);
+    app.apply_help_scroll(make_key(KeyCode::Char('k')), 30);
+    assert_eq!(app.config_scroll_offset, 1);
 }

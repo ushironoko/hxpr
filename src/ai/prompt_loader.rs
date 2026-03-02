@@ -6,6 +6,19 @@ use crate::config::AiConfig;
 
 use super::adapter::{Context, ReviewAction, ReviewerOutput};
 
+/// Source of a resolved prompt template
+#[derive(Debug, Clone, PartialEq)]
+pub enum PromptSource {
+    /// .octorus/prompts/ (project-local)
+    Local(PathBuf),
+    /// config.prompt_dir (explicit path)
+    PromptDir(PathBuf),
+    /// ~/.config/octorus/prompts/ (global)
+    Global(PathBuf),
+    /// Binary-embedded default
+    Embedded,
+}
+
 /// Default prompt templates embedded in the binary
 mod defaults {
     pub const REVIEWER: &str = include_str!("defaults/reviewer.md");
@@ -57,6 +70,37 @@ impl PromptLoader {
             local_prompts_dir,
             global_prompts_dir,
         }
+    }
+
+    /// Resolve which source would be used for a given prompt filename.
+    pub fn resolve_source(&self, filename: &str) -> PromptSource {
+        if let Some(ref dir) = self.local_prompts_dir {
+            let path = dir.join(filename);
+            if path.exists() {
+                return PromptSource::Local(path);
+            }
+        }
+        if let Some(ref dir) = self.prompt_dir {
+            let path = dir.join(filename);
+            if path.exists() {
+                return PromptSource::PromptDir(path);
+            }
+        }
+        if let Some(ref dir) = self.global_prompts_dir {
+            let path = dir.join(filename);
+            if path.exists() {
+                return PromptSource::Global(path);
+            }
+        }
+        PromptSource::Embedded
+    }
+
+    /// Resolve sources for all standard prompt files.
+    pub fn resolve_all_sources(&self) -> Vec<(String, PromptSource)> {
+        ["reviewer.md", "reviewee.md", "rereview.md"]
+            .iter()
+            .map(|f| (f.to_string(), self.resolve_source(f)))
+            .collect()
     }
 
     /// Load the reviewer prompt with variable substitution
@@ -467,6 +511,81 @@ mod tests {
         assert!(prompt.contains("git add <files>"));
         // Should NOT contain local mode prohibition
         assert!(!prompt.contains("LOCAL-ONLY session"));
+    }
+
+    #[test]
+    fn test_resolve_source_embedded_when_no_dirs() {
+        let loader = create_default_loader();
+        let source = loader.resolve_source("reviewer.md");
+        assert_eq!(source, PromptSource::Embedded);
+    }
+
+    #[test]
+    fn test_resolve_source_local_priority() {
+        let dir = tempfile::tempdir().unwrap();
+        let local_dir = dir.path().join("local_prompts");
+        std::fs::create_dir_all(&local_dir).unwrap();
+        std::fs::write(local_dir.join("reviewer.md"), "local prompt").unwrap();
+
+        let loader = PromptLoader {
+            prompt_dir: None,
+            local_prompts_dir: Some(local_dir.clone()),
+            global_prompts_dir: None,
+        };
+        let source = loader.resolve_source("reviewer.md");
+        assert_eq!(source, PromptSource::Local(local_dir.join("reviewer.md")));
+    }
+
+    #[test]
+    fn test_resolve_source_prompt_dir_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let prompt_dir = dir.path().join("prompt_dir");
+        std::fs::create_dir_all(&prompt_dir).unwrap();
+        std::fs::write(prompt_dir.join("reviewer.md"), "prompt dir").unwrap();
+
+        let loader = PromptLoader {
+            prompt_dir: Some(prompt_dir.clone()),
+            local_prompts_dir: None,
+            global_prompts_dir: None,
+        };
+        let source = loader.resolve_source("reviewer.md");
+        assert_eq!(
+            source,
+            PromptSource::PromptDir(prompt_dir.join("reviewer.md"))
+        );
+    }
+
+    #[test]
+    fn test_resolve_source_global_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let global_dir = dir.path().join("global_prompts");
+        std::fs::create_dir_all(&global_dir).unwrap();
+        std::fs::write(global_dir.join("reviewer.md"), "global prompt").unwrap();
+
+        let loader = PromptLoader {
+            prompt_dir: None,
+            local_prompts_dir: None,
+            global_prompts_dir: Some(global_dir.clone()),
+        };
+        let source = loader.resolve_source("reviewer.md");
+        assert_eq!(
+            source,
+            PromptSource::Global(global_dir.join("reviewer.md"))
+        );
+    }
+
+    #[test]
+    fn test_resolve_all_sources_returns_three_files() {
+        let loader = create_default_loader();
+        let sources = loader.resolve_all_sources();
+        assert_eq!(sources.len(), 3);
+        assert_eq!(sources[0].0, "reviewer.md");
+        assert_eq!(sources[1].0, "reviewee.md");
+        assert_eq!(sources[2].0, "rereview.md");
+        // All should be Embedded since no dirs configured
+        for (_, source) in &sources {
+            assert_eq!(*source, PromptSource::Embedded);
+        }
     }
 
     #[test]
