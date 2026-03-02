@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use xdg::BaseDirectories;
@@ -22,6 +22,10 @@ pub struct Config {
     /// Path of the local config file if it was loaded successfully.
     #[serde(skip)]
     pub loaded_local_config: Option<PathBuf>,
+    /// Set of dotted key paths overridden by the local config (e.g. "diff.theme", "editor").
+    /// Computed once at load time to avoid per-frame disk I/O.
+    #[serde(skip)]
+    pub local_overrides: HashSet<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -517,6 +521,7 @@ impl Config {
         } else {
             None
         };
+        config.local_overrides = Self::collect_local_override_keys(local_path);
 
         // Validate keybindings and warn on conflicts
         if let Err(errors) = config.keybindings.validate() {
@@ -526,6 +531,29 @@ impl Config {
         }
 
         Ok(config)
+    }
+
+    /// Parse the local config file and collect dotted key paths that are set.
+    /// Returns an empty set if the file doesn't exist or is unparseable.
+    fn collect_local_override_keys(local_path: &Path) -> HashSet<String> {
+        let mut overrides = HashSet::new();
+        let Ok(content) = fs::read_to_string(local_path) else {
+            return overrides;
+        };
+        let Ok(toml::Value::Table(table)) = content.parse::<toml::Value>() else {
+            return overrides;
+        };
+        if table.contains_key("editor") {
+            overrides.insert("editor".to_string());
+        }
+        for section in ["diff", "ai", "keybindings"] {
+            if let Some(toml::Value::Table(sub)) = table.get(section) {
+                for key in sub.keys() {
+                    overrides.insert(format!("{}.{}", section, key));
+                }
+            }
+        }
+        overrides
     }
 
     pub fn config_path() -> PathBuf {

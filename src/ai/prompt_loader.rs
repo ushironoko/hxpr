@@ -73,28 +73,34 @@ impl PromptLoader {
     }
 
     /// Resolve which source would be used for a given prompt filename.
-    /// Uses `is_file()` instead of `exists()` so that directories or
-    /// non-readable entries do not shadow lower-priority sources.
+    /// Uses `File::open()` to verify the file is both a regular file and
+    /// readable, so the Help display matches what `load_template()` would
+    /// actually load.
     pub fn resolve_source(&self, filename: &str) -> PromptSource {
         if let Some(ref dir) = self.local_prompts_dir {
             let path = dir.join(filename);
-            if path.is_file() {
+            if Self::is_readable_file(&path) {
                 return PromptSource::Local(path);
             }
         }
         if let Some(ref dir) = self.prompt_dir {
             let path = dir.join(filename);
-            if path.is_file() {
+            if Self::is_readable_file(&path) {
                 return PromptSource::PromptDir(path);
             }
         }
         if let Some(ref dir) = self.global_prompts_dir {
             let path = dir.join(filename);
-            if path.is_file() {
+            if Self::is_readable_file(&path) {
                 return PromptSource::Global(path);
             }
         }
         PromptSource::Embedded
+    }
+
+    /// Check that a path is a regular file and can be opened for reading.
+    fn is_readable_file(path: &Path) -> bool {
+        path.is_file() && std::fs::File::open(path).is_ok()
     }
 
     /// Resolve sources for all standard prompt files.
