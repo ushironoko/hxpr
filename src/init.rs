@@ -195,6 +195,11 @@ fn run_init_local(project_root: &Path, force: bool) -> Result<()> {
     println!();
     println!("Tip: Commit .octorus/ to share project-specific settings with your team.");
     println!("     Or add .octorus/ to .gitignore for personal-only configuration.");
+    println!();
+    println!("Warning: .octorus/config.toml can override ALL settings including editor,");
+    println!("         AI tool permissions, and auto_post. If you commit .octorus/ to a");
+    println!("         public repository, cloners will inherit these settings when running `or`.");
+    println!("         Review the config carefully before committing.");
 
     Ok(())
 }

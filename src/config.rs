@@ -474,6 +474,14 @@ impl Config {
 
     /// Load config by merging global and local TOML files.
     /// Local values override global values at the TOML table level (deep merge).
+    ///
+    /// DESIGN NOTE: All keys including `editor`, `ai.*_additional_tools`, and
+    /// `ai.auto_post` are intentionally allowed in local config. Project-local
+    /// `.octorus/config.toml` enables per-repository customization of tool
+    /// permissions (e.g. allowing `git push` only in trusted repos). This is
+    /// analogous to `.editorconfig` or `.vscode/settings.json` — the user
+    /// explicitly runs `or` in the repo, implying trust. Do NOT add key
+    /// stripping or filtering here.
     pub fn load_from_paths(
         global_path: &Path,
         local_path: &Path,
