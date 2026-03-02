@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -186,8 +188,49 @@ fn render_help_footer(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(footer, area);
 }
 
+/// Detect which config keys are overridden by the local .octorus/config.toml.
+/// Returns a set of dotted key paths like "diff.theme", "ai.reviewer", "editor".
+fn detect_local_overrides(config: &Config) -> HashSet<String> {
+    let mut overrides = HashSet::new();
+    let Some(ref path) = config.loaded_local_config else {
+        return overrides;
+    };
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return overrides;
+    };
+    let Ok(toml::Value::Table(table)) = content.parse::<toml::Value>() else {
+        return overrides;
+    };
+
+    if table.contains_key("editor") {
+        overrides.insert("editor".to_string());
+    }
+    for section in ["diff", "ai", "keybindings"] {
+        if let Some(toml::Value::Table(sub)) = table.get(section) {
+            for key in sub.keys() {
+                overrides.insert(format!("{}.{}", section, key));
+            }
+        }
+    }
+    overrides
+}
+
+/// Build a config value line with optional "(local)" override marker.
+fn config_value_line(label: &str, value: &str, key: &str, overrides: &HashSet<String>) -> Line<'static> {
+    let label_width = 20;
+    if overrides.contains(key) {
+        Line::from(vec![
+            Span::raw(format!("{}{}", fmt_label(label, label_width), value)),
+            Span::styled(" (local)", Style::default().fg(Color::Cyan)),
+        ])
+    } else {
+        Line::from(format!("{}{}", fmt_label(label, label_width), value))
+    }
+}
+
 pub fn build_config_lines(config: &Config) -> Vec<Line<'static>> {
     let label_width = 20;
+    let overrides = detect_local_overrides(config);
 
     let global_config_path = Config::config_path();
     let global_status = if config.loaded_global_config.is_some() {
@@ -198,7 +241,11 @@ pub fn build_config_lines(config: &Config) -> Vec<Line<'static>> {
 
     let local_config_path = config.project_root.join(".octorus/config.toml");
     let local_status = if config.loaded_local_config.is_some() {
-        format!("{} [loaded]", local_config_path.display())
+        if overrides.is_empty() {
+            format!("{} [loaded]", local_config_path.display())
+        } else {
+            format!("{} [loaded, overrides global]", local_config_path.display())
+        }
     } else {
         format!("{} [not found]", local_config_path.display())
     };
@@ -250,21 +297,9 @@ pub fn build_config_lines(config: &Config) -> Vec<Line<'static>> {
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )]),
-        Line::from(format!(
-            "{}{}",
-            fmt_label("Theme", label_width),
-            config.diff.theme
-        )),
-        Line::from(format!(
-            "{}{}",
-            fmt_label("Tab width", label_width),
-            config.diff.tab_width
-        )),
-        Line::from(format!(
-            "{}{}",
-            fmt_label("Background color", label_width),
-            config.diff.bg_color
-        )),
+        config_value_line("Theme", &config.diff.theme, "diff.theme", &overrides),
+        config_value_line("Tab width", &config.diff.tab_width.to_string(), "diff.tab_width", &overrides),
+        config_value_line("Background color", &config.diff.bg_color.to_string(), "diff.bg_color", &overrides),
         Line::from(""),
         Line::from(vec![Span::styled(
             "Editor",
@@ -272,11 +307,7 @@ pub fn build_config_lines(config: &Config) -> Vec<Line<'static>> {
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )]),
-        Line::from(format!(
-            "{}{}",
-            fmt_label("Editor", label_width),
-            editor_display
-        )),
+        config_value_line("Editor", &editor_display, "editor", &overrides),
         Line::from(""),
         Line::from(vec![Span::styled(
             "AI Rally Settings",
@@ -284,54 +315,32 @@ pub fn build_config_lines(config: &Config) -> Vec<Line<'static>> {
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )]),
-        Line::from(format!(
-            "{}{}",
-            fmt_label("Reviewer", label_width),
-            config.ai.reviewer
-        )),
-        Line::from(format!(
-            "{}{}",
-            fmt_label("Reviewee", label_width),
-            config.ai.reviewee
-        )),
-        Line::from(format!(
-            "{}{}",
-            fmt_label("Max iterations", label_width),
-            config.ai.max_iterations
-        )),
-        Line::from(format!(
-            "{}{}",
-            fmt_label("Timeout (secs)", label_width),
-            config.ai.timeout_secs
-        )),
-        Line::from(format!(
-            "{}{}",
-            fmt_label("Auto post", label_width),
-            config.ai.auto_post
-        )),
-        Line::from(format!(
-            "{}{}",
-            fmt_label("Prompt dir", label_width),
-            prompt_dir_display
-        )),
+        config_value_line("Reviewer", &config.ai.reviewer, "ai.reviewer", &overrides),
+        config_value_line("Reviewee", &config.ai.reviewee, "ai.reviewee", &overrides),
+        config_value_line("Max iterations", &config.ai.max_iterations.to_string(), "ai.max_iterations", &overrides),
+        config_value_line("Timeout (secs)", &config.ai.timeout_secs.to_string(), "ai.timeout_secs", &overrides),
+        config_value_line("Auto post", &config.ai.auto_post.to_string(), "ai.auto_post", &overrides),
+        config_value_line("Prompt dir", &prompt_dir_display, "ai.prompt_dir", &overrides),
     ];
 
     // Reviewer additional tools
     if !config.ai.reviewer_additional_tools.is_empty() {
-        lines.push(Line::from(format!(
-            "{}{}",
-            fmt_label("Reviewer tools", label_width),
-            config.ai.reviewer_additional_tools.join(", ")
-        )));
+        lines.push(config_value_line(
+            "Reviewer tools",
+            &config.ai.reviewer_additional_tools.join(", "),
+            "ai.reviewer_additional_tools",
+            &overrides,
+        ));
     }
 
     // Reviewee additional tools
     if !config.ai.reviewee_additional_tools.is_empty() {
-        lines.push(Line::from(format!(
-            "{}{}",
-            fmt_label("Reviewee tools", label_width),
-            config.ai.reviewee_additional_tools.join(", ")
-        )));
+        lines.push(config_value_line(
+            "Reviewee tools",
+            &config.ai.reviewee_additional_tools.join(", "),
+            "ai.reviewee_additional_tools",
+            &overrides,
+        ));
     }
 
     lines.push(Line::from(""));
