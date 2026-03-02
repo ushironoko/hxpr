@@ -433,10 +433,41 @@ pub fn find_project_root() -> PathBuf {
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
 }
 
+/// Find the project root directory starting from a specific directory.
+/// Uses `git rev-parse --show-toplevel` with `current_dir` set to `dir`.
+pub fn find_project_root_in(dir: &Path) -> PathBuf {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(dir)
+        .output()
+        .ok()
+        .and_then(|output| {
+            if output.status.success() {
+                String::from_utf8(output.stdout)
+                    .ok()
+                    .map(|s| PathBuf::from(s.trim()))
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| dir.to_path_buf())
+}
+
 impl Config {
     pub fn load() -> Result<Self> {
         let global_path = Self::config_path();
         let project_root = find_project_root();
+        let local_path = project_root.join(".octorus/config.toml");
+        Self::load_from_paths(&global_path, &local_path, project_root)
+    }
+
+    /// Load config with project root resolved from a specific directory.
+    /// Use this when `--working-dir` is specified so that `.octorus/` is
+    /// resolved relative to the working directory's git root, not the
+    /// process cwd.
+    pub fn load_for_dir(dir: &Path) -> Result<Self> {
+        let global_path = Self::config_path();
+        let project_root = find_project_root_in(dir);
         let local_path = project_root.join(".octorus/config.toml");
         Self::load_from_paths(&global_path, &local_path, project_root)
     }

@@ -146,7 +146,11 @@ async fn main() -> Result<()> {
         let _ = syntax::theme_set();
     });
 
-    let config = config::Config::load()?;
+    let config = if let Some(ref dir) = args.working_dir {
+        config::Config::load_for_dir(Path::new(dir))?
+    } else {
+        config::Config::load()?
+    };
 
     // Headless mode: --ai-rally with --pr or --local bypasses TUI entirely
     if args.ai_rally && args.pr.is_some() {

@@ -73,22 +73,24 @@ impl PromptLoader {
     }
 
     /// Resolve which source would be used for a given prompt filename.
+    /// Uses `is_file()` instead of `exists()` so that directories or
+    /// non-readable entries do not shadow lower-priority sources.
     pub fn resolve_source(&self, filename: &str) -> PromptSource {
         if let Some(ref dir) = self.local_prompts_dir {
             let path = dir.join(filename);
-            if path.exists() {
+            if path.is_file() {
                 return PromptSource::Local(path);
             }
         }
         if let Some(ref dir) = self.prompt_dir {
             let path = dir.join(filename);
-            if path.exists() {
+            if path.is_file() {
                 return PromptSource::PromptDir(path);
             }
         }
         if let Some(ref dir) = self.global_prompts_dir {
             let path = dir.join(filename);
-            if path.exists() {
+            if path.is_file() {
                 return PromptSource::Global(path);
             }
         }
