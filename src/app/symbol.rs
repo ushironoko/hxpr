@@ -234,26 +234,6 @@ impl App {
     pub(crate) const HELP_VIEWPORT_OVERHEAD: u16 = 6;
 
     pub(crate) fn apply_help_scroll(&mut self, key: event::KeyEvent, terminal_height: u16) {
-        let visible_lines = terminal_height.saturating_sub(Self::HELP_VIEWPORT_OVERHEAD) as usize;
-        let half_page = (visible_lines / 2).max(1);
-
-        // Read the active tab's scroll offset
-        let mut offset = match self.help_tab {
-            HelpTab::Keybindings => self.help_scroll_offset,
-            HelpTab::Config => self.config_scroll_offset,
-        };
-
-        // Check configured close keys first so remapped quit/help keys take priority
-        // over bracket tab switching.
-        let kb = &self.config.keybindings;
-        if self.matches_single_key(&key, &kb.quit)
-            || self.matches_single_key(&key, &kb.help)
-            || key.code == KeyCode::Esc
-        {
-            self.state = self.previous_state;
-            return;
-        }
-
         // Tab switching ([ / ])
         if matches!(key.code, KeyCode::Char('[') | KeyCode::Char(']')) {
             self.help_tab = match self.help_tab {
@@ -263,7 +243,23 @@ impl App {
             return;
         }
 
-        if Self::is_shift_char_shortcut(&key, 'j') {
+        let visible_lines = terminal_height.saturating_sub(Self::HELP_VIEWPORT_OVERHEAD) as usize;
+        let half_page = (visible_lines / 2).max(1);
+
+        // Read the active tab's scroll offset
+        let mut offset = match self.help_tab {
+            HelpTab::Keybindings => self.help_scroll_offset,
+            HelpTab::Config => self.config_scroll_offset,
+        };
+
+        let kb = &self.config.keybindings;
+        if self.matches_single_key(&key, &kb.quit)
+            || self.matches_single_key(&key, &kb.help)
+            || key.code == KeyCode::Esc
+        {
+            self.state = self.previous_state;
+            return;
+        } else if Self::is_shift_char_shortcut(&key, 'j') {
             // Page down (J / Shift+j)
             offset = offset.saturating_add(visible_lines.max(1));
         } else if Self::is_shift_char_shortcut(&key, 'k') {

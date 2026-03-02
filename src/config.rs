@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use xdg::BaseDirectories;
@@ -22,13 +22,6 @@ pub struct Config {
     /// Path of the local config file if it was loaded successfully.
     #[serde(skip)]
     pub loaded_local_config: Option<PathBuf>,
-    /// Set of dotted key paths overridden by the local config (e.g. "diff.theme").
-    /// Computed at load time so the UI never needs to re-read the local file.
-    #[serde(skip)]
-    pub local_overrides: HashSet<String>,
-    /// Keys that were stripped from the local config for security reasons.
-    #[serde(skip)]
-    pub local_config_stripped_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -400,68 +393,6 @@ impl Serialize for KeybindingsConfig {
     }
 }
 
-/// Keys that must NOT be overridden by project-local config because they
-/// control command execution or expand AI tool permissions.
-const SENSITIVE_LOCAL_KEYS: &[&str] = &[
-    "editor",
-    "ai.reviewer_additional_tools",
-    "ai.reviewee_additional_tools",
-    "ai.auto_post",
-];
-
-/// Strip security-sensitive keys from a local TOML value before merging.
-/// Returns the list of keys that were stripped.
-fn strip_sensitive_local_keys(local: &mut toml::Value) -> Vec<String> {
-    let mut stripped = Vec::new();
-    let table = match local {
-        toml::Value::Table(t) => t,
-        _ => return stripped,
-    };
-
-    for key_path in SENSITIVE_LOCAL_KEYS {
-        let parts: Vec<&str> = key_path.split('.').collect();
-        match parts.as_slice() {
-            [top] => {
-                if table.remove(*top).is_some() {
-                    stripped.push(key_path.to_string());
-                }
-            }
-            [section, field] => {
-                if let Some(toml::Value::Table(sub)) = table.get_mut(*section) {
-                    if sub.remove(*field).is_some() {
-                        stripped.push(key_path.to_string());
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    stripped
-}
-
-/// Collect the set of dotted key paths present in a local TOML value.
-/// Must be called *after* `strip_sensitive_local_keys` so the result only
-/// contains keys that actually participated in the merge.
-fn collect_local_override_keys(local: &toml::Value) -> HashSet<String> {
-    let mut overrides = HashSet::new();
-    let table = match local {
-        toml::Value::Table(t) => t,
-        _ => return overrides,
-    };
-
-    if table.contains_key("editor") {
-        overrides.insert("editor".to_string());
-    }
-    for section in ["diff", "ai", "keybindings"] {
-        if let Some(toml::Value::Table(sub)) = table.get(section) {
-            for key in sub.keys() {
-                overrides.insert(format!("{}.{}", section, key));
-            }
-        }
-    }
-    overrides
-}
-
 /// Deep merge two TOML values.
 /// Tables are merged recursively; all other types are replaced by the override value.
 fn deep_merge_toml(base: &mut toml::Value, override_val: toml::Value) {
@@ -543,9 +474,6 @@ impl Config {
 
     /// Load config by merging global and local TOML files.
     /// Local values override global values at the TOML table level (deep merge).
-    /// Security-sensitive keys (`editor`, `ai.*_additional_tools`, `ai.auto_post`)
-    /// are stripped from local config to prevent untrusted repos from executing
-    /// arbitrary commands or expanding AI tool permissions.
     pub fn load_from_paths(
         global_path: &Path,
         local_path: &Path,
@@ -559,27 +487,11 @@ impl Config {
             toml::Value::Table(toml::map::Map::new())
         };
 
-        let mut local_overrides = HashSet::new();
-        let mut stripped_keys = Vec::new();
-
         if local_path.exists() {
             let local_content = fs::read_to_string(local_path)
                 .context("Failed to read local config file (.octorus/config.toml)")?;
-            let mut local_value: toml::Value = toml::from_str(&local_content)
+            let local_value: toml::Value = toml::from_str(&local_content)
                 .context("Failed to parse local config file (.octorus/config.toml)")?;
-
-            // Strip sensitive keys before merging
-            stripped_keys = strip_sensitive_local_keys(&mut local_value);
-            for key in &stripped_keys {
-                eprintln!(
-                    "Warning: local .octorus/config.toml tried to override sensitive key '{}' (ignored)",
-                    key
-                );
-            }
-
-            // Collect override keys from the (now-sanitized) local config
-            local_overrides = collect_local_override_keys(&local_value);
-
             deep_merge_toml(&mut base_value, local_value);
         }
 
@@ -597,8 +509,6 @@ impl Config {
         } else {
             None
         };
-        config.local_overrides = local_overrides;
-        config.local_config_stripped_keys = stripped_keys;
 
         // Validate keybindings and warn on conflicts
         if let Err(errors) = config.keybindings.validate() {
@@ -988,53 +898,6 @@ timeout_secs = 300
 
     #[test]
     fn test_deep_merge_array_replaced_entirely() {
-        // Use a non-sensitive array field (keybindings sequence) to test
-        // that TOML array replacement still works.
-        let dir = tempfile::tempdir().unwrap();
-        let global = dir.path().join("global.toml");
-        let local = dir.path().join("local.toml");
-
-        fs::write(
-            &global,
-            r#"
-[keybindings]
-jump_to_first = ["g", "g"]
-"#,
-        )
-        .unwrap();
-        fs::write(
-            &local,
-            r#"
-[keybindings]
-jump_to_first = "G"
-"#,
-        )
-        .unwrap();
-
-        let config =
-            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
-        // Array was replaced by scalar via local config
-        assert_eq!(config.keybindings.jump_to_first.display(), "G");
-    }
-
-    #[test]
-    fn test_local_config_strips_sensitive_editor_key() {
-        let dir = tempfile::tempdir().unwrap();
-        let global = dir.path().join("global.toml");
-        let local = dir.path().join("local.toml");
-
-        fs::write(&global, r#"editor = "vim""#).unwrap();
-        fs::write(&local, r#"editor = "malicious-command""#).unwrap();
-
-        let config =
-            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
-        // editor from local should be ignored; global value preserved
-        assert_eq!(config.editor.as_deref(), Some("vim"));
-        assert!(config.local_config_stripped_keys.contains(&"editor".to_string()));
-    }
-
-    #[test]
-    fn test_local_config_strips_sensitive_ai_tools() {
         let dir = tempfile::tempdir().unwrap();
         let global = dir.path().join("global.toml");
         let local = dir.path().join("local.toml");
@@ -1043,8 +906,7 @@ jump_to_first = "G"
             &global,
             r#"
 [ai]
-reviewer_additional_tools = ["Skill"]
-reviewee_additional_tools = []
+reviewer_additional_tools = ["Skill", "WebSearch"]
 "#,
         )
         .unwrap();
@@ -1052,97 +914,14 @@ reviewee_additional_tools = []
             &local,
             r#"
 [ai]
-reviewer_additional_tools = ["Bash(rm -rf:*)"]
-reviewee_additional_tools = ["Bash(git push:*)"]
-auto_post = true
-max_iterations = 3
+reviewer_additional_tools = ["WebFetch"]
 "#,
         )
         .unwrap();
 
         let config =
             Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
-        // Sensitive keys from local are blocked
-        assert_eq!(config.ai.reviewer_additional_tools, vec!["Skill"]);
-        assert!(config.ai.reviewee_additional_tools.is_empty());
-        assert!(!config.ai.auto_post);
-        // Non-sensitive key is still overridden
-        assert_eq!(config.ai.max_iterations, 3);
-        // Stripped keys are recorded
-        assert!(config.local_config_stripped_keys.contains(&"ai.reviewer_additional_tools".to_string()));
-        assert!(config.local_config_stripped_keys.contains(&"ai.reviewee_additional_tools".to_string()));
-        assert!(config.local_config_stripped_keys.contains(&"ai.auto_post".to_string()));
-    }
-
-    #[test]
-    fn test_local_config_safe_keys_still_override() {
-        let dir = tempfile::tempdir().unwrap();
-        let global = dir.path().join("global.toml");
-        let local = dir.path().join("local.toml");
-
-        fs::write(
-            &global,
-            r#"
-[ai]
-reviewer = "claude"
-max_iterations = 10
-[diff]
-theme = "base16-ocean.dark"
-"#,
-        )
-        .unwrap();
-        fs::write(
-            &local,
-            r#"
-[ai]
-reviewer = "codex"
-max_iterations = 3
-[diff]
-theme = "Dracula"
-"#,
-        )
-        .unwrap();
-
-        let config =
-            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
-        // Non-sensitive keys override normally
-        assert_eq!(config.ai.reviewer, "codex");
-        assert_eq!(config.ai.max_iterations, 3);
-        assert_eq!(config.diff.theme, "Dracula");
-        // No stripped keys
-        assert!(config.local_config_stripped_keys.is_empty());
-    }
-
-    #[test]
-    fn test_local_overrides_computed_at_load_time() {
-        let dir = tempfile::tempdir().unwrap();
-        let global = dir.path().join("global.toml");
-        let local = dir.path().join("local.toml");
-
-        fs::write(
-            &global,
-            r#"
-[ai]
-reviewer = "claude"
-"#,
-        )
-        .unwrap();
-        fs::write(
-            &local,
-            r#"
-[ai]
-max_iterations = 3
-[diff]
-theme = "Dracula"
-"#,
-        )
-        .unwrap();
-
-        let config =
-            Config::load_from_paths(&global, &local, dir.path().to_path_buf()).unwrap();
-        assert!(config.local_overrides.contains("ai.max_iterations"));
-        assert!(config.local_overrides.contains("diff.theme"));
-        assert!(!config.local_overrides.contains("ai.reviewer"));
+        assert_eq!(config.ai.reviewer_additional_tools, vec!["WebFetch"]);
     }
 
     #[test]
