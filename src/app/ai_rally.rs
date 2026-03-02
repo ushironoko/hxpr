@@ -468,10 +468,17 @@ impl App {
         let config = self.config.ai.clone();
         let repo = self.repo.clone();
         let pr_number = self.pr_number();
+        let project_root = self.config.project_root.clone();
 
         let handle = tokio::spawn(async move {
-            let orchestrator_result =
-                Orchestrator::new(&repo, pr_number, config, event_tx.clone(), Some(cmd_rx));
+            let orchestrator_result = Orchestrator::new(
+                &repo,
+                pr_number,
+                config,
+                event_tx.clone(),
+                Some(cmd_rx),
+                &project_root,
+            );
             match orchestrator_result {
                 Ok(mut orchestrator) => {
                     orchestrator.set_context(context);

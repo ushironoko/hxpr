@@ -61,6 +61,9 @@ enum Commands {
         /// Force overwrite existing files
         #[arg(long, default_value = "false")]
         force: bool,
+        /// Create local .octorus/ config in project root
+        #[arg(long, default_value = "false")]
+        local: bool,
     },
     /// Remove AI Rally session data
     Clean,
@@ -111,7 +114,7 @@ async fn main() -> Result<()> {
     // Handle subcommands
     if let Some(command) = args.command {
         return match command {
-            Commands::Init { force } => init::run_init(force),
+            Commands::Init { force, local } => init::run_init(force, local),
             Commands::Clean => {
                 cache::cleanup_rally_sessions();
                 let rally_dir = cache::cache_dir().join("rally");
@@ -143,7 +146,11 @@ async fn main() -> Result<()> {
         let _ = syntax::theme_set();
     });
 
-    let config = config::Config::load()?;
+    let config = if let Some(ref dir) = args.working_dir {
+        config::Config::load_for_dir(Path::new(dir))?
+    } else {
+        config::Config::load()?
+    };
 
     // Headless mode: --ai-rally with --pr or --local bypasses TUI entirely
     if args.ai_rally && args.pr.is_some() {
@@ -284,12 +291,20 @@ fn setup_local_watch(
 }
 
 fn should_refresh_local_change(paths: &[PathBuf], kind: &EventKind) -> bool {
-    !matches!(kind, EventKind::Access(_)) && paths.iter().any(|path| !is_git_file(path))
+    !matches!(kind, EventKind::Access(_))
+        && paths
+            .iter()
+            .any(|path| !is_git_file(path) && !is_octorus_config_file(path))
 }
 
 fn is_git_file(path: &Path) -> bool {
     path.components()
         .any(|component| component.as_os_str() == ".git")
+}
+
+fn is_octorus_config_file(path: &Path) -> bool {
+    path.components()
+        .any(|component| component.as_os_str() == ".octorus")
 }
 
 /// Run the app with a specific PR number (existing flow)
@@ -525,5 +540,27 @@ mod tests {
     fn test_is_git_file_identifies_git_path() {
         assert!(is_git_file(std::path::Path::new(".git/refs/heads/main")));
         assert!(!is_git_file(std::path::Path::new("src/main.rs")));
+    }
+
+    #[test]
+    fn test_should_refresh_local_change_ignores_octorus_paths() {
+        let paths = vec![
+            PathBuf::from(".octorus/config.toml"),
+            PathBuf::from(".octorus/prompts/reviewer.md"),
+        ];
+        let kind = EventKind::Create(CreateKind::File);
+
+        assert!(!should_refresh_local_change(&paths, &kind));
+    }
+
+    #[test]
+    fn test_is_octorus_config_file() {
+        assert!(is_octorus_config_file(std::path::Path::new(
+            ".octorus/config.toml"
+        )));
+        assert!(is_octorus_config_file(std::path::Path::new(
+            ".octorus/prompts/reviewer.md"
+        )));
+        assert!(!is_octorus_config_file(std::path::Path::new("src/main.rs")));
     }
 }

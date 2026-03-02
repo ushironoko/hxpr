@@ -1,13 +1,14 @@
 use ratatui::{
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
+    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Tabs},
     Frame,
 };
 
-use crate::app::App;
-use crate::config::KeybindingsConfig;
+use crate::ai::{PromptLoader, PromptSource};
+use crate::app::{App, HelpTab};
+use crate::config::{Config, KeybindingsConfig};
 use crate::syntax::available_themes;
 
 /// Format a key display with padding for alignment
@@ -15,35 +16,83 @@ fn fmt_key(key: &str, width: usize) -> String {
     format!("  {:<width$}", key, width = width)
 }
 
+/// Format a label with padding for alignment (used in config tab)
+fn fmt_label(label: &str, width: usize) -> String {
+    format!("  {:<width$}", label, width = width)
+}
+
 pub fn render(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // Title
-            Constraint::Min(0),    // Help content
+            Constraint::Length(3), // Tab header
+            Constraint::Min(0),   // Content
+            Constraint::Length(1), // Footer
         ])
         .split(frame.area());
 
-    // Title
-    let title = Paragraph::new("octorus - GitHub PR Review TUI")
-        .style(
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
+    // Tab header
+    render_tab_header(frame, app, chunks[0]);
+
+    // Content
+    match app.help_tab {
+        HelpTab::Keybindings => render_keybindings_tab(frame, app, chunks[1]),
+        HelpTab::Config => render_config_tab(frame, app, chunks[1]),
+    }
+
+    // Footer
+    render_help_footer(frame, app, chunks[2]);
+}
+
+fn render_tab_header(frame: &mut Frame, app: &App, area: Rect) {
+    let keybindings_style = if app.help_tab == HelpTab::Keybindings {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let config_style = if app.help_tab == HelpTab::Config {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let selected = match app.help_tab {
+        HelpTab::Keybindings => 0,
+        HelpTab::Config => 1,
+    };
+
+    let titles = vec![
+        Line::from(Span::styled("Keybindings", keybindings_style)),
+        Line::from(Span::styled("Config", config_style)),
+    ];
+
+    let tabs = Tabs::new(titles)
+        .select(selected)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Help ([/]: switch tab)"),
         )
-        .block(Block::default().borders(Borders::ALL).title("Help"));
-    frame.render_widget(title, chunks[0]);
+        .highlight_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        );
 
-    // Get keybindings from config
+    frame.render_widget(tabs, area);
+}
+
+fn render_keybindings_tab(frame: &mut Frame, app: &mut App, area: Rect) {
     let kb = &app.config.keybindings;
-
-    // Help content with dynamic keybindings
     let help_lines = build_help_lines(kb);
     let total_lines = help_lines.len();
-    // Content area height (subtract 2 for borders)
-    let content_height = chunks[1].height.saturating_sub(2) as usize;
+    let content_height = area.height.saturating_sub(2) as usize;
 
-    // Clamp scroll offset so we don't scroll past content
     let max_scroll = total_lines.saturating_sub(content_height);
     if app.help_scroll_offset > max_scroll {
         app.help_scroll_offset = max_scroll;
@@ -62,9 +111,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 .title(format!("Keybindings{}", scroll_info)),
         )
         .scroll((app.help_scroll_offset as u16, 0));
-    frame.render_widget(help, chunks[1]);
+    frame.render_widget(help, area);
 
-    // Scrollbar
     if total_lines > content_height {
         let mut scrollbar_state =
             ScrollbarState::new(max_scroll + 1).position(app.help_scroll_offset);
@@ -73,7 +121,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             .end_symbol(None);
         frame.render_stateful_widget(
             scrollbar,
-            chunks[1].inner(ratatui::layout::Margin {
+            area.inner(ratatui::layout::Margin {
                 vertical: 1,
                 horizontal: 0,
             }),
@@ -82,10 +130,227 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 }
 
+fn render_config_tab(frame: &mut Frame, app: &mut App, area: Rect) {
+    let config_lines = build_config_lines(&app.config);
+    let total_lines = config_lines.len();
+    let content_height = area.height.saturating_sub(2) as usize;
+
+    let max_scroll = total_lines.saturating_sub(content_height);
+    if app.config_scroll_offset > max_scroll {
+        app.config_scroll_offset = max_scroll;
+    }
+
+    let scroll_info = if total_lines > content_height {
+        format!(" ({}/{})", app.config_scroll_offset + 1, max_scroll + 1)
+    } else {
+        String::new()
+    };
+
+    let config = Paragraph::new(config_lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!("Config{}", scroll_info)),
+        )
+        .scroll((app.config_scroll_offset as u16, 0));
+    frame.render_widget(config, area);
+
+    if total_lines > content_height {
+        let mut scrollbar_state =
+            ScrollbarState::new(max_scroll + 1).position(app.config_scroll_offset);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None);
+        frame.render_stateful_widget(
+            scrollbar,
+            area.inner(ratatui::layout::Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
+            &mut scrollbar_state,
+        );
+    }
+}
+
+fn render_help_footer(frame: &mut Frame, app: &App, area: Rect) {
+    let kb = &app.config.keybindings;
+    let footer_text = format!(
+        " {}/{}: close | [/]: switch tab | j/k: scroll | g/G: top/bottom",
+        kb.quit.display(),
+        kb.help.display()
+    );
+    let footer = Paragraph::new(Line::from(Span::styled(
+        footer_text,
+        Style::default().fg(Color::DarkGray),
+    )));
+    frame.render_widget(footer, area);
+}
+
+/// Build a config value line with optional "(local)" override marker.
+fn config_value_line(label: &str, value: &str, key: &str, overrides: &std::collections::HashSet<String>) -> Line<'static> {
+    let label_width = 20;
+    if overrides.contains(key) {
+        Line::from(vec![
+            Span::raw(format!("{}{}", fmt_label(label, label_width), value)),
+            Span::styled(" (local)", Style::default().fg(Color::Cyan)),
+        ])
+    } else {
+        Line::from(format!("{}{}", fmt_label(label, label_width), value))
+    }
+}
+
+pub fn build_config_lines(config: &Config) -> Vec<Line<'static>> {
+    let label_width = 20;
+    let overrides = &config.local_overrides;
+
+    let global_config_path = Config::config_path();
+    let global_status = if config.loaded_global_config.is_some() {
+        format!("{} [loaded]", global_config_path.display())
+    } else {
+        format!("{} [not found]", global_config_path.display())
+    };
+
+    let local_config_path = config.project_root.join(".octorus/config.toml");
+    let local_status = if config.loaded_local_config.is_some() {
+        if overrides.is_empty() {
+            format!("{} [loaded]", local_config_path.display())
+        } else {
+            format!("{} [loaded, overrides global]", local_config_path.display())
+        }
+    } else {
+        format!("{} [not found]", local_config_path.display())
+    };
+
+    let editor_display = config
+        .editor
+        .as_deref()
+        .unwrap_or("(default: $EDITOR)")
+        .to_string();
+
+    let prompt_dir_display = config
+        .ai
+        .prompt_dir
+        .as_deref()
+        .unwrap_or("(default)")
+        .to_string();
+
+    // Resolve prompt sources
+    let prompt_loader = PromptLoader::new(&config.ai, &config.project_root);
+    let prompt_sources = prompt_loader.resolve_all_sources();
+
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "Config Files",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(format!(
+            "{}{}",
+            fmt_label("Global", label_width),
+            global_status
+        )),
+        Line::from(format!(
+            "{}{}",
+            fmt_label("Local", label_width),
+            local_status
+        )),
+        Line::from(format!(
+            "{}{}",
+            fmt_label("Project root", label_width),
+            config.project_root.display()
+        )),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "Diff Settings",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        config_value_line("Theme", &config.diff.theme, "diff.theme", overrides),
+        config_value_line("Tab width", &config.diff.tab_width.to_string(), "diff.tab_width", overrides),
+        config_value_line("Background color", &config.diff.bg_color.to_string(), "diff.bg_color", overrides),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "Editor",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        config_value_line("Editor", &editor_display, "editor", overrides),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "AI Rally Settings",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        config_value_line("Reviewer", &config.ai.reviewer, "ai.reviewer", overrides),
+        config_value_line("Reviewee", &config.ai.reviewee, "ai.reviewee", overrides),
+        config_value_line("Max iterations", &config.ai.max_iterations.to_string(), "ai.max_iterations", overrides),
+        config_value_line("Timeout (secs)", &config.ai.timeout_secs.to_string(), "ai.timeout_secs", overrides),
+        config_value_line("Auto post", &config.ai.auto_post.to_string(), "ai.auto_post", overrides),
+        config_value_line("Prompt dir", &prompt_dir_display, "ai.prompt_dir", overrides),
+    ];
+
+    // Reviewer additional tools (always show so local overrides to empty are visible)
+    let reviewer_tools_display = if config.ai.reviewer_additional_tools.is_empty() {
+        "(none)".to_string()
+    } else {
+        config.ai.reviewer_additional_tools.join(", ")
+    };
+    lines.push(config_value_line(
+        "Reviewer tools",
+        &reviewer_tools_display,
+        "ai.reviewer_additional_tools",
+        overrides,
+    ));
+
+    // Reviewee additional tools
+    let reviewee_tools_display = if config.ai.reviewee_additional_tools.is_empty() {
+        "(none)".to_string()
+    } else {
+        config.ai.reviewee_additional_tools.join(", ")
+    };
+    lines.push(config_value_line(
+        "Reviewee tools",
+        &reviewee_tools_display,
+        "ai.reviewee_additional_tools",
+        overrides,
+    ));
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![Span::styled(
+        "Prompt Resolution",
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )]));
+
+    for (filename, source) in prompt_sources {
+        let source_display = match source {
+            PromptSource::Local(path) => format!("local ({})", path.display()),
+            PromptSource::PromptDir(path) => format!("prompt_dir ({})", path.display()),
+            PromptSource::Global(path) => format!("global ({})", path.display()),
+            PromptSource::Embedded => "embedded default".to_string(),
+        };
+        lines.push(Line::from(format!(
+            "{}{}",
+            fmt_label(&filename, label_width),
+            source_display
+        )));
+    }
+
+    lines.push(Line::from(""));
+
+    lines
+}
+
 fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
     let key_width = 14; // Width for key column
 
-    let lines = vec![
+    vec![
         Line::from(""),
         Line::from(vec![Span::styled(
             "File List View",
@@ -447,15 +712,47 @@ fn build_help_lines(kb: &KeybindingsConfig) -> Vec<Line<'static>> {
             Style::default().fg(Color::DarkGray),
         )]),
         Line::from(""),
-        Line::from(vec![Span::styled(
-            format!(
-                "Press {} or {} to close this help | j/k: scroll | J/K: page scroll | Ctrl-d/u: half page | g/G: top/bottom",
-                kb.quit.display(),
-                kb.help.display()
-            ),
-            Style::default().fg(Color::DarkGray),
-        )]),
-    ];
+    ]
+}
 
-    lines
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_config_lines_does_not_panic() {
+        let config = Config::default();
+        let lines = build_config_lines(&config);
+        assert!(!lines.is_empty());
+    }
+
+    #[test]
+    fn test_build_config_lines_contains_sections() {
+        let config = Config::default();
+        let lines = build_config_lines(&config);
+        let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        let joined = text.join("\n");
+
+        assert!(joined.contains("Config Files"));
+        assert!(joined.contains("Diff Settings"));
+        assert!(joined.contains("Editor"));
+        assert!(joined.contains("AI Rally Settings"));
+        assert!(joined.contains("Prompt Resolution"));
+    }
+
+    #[test]
+    fn test_build_config_lines_shows_default_values() {
+        let config = Config::default();
+        let lines = build_config_lines(&config);
+        let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        let joined = text.join("\n");
+
+        assert!(joined.contains("base16-ocean.dark"));
+        assert!(joined.contains("claude"));
+        // Prompt resolution should show some source (embedded or global depending on env)
+        assert!(
+            joined.contains("reviewer.md"),
+            "Should contain prompt filename"
+        );
+    }
 }

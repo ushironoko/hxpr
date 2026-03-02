@@ -22,7 +22,7 @@ use std::time::Instant;
 mod types;
 pub use types::{
     AiRallyState, AppState, CachedDiffLine, CommentPosition, CommentTab, DataState, DiffCache,
-    InternedSpan, InputMode, JumpLocation, LineInputContext, LogEntry, LogEventType,
+    HelpTab, InternedSpan, InputMode, JumpLocation, LineInputContext, LogEntry, LogEventType,
     MultilineSelection, PermissionInfo, RefreshRequest, ReviewAction, SymbolPopupState,
     ViewSnapshot, WatcherHandle, hash_string,
 };
@@ -138,6 +138,10 @@ pub struct App {
     pub discussion_comment_detail_scroll: usize,
     /// ヘルプ画面のスクロールオフセット（行単位）
     pub help_scroll_offset: usize,
+    /// ヘルプ画面の現在のタブ
+    pub help_tab: HelpTab,
+    /// Config タブのスクロールオフセット（行単位）
+    pub config_scroll_offset: usize,
     // Comment tab state
     pub comment_tab: CommentTab,
     // AI Rally state
@@ -261,6 +265,8 @@ impl App {
             discussion_comment_detail_mode: false,
             discussion_comment_detail_scroll: 0,
             help_scroll_offset: 0,
+            help_tab: HelpTab::default(),
+            config_scroll_offset: 0,
             comment_tab: CommentTab::default(),
             ai_rally_state: None,
             working_dir: None,
@@ -344,6 +350,8 @@ impl App {
             discussion_comment_detail_mode: false,
             discussion_comment_detail_scroll: 0,
             help_scroll_offset: 0,
+            help_tab: HelpTab::default(),
+            config_scroll_offset: 0,
             comment_tab: CommentTab::default(),
             ai_rally_state: None,
             working_dir: None,
@@ -554,6 +562,8 @@ impl App {
             discussion_comment_detail_mode: false,
             discussion_comment_detail_scroll: 0,
             help_scroll_offset: 0,
+            help_tab: HelpTab::default(),
+            config_scroll_offset: 0,
             comment_tab: CommentTab::default(),
             ai_rally_state: None,
             working_dir: None,

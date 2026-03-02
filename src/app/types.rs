@@ -263,6 +263,13 @@ pub(super) enum PendingApproveChoice {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum HelpTab {
+    #[default]
+    Keybindings,
+    Config,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum CommentTab {
     #[default]
     Review,

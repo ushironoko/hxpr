@@ -230,12 +230,27 @@ impl App {
         Ok(())
     }
 
-    /// Help viewport height: terminal height - title block (3) - help block borders (2)
-    pub(crate) const HELP_VIEWPORT_OVERHEAD: u16 = 5;
+    /// Help viewport height: tab header (3) + content borders (2) + footer (1)
+    pub(crate) const HELP_VIEWPORT_OVERHEAD: u16 = 6;
 
     pub(crate) fn apply_help_scroll(&mut self, key: event::KeyEvent, terminal_height: u16) {
+        // Tab switching ([ / ])
+        if matches!(key.code, KeyCode::Char('[') | KeyCode::Char(']')) {
+            self.help_tab = match self.help_tab {
+                HelpTab::Keybindings => HelpTab::Config,
+                HelpTab::Config => HelpTab::Keybindings,
+            };
+            return;
+        }
+
         let visible_lines = terminal_height.saturating_sub(Self::HELP_VIEWPORT_OVERHEAD) as usize;
         let half_page = (visible_lines / 2).max(1);
+
+        // Read the active tab's scroll offset
+        let mut offset = match self.help_tab {
+            HelpTab::Keybindings => self.help_scroll_offset,
+            HelpTab::Config => self.config_scroll_offset,
+        };
 
         let kb = &self.config.keybindings;
         if self.matches_single_key(&key, &kb.quit)
@@ -243,26 +258,33 @@ impl App {
             || key.code == KeyCode::Esc
         {
             self.state = self.previous_state;
+            return;
         } else if Self::is_shift_char_shortcut(&key, 'j') {
             // Page down (J / Shift+j)
-            self.help_scroll_offset = self.help_scroll_offset.saturating_add(visible_lines.max(1));
+            offset = offset.saturating_add(visible_lines.max(1));
         } else if Self::is_shift_char_shortcut(&key, 'k') {
             // Page up (K / Shift+k)
-            self.help_scroll_offset = self.help_scroll_offset.saturating_sub(visible_lines.max(1));
+            offset = offset.saturating_sub(visible_lines.max(1));
         } else if Self::is_shift_char_shortcut(&key, 'g') {
             // Jump to bottom (G / Shift+g)
-            self.help_scroll_offset = usize::MAX;
+            offset = usize::MAX;
         } else if matches!(key.code, KeyCode::Char('j') | KeyCode::Down) {
-            self.help_scroll_offset = self.help_scroll_offset.saturating_add(1);
+            offset = offset.saturating_add(1);
         } else if matches!(key.code, KeyCode::Char('k') | KeyCode::Up) {
-            self.help_scroll_offset = self.help_scroll_offset.saturating_sub(1);
+            offset = offset.saturating_sub(1);
         } else if key.code == KeyCode::Char('d') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            self.help_scroll_offset = self.help_scroll_offset.saturating_add(half_page);
+            offset = offset.saturating_add(half_page);
         } else if key.code == KeyCode::Char('u') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            self.help_scroll_offset = self.help_scroll_offset.saturating_sub(half_page);
+            offset = offset.saturating_sub(half_page);
         } else if key.code == KeyCode::Char('g') && key.modifiers.is_empty() {
             // Jump to top (g without modifiers)
-            self.help_scroll_offset = 0;
+            offset = 0;
         }
+
+        // Write back to the active tab's scroll offset
+        match self.help_tab {
+            HelpTab::Keybindings => self.help_scroll_offset = offset,
+            HelpTab::Config => self.config_scroll_offset = offset,
+        };
     }
 }

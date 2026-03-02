@@ -182,8 +182,14 @@ async fn run_headless_with_context(
 
     let local_mode = context.local_mode;
 
-    let mut orchestrator =
-        Orchestrator::new(repo, pr_number, config.ai.clone(), event_tx, Some(cmd_rx))?;
+    let mut orchestrator = Orchestrator::new(
+        repo,
+        pr_number,
+        config.ai.clone(),
+        event_tx,
+        Some(cmd_rx),
+        &config.project_root,
+    )?;
     orchestrator.set_context(context);
 
     // Spawn orchestrator in background

@@ -1,10 +1,23 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::config::AiConfig;
 
 use super::adapter::{Context, ReviewAction, ReviewerOutput};
+
+/// Source of a resolved prompt template
+#[derive(Debug, Clone, PartialEq)]
+pub enum PromptSource {
+    /// .octorus/prompts/ (project-local)
+    Local(PathBuf),
+    /// config.prompt_dir (explicit path)
+    PromptDir(PathBuf),
+    /// ~/.config/octorus/prompts/ (global)
+    Global(PathBuf),
+    /// Binary-embedded default
+    Embedded,
+}
 
 /// Default prompt templates embedded in the binary
 mod defaults {
@@ -13,22 +26,89 @@ mod defaults {
     pub const REREVIEW: &str = include_str!("defaults/rereview.md");
 }
 
-/// Prompt loader that reads templates from files or uses defaults
+/// Prompt loader that reads templates from files or uses defaults.
+///
+/// Resolution order (highest priority first):
+/// 1. `.octorus/prompts/{file}` — project-local
+/// 2. `config.prompt_dir` — explicit path from merged config
+/// 3. `~/.config/octorus/prompts/{file}` — global default
+/// 4. Binary-embedded default — fallback
 pub struct PromptLoader {
     prompt_dir: Option<PathBuf>,
+    local_prompts_dir: Option<PathBuf>,
+    global_prompts_dir: Option<PathBuf>,
 }
 
 impl PromptLoader {
-    /// Create a new PromptLoader with the given config
-    pub fn new(config: &AiConfig) -> Self {
-        let prompt_dir = config.prompt_dir.as_ref().map(PathBuf::from).or_else(|| {
-            // Default: ~/.config/octorus/prompts/
-            xdg::BaseDirectories::with_prefix("octorus")
-                .ok()
-                .map(|dirs| dirs.get_config_home().join("prompts"))
+    /// Create a new PromptLoader with the given config and project root
+    pub fn new(config: &AiConfig, project_root: &Path) -> Self {
+        // Resolve prompt_dir: make relative paths absolute against project_root
+        let prompt_dir = config.prompt_dir.as_ref().map(|p| {
+            let path = PathBuf::from(p);
+            if path.is_absolute() {
+                path
+            } else {
+                project_root.join(path)
+            }
         });
 
-        Self { prompt_dir }
+        let local_prompts_dir = {
+            let path = project_root.join(".octorus/prompts");
+            if path.is_dir() {
+                Some(path)
+            } else {
+                None
+            }
+        };
+
+        let global_prompts_dir = xdg::BaseDirectories::with_prefix("octorus")
+            .ok()
+            .map(|dirs| dirs.get_config_home().join("prompts"));
+
+        Self {
+            prompt_dir,
+            local_prompts_dir,
+            global_prompts_dir,
+        }
+    }
+
+    /// Resolve which source would be used for a given prompt filename.
+    /// Uses `File::open()` to verify the file is both a regular file and
+    /// readable, so the Help display matches what `load_template()` would
+    /// actually load.
+    pub fn resolve_source(&self, filename: &str) -> PromptSource {
+        if let Some(ref dir) = self.local_prompts_dir {
+            let path = dir.join(filename);
+            if Self::is_readable_file(&path) {
+                return PromptSource::Local(path);
+            }
+        }
+        if let Some(ref dir) = self.prompt_dir {
+            let path = dir.join(filename);
+            if Self::is_readable_file(&path) {
+                return PromptSource::PromptDir(path);
+            }
+        }
+        if let Some(ref dir) = self.global_prompts_dir {
+            let path = dir.join(filename);
+            if Self::is_readable_file(&path) {
+                return PromptSource::Global(path);
+            }
+        }
+        PromptSource::Embedded
+    }
+
+    /// Check that a path is a regular file and can be opened for reading.
+    fn is_readable_file(path: &Path) -> bool {
+        path.is_file() && std::fs::File::open(path).is_ok()
+    }
+
+    /// Resolve sources for all standard prompt files.
+    pub fn resolve_all_sources(&self) -> Vec<(String, PromptSource)> {
+        ["reviewer.md", "reviewee.md", "rereview.md"]
+            .iter()
+            .map(|f| (f.to_string(), self.resolve_source(f)))
+            .collect()
     }
 
     /// Load the reviewer prompt with variable substitution
@@ -180,17 +260,45 @@ Note: Address these comments if they are relevant and valid. Don't wait for more
         render_template(&template, &vars)
     }
 
-    /// Load a template from file or return default
+    /// Load a template with multi-level resolution.
+    ///
+    /// Order: local .octorus/prompts/ → config.prompt_dir → global prompts → embedded default
     fn load_template(&self, filename: &str, default: &str) -> String {
-        if let Some(ref dir) = self.prompt_dir {
-            let path = dir.join(filename);
-            if path.exists() {
-                if let Ok(content) = fs::read_to_string(&path) {
-                    return content;
+        // 1. Project-local .octorus/prompts/ (highest priority)
+        if let Some(content) = Self::try_load_from(&self.local_prompts_dir, filename) {
+            return content;
+        }
+        // 2. config.prompt_dir (explicit path)
+        if let Some(content) = Self::try_load_from(&self.prompt_dir, filename) {
+            return content;
+        }
+        // 3. Global ~/.config/octorus/prompts/
+        if let Some(content) = Self::try_load_from(&self.global_prompts_dir, filename) {
+            return content;
+        }
+        // 4. Binary-embedded default
+        default.to_string()
+    }
+
+    /// Try to load a file from an optional directory.
+    /// Returns None for NotFound; logs a warning and returns None for other errors.
+    fn try_load_from(dir: &Option<PathBuf>, filename: &str) -> Option<String> {
+        dir.as_ref().and_then(|d| {
+            let path = d.join(filename);
+            match fs::read_to_string(&path) {
+                Ok(content) => Some(content),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => {
+                    eprintln!(
+                        "Warning: Failed to read prompt '{}' from {}: {}",
+                        filename,
+                        path.display(),
+                        e
+                    );
+                    None
                 }
             }
-        }
-        default.to_string()
+        })
     }
 }
 
@@ -263,7 +371,7 @@ mod tests {
     #[test]
     fn test_load_reviewer_prompt() {
         let config = AiConfig::default();
-        let loader = PromptLoader::new(&config);
+        let loader = PromptLoader::new(&config, Path::new("/tmp"));
         let context = create_test_context();
 
         let prompt = loader.load_reviewer_prompt(&context, 1);
@@ -279,7 +387,7 @@ mod tests {
     #[test]
     fn test_load_reviewee_prompt() {
         let config = AiConfig::default();
-        let loader = PromptLoader::new(&config);
+        let loader = PromptLoader::new(&config, Path::new("/tmp"));
         let context = create_test_context();
 
         let review = ReviewerOutput {
@@ -308,7 +416,7 @@ mod tests {
     #[test]
     fn test_load_reviewee_prompt_with_external_comments() {
         let config = AiConfig::default();
-        let loader = PromptLoader::new(&config);
+        let loader = PromptLoader::new(&config, Path::new("/tmp"));
         let mut context = create_test_context();
         context.external_comments = vec![
             ExternalComment {
@@ -343,7 +451,7 @@ mod tests {
     #[test]
     fn test_load_rereview_prompt() {
         let config = AiConfig::default();
-        let loader = PromptLoader::new(&config);
+        let loader = PromptLoader::new(&config, Path::new("/tmp"));
         let context = create_test_context();
 
         let prompt = loader.load_rereview_prompt(
@@ -362,7 +470,11 @@ mod tests {
 
     /// Create a PromptLoader that always uses default templates (ignoring custom prompt dir)
     fn create_default_loader() -> PromptLoader {
-        PromptLoader { prompt_dir: None }
+        PromptLoader {
+            prompt_dir: None,
+            local_prompts_dir: None,
+            global_prompts_dir: None,
+        }
     }
 
     #[test]
@@ -407,6 +519,81 @@ mod tests {
         assert!(prompt.contains("git add <files>"));
         // Should NOT contain local mode prohibition
         assert!(!prompt.contains("LOCAL-ONLY session"));
+    }
+
+    #[test]
+    fn test_resolve_source_embedded_when_no_dirs() {
+        let loader = create_default_loader();
+        let source = loader.resolve_source("reviewer.md");
+        assert_eq!(source, PromptSource::Embedded);
+    }
+
+    #[test]
+    fn test_resolve_source_local_priority() {
+        let dir = tempfile::tempdir().unwrap();
+        let local_dir = dir.path().join("local_prompts");
+        std::fs::create_dir_all(&local_dir).unwrap();
+        std::fs::write(local_dir.join("reviewer.md"), "local prompt").unwrap();
+
+        let loader = PromptLoader {
+            prompt_dir: None,
+            local_prompts_dir: Some(local_dir.clone()),
+            global_prompts_dir: None,
+        };
+        let source = loader.resolve_source("reviewer.md");
+        assert_eq!(source, PromptSource::Local(local_dir.join("reviewer.md")));
+    }
+
+    #[test]
+    fn test_resolve_source_prompt_dir_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let prompt_dir = dir.path().join("prompt_dir");
+        std::fs::create_dir_all(&prompt_dir).unwrap();
+        std::fs::write(prompt_dir.join("reviewer.md"), "prompt dir").unwrap();
+
+        let loader = PromptLoader {
+            prompt_dir: Some(prompt_dir.clone()),
+            local_prompts_dir: None,
+            global_prompts_dir: None,
+        };
+        let source = loader.resolve_source("reviewer.md");
+        assert_eq!(
+            source,
+            PromptSource::PromptDir(prompt_dir.join("reviewer.md"))
+        );
+    }
+
+    #[test]
+    fn test_resolve_source_global_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let global_dir = dir.path().join("global_prompts");
+        std::fs::create_dir_all(&global_dir).unwrap();
+        std::fs::write(global_dir.join("reviewer.md"), "global prompt").unwrap();
+
+        let loader = PromptLoader {
+            prompt_dir: None,
+            local_prompts_dir: None,
+            global_prompts_dir: Some(global_dir.clone()),
+        };
+        let source = loader.resolve_source("reviewer.md");
+        assert_eq!(
+            source,
+            PromptSource::Global(global_dir.join("reviewer.md"))
+        );
+    }
+
+    #[test]
+    fn test_resolve_all_sources_returns_three_files() {
+        let loader = create_default_loader();
+        let sources = loader.resolve_all_sources();
+        assert_eq!(sources.len(), 3);
+        assert_eq!(sources[0].0, "reviewer.md");
+        assert_eq!(sources[1].0, "reviewee.md");
+        assert_eq!(sources[2].0, "rereview.md");
+        // All should be Embedded since no dirs configured
+        for (_, source) in &sources {
+            assert_eq!(*source, PromptSource::Embedded);
+        }
     }
 
     #[test]

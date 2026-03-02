@@ -7,3 +7,4 @@ pub mod session;
 
 pub use adapter::{Context, ReviewAction, RevieweeOutput, RevieweeStatus, ReviewerOutput};
 pub use orchestrator::{Orchestrator, RallyState};
+pub use prompt_loader::{PromptLoader, PromptSource};

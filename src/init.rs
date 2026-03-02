@@ -1,7 +1,9 @@
 use anyhow::{Context, Result};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use xdg::BaseDirectories;
+
+use octorus::config::find_project_root;
 
 /// Default config.toml content
 const DEFAULT_CONFIG: &str = r#"# Editor for writing review body.
@@ -42,8 +44,28 @@ const DEFAULT_REVIEWER_PROMPT: &str = include_str!("ai/defaults/reviewer.md");
 const DEFAULT_REVIEWEE_PROMPT: &str = include_str!("ai/defaults/reviewee.md");
 const DEFAULT_REREVIEW_PROMPT: &str = include_str!("ai/defaults/rereview.md");
 
+/// Default local config.toml content
+const DEFAULT_LOCAL_CONFIG: &str = r#"# Project-local octorus configuration.
+# Values here override the global config (~/.config/octorus/config.toml).
+# Only specify values you want to override.
+
+# [diff]
+# theme = "base16-ocean.dark"
+# tab_width = 4
+
+# [ai]
+# reviewer = "claude"
+# reviewee = "claude"
+# max_iterations = 10
+# timeout_secs = 600
+"#;
+
 /// Run the init command
-pub fn run_init(force: bool) -> Result<()> {
+pub fn run_init(force: bool, local: bool) -> Result<()> {
+    if local {
+        let project_root = find_project_root();
+        return run_init_local(&project_root, force);
+    }
     let base_dirs =
         BaseDirectories::with_prefix("octorus").context("Failed to get config directory")?;
 
@@ -113,6 +135,72 @@ fn write_file_if_needed(path: &PathBuf, content: &str, force: bool, name: &str) 
 
     println!("Writing {}...", name);
     fs::write(path, content).with_context(|| format!("Failed to write {}", name))?;
+    Ok(())
+}
+
+/// Run init for project-local .octorus/ directory
+fn run_init_local(project_root: &Path, force: bool) -> Result<()> {
+    let octorus_dir = project_root.join(".octorus");
+
+    // Create .octorus directory if needed
+    if !octorus_dir.exists() {
+        println!(
+            "Creating local config directory: {}",
+            octorus_dir.display()
+        );
+        fs::create_dir_all(&octorus_dir).context("Failed to create .octorus directory")?;
+    }
+
+    // Write config.toml
+    let config_path = octorus_dir.join("config.toml");
+    write_file_if_needed(&config_path, DEFAULT_LOCAL_CONFIG, force, "config.toml")?;
+
+    // Create prompts directory
+    let prompts_dir = octorus_dir.join("prompts");
+    if !prompts_dir.exists() {
+        println!("Creating prompts directory: {}", prompts_dir.display());
+        fs::create_dir_all(&prompts_dir).context("Failed to create prompts directory")?;
+    }
+
+    // Write prompt templates
+    write_file_if_needed(
+        &prompts_dir.join("reviewer.md"),
+        DEFAULT_REVIEWER_PROMPT,
+        force,
+        "reviewer.md",
+    )?;
+    write_file_if_needed(
+        &prompts_dir.join("reviewee.md"),
+        DEFAULT_REVIEWEE_PROMPT,
+        force,
+        "reviewee.md",
+    )?;
+    write_file_if_needed(
+        &prompts_dir.join("rereview.md"),
+        DEFAULT_REREVIEW_PROMPT,
+        force,
+        "rereview.md",
+    )?;
+
+    println!();
+    println!("Local initialization complete!");
+    println!(
+        "Project-local config: {}",
+        config_path.display()
+    );
+    println!(
+        "Project-local prompts: {}",
+        prompts_dir.display()
+    );
+    println!();
+    println!("\x1b[36mTip:\x1b[0m Commit .octorus/ to share project-specific settings with your team.");
+    println!("     Or add .octorus/ to .gitignore for personal-only configuration.");
+    println!();
+    println!("\x1b[33mWarning:\x1b[0m .octorus/config.toml can override \x1b[1mALL\x1b[0m settings including editor,");
+    println!("         AI tool permissions, and auto_post. If you commit .octorus/ to a");
+    println!("         public repository, cloners will inherit these settings when running \x1b[1mor\x1b[0m.");
+    println!("         Review the config carefully before committing.");
+
     Ok(())
 }
 
@@ -227,6 +315,64 @@ mod tests {
         // Verify content was overwritten
         let content = fs::read_to_string(&config_path).unwrap();
         assert!(content.contains("# editor = \"vim\""));
+        assert!(!content.contains("custom = true"));
+    }
+
+    #[test]
+    fn test_run_init_local_creates_files() {
+        let temp_dir = TempDir::new().unwrap();
+
+        run_init_local(temp_dir.path(), false).unwrap();
+
+        let octorus_dir = temp_dir.path().join(".octorus");
+        let config_path = octorus_dir.join("config.toml");
+        let prompts_dir = octorus_dir.join("prompts");
+
+        assert!(config_path.exists(), "config.toml should exist");
+        assert!(
+            prompts_dir.join("reviewer.md").exists(),
+            "reviewer.md should exist"
+        );
+        assert!(
+            prompts_dir.join("reviewee.md").exists(),
+            "reviewee.md should exist"
+        );
+        assert!(
+            prompts_dir.join("rereview.md").exists(),
+            "rereview.md should exist"
+        );
+
+        let config_content = fs::read_to_string(&config_path).unwrap();
+        assert!(config_content.contains("Project-local octorus configuration"));
+        assert!(config_content.contains("# [ai]"));
+    }
+
+    #[test]
+    fn test_run_init_local_skips_existing() {
+        let temp_dir = TempDir::new().unwrap();
+        let octorus_dir = temp_dir.path().join(".octorus");
+        fs::create_dir_all(&octorus_dir).unwrap();
+        let config_path = octorus_dir.join("config.toml");
+        fs::write(&config_path, "custom = true").unwrap();
+
+        run_init_local(temp_dir.path(), false).unwrap();
+
+        let content = fs::read_to_string(&config_path).unwrap();
+        assert_eq!(content, "custom = true");
+    }
+
+    #[test]
+    fn test_run_init_local_force_overwrites() {
+        let temp_dir = TempDir::new().unwrap();
+        let octorus_dir = temp_dir.path().join(".octorus");
+        fs::create_dir_all(&octorus_dir).unwrap();
+        let config_path = octorus_dir.join("config.toml");
+        fs::write(&config_path, "custom = true").unwrap();
+
+        run_init_local(temp_dir.path(), true).unwrap();
+
+        let content = fs::read_to_string(&config_path).unwrap();
+        assert!(content.contains("Project-local octorus configuration"));
         assert!(!content.contains("custom = true"));
     }
 }
